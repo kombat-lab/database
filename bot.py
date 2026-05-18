@@ -18,6 +18,7 @@ from database import (
     get_resources_by_location,
     get_resource_mobs,
     get_gear_by_location,
+    get_gear_by_rarity,          # новая
     get_gear_info,
     get_gear_mobs,
     search,
@@ -64,7 +65,45 @@ def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
+# ----- Новая клавиатура для выбора редкости снаряжения -----
+def get_rarities_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура с типами редкости для снаряжения."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
+        [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
+        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")],
+        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
+    ])
+    return keyboard
+
+def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
+    """Клавиатура со списком предметов указанной редкости и пагинацией."""
+    offset = (page - 1) * ITEMS_PER_PAGE
+    items = get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + 1)  # +1 для проверки след. страницы
+    has_next = len(items) > ITEMS_PER_PAGE
+    items = items[:ITEMS_PER_PAGE]
+
+    keyboard_rows = []
+    for item in items:
+        name = f"{item.get('emoji', '')} {item['name']}"
+        keyboard_rows.append([
+            InlineKeyboardButton(text=name, callback_data=f"view_gear_{item['id']}")
+        ])
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
+    if has_next:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
+    if nav_buttons:
+        keyboard_rows.append(nav_buttons)
+
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Выбрать другую редкость", callback_data="gear_rarities")])
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
+    """Для мобов и ресурсов (сохраняем старую логику)."""
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
@@ -72,10 +111,6 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     elif category == "resources":
         items = get_resources_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_resources_by_location(location_id, page*ITEMS_PER_PAGE, 1)
-        total_items = page*ITEMS_PER_PAGE + len(next_items)
-    elif category == "gear":
-        items = get_gear_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
-        next_items = get_gear_by_location(location_id, page*ITEMS_PER_PAGE, 1)
         total_items = page*ITEMS_PER_PAGE + len(next_items)
     else:
         return InlineKeyboardMarkup(inline_keyboard=[])
@@ -99,7 +134,6 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
-    """Кнопка для запуска инлайн-поиска с @fog_database_bot"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Искать через @fog_database_bot", switch_inline_query_current_chat="")]
     ])
@@ -127,12 +161,12 @@ async def resources_button(message: types.Message):
 @dp.message(F.text == "⚔️ Снаряжение")
 async def gear_button(message: types.Message):
     await message.delete()
-    await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
+    # Показываем выбор редкости вместо локаций
+    await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
 @dp.message(F.text == "🔍 Поиск")
 async def search_button(message: types.Message):
     await message.delete()
-    # Отправляем сообщение с inline-кнопкой, которая активирует инлайн-режим с @fog_database_bot
     await message.answer(
         "Нажми на кнопку ниже, чтобы открыть инлайн-поиск.\n"
         "Затем просто введи запрос (например, *бронзовик*).",
@@ -173,7 +207,7 @@ async def handle_search(message: types.Message):
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.answer(reply, parse_mode="Markdown")
 
-# ---------------------- ИНЛАЙН-ПОИСК (работает при вводе @fog_database_bot текст) ----------------------
+# ---------------------- ИНЛАЙН-ПОИСК ----------------------
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
@@ -227,15 +261,50 @@ async def inline_search_handler(inline_query: InlineQuery):
 
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------------------- Callback-обработчики (навигация по локациям/предметам) ----------------------
+# ---------------------- Callback-обработчики ----------------------
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
     await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
+# ----- НОВЫЙ обработчик для выбора редкости из меню снаряжения -----
+@dp.callback_query(F.data == "gear_rarities")
+async def gear_rarities_callback(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
+    await callback_query.answer()
+
+# ----- Обработчики для списка снаряжения по редкости -----
+@dp.callback_query(F.data.startswith("list_gear_"))
+async def list_gear_by_rarity(callback_query: types.CallbackQuery):
+    # data = "list_gear_common_1" или "list_gear_rare_1" и т.д.
+    parts = callback_query.data.split("_")
+    rarity = parts[2]          # common, rare, epic
+    page = int(parts[3])
+    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
+    keyboard = get_gear_by_rarity_keyboard(rarity, page)
+    text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
+    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await callback_query.answer()
+
+@dp.callback_query(F.data.startswith("page_gear_"))
+async def page_gear_rarity(callback_query: types.CallbackQuery):
+    # data = "page_gear_common_2"
+    parts = callback_query.data.split("_")
+    rarity = parts[2]
+    page = int(parts[3])
+    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
+    keyboard = get_gear_by_rarity_keyboard(rarity, page)
+    text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
+    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await callback_query.answer()
+
+# ----- Обработчики для мобов и ресурсов (старые) -----
 @dp.callback_query(F.data.startswith("list_"))
 async def list_callback(callback_query: types.CallbackQuery):
+    if callback_query.data.startswith("list_gear_"):
+        # обрабатывается выше
+        return
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id, page = int(loc_id), int(page)
     location = get_location_by_id(loc_id)
@@ -246,6 +315,8 @@ async def list_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("page_"))
 async def page_callback(callback_query: types.CallbackQuery):
+    if callback_query.data.startswith("page_gear_"):
+        return
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id, page = int(loc_id), int(page)
     location = get_location_by_id(loc_id)
@@ -304,13 +375,13 @@ async def view_gear(callback_query: types.CallbackQuery):
         return
     mobs = get_gear_mobs(gear_id) if gear["rarity"] == "common" else []
     text = f"{gear['emoji']} *{gear['name']}*\nРедкость: {gear['rarity']}\nСлот: {gear['slot']}\n"
-    if gear["craftable"]:
+    if gear.get("craftable"):
         text += f"Крафт: да, пыль: {gear['craft_dust']}\n"
     else:
         text += "Крафт: нет (выпадает)\n"
     if mobs:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
-    back_button = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
+    back_button = InlineKeyboardButton(text="🔙 Назад к списку редкостей", callback_data="gear_rarities")
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
     await callback_query.answer()
 
