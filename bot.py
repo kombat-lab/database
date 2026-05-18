@@ -1,7 +1,7 @@
 import os
 import logging
 import json
-import aioredis
+import redis.asyncio as aioredis
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
