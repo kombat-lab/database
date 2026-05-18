@@ -14,18 +14,19 @@ def execute_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 def search(query: str) -> Dict[str, List[Dict]]:
-    query = f"%{query}%"
+    # Регистронезависимый поиск через LOWER
+    search_pattern = f"%{query}%"
     mobs = execute_query(
-        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE name LIKE ?",
-        (query,)
+        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE LOWER(name) LIKE LOWER(?)",
+        (search_pattern,)
     )
     resources = execute_query(
-        "SELECT id, name, emoji FROM resources WHERE name LIKE ?",
-        (query,)
+        "SELECT id, name, emoji FROM resources WHERE LOWER(name) LIKE LOWER(?)",
+        (search_pattern,)
     )
     gear = execute_query(
-        "SELECT id, name, rarity, slot, emoji FROM gear WHERE name LIKE ?",
-        (query,)
+        "SELECT id, name, rarity, slot, emoji FROM gear WHERE LOWER(name) LIKE LOWER(?)",
+        (search_pattern,)
     )
     return {"mobs": mobs, "resources": resources, "gear": gear}
 
