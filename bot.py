@@ -77,7 +77,7 @@ def get_rarities_keyboard() -> InlineKeyboardMarkup:
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
     """
     Клавиатура со списком мобов или ресурсов в выбранной локации.
-    Кнопка «Назад» ведёт к выбору локаций.
+    Для ресурсов в callback_data передаём ещё и location_id для возврата.
     """
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
@@ -93,7 +93,8 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard_rows = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback_data = f"view_{category}_{item['id']}_{page}"
+        # Важно: для ресурсов добавляем location_id и page
+        callback_data = f"view_{category}_{item['id']}_{location_id}_{page}"
         keyboard_rows.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
 
     nav_buttons = []
@@ -104,7 +105,6 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     if nav_buttons:
         keyboard_rows.append(nav_buttons)
 
-    # Вместо "Назад в меню" – "Назад к локациям"
     keyboard_rows.append([InlineKeyboardButton(
         text="🔙 Назад к локациям",
         callback_data=f"back_to_locations_{category}"
@@ -153,7 +153,7 @@ async def search_command(message: types.Message):
 # ---------------------- Обработчики reply-кнопок ----------------------
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    await message.delete()  # удаляем сообщение с кнопкой, чтобы не засорять чат
+    await message.delete()
     await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
 
 @dp.message(F.text == "📦 Ресурсы")
@@ -266,21 +266,18 @@ async def inline_search_handler(inline_query: InlineQuery):
 # ---------------------- Callback-обработчики ----------------------
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
-    """Полностью удаляет текущее сообщение и показывает reply-клавиатуру."""
     await callback_query.message.delete()
     await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback_query: types.CallbackQuery):
-    """Возврат к выбору редкости снаряжения."""
     await callback_query.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback_query.answer()
 
 @dp.callback_query(F.data.startswith("back_to_locations_"))
 async def back_to_locations(callback_query: types.CallbackQuery):
-    """Возврат к списку локаций для мобов или ресурсов."""
-    category = callback_query.data.split("_")[3]  # back_to_locations_mobs или back_to_locations_resources
+    category = callback_query.data.split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     await callback_query.message.edit_text(text, reply_markup=get_locations_keyboard(category))
     await callback_query.answer()
@@ -336,9 +333,11 @@ async def page_callback(callback_query: types.CallbackQuery):
 # ----- Просмотр моба -----
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
+    # data = "view_mobs_{mob_id}_{location_id}_{page}"
     parts = callback_query.data.split("_")
     mob_id = int(parts[2])
-    page = int(parts[3]) if len(parts) > 3 else 1
+    location_id = int(parts[3])
+    page = int(parts[4])
 
     mob = execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
@@ -358,7 +357,7 @@ async def view_mob(callback_query: types.CallbackQuery):
 
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку мобов",
-        callback_data=f"list_mobs_{mob['location_id']}_{page}"
+        callback_data=f"list_mobs_{location_id}_{page}"
     )
     await callback_query.message.edit_text(
         text, parse_mode="Markdown",
@@ -366,14 +365,14 @@ async def view_mob(callback_query: types.CallbackQuery):
     )
     await callback_query.answer()
 
-# ----- Просмотр ресурса -----
+# ----- Просмотр ресурса (исправлен: возврат к списку ресурсов той же локации) -----
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
+    # data = "view_resources_{resource_id}_{location_id}_{page}"
     parts = callback_query.data.split("_")
     resource_id = int(parts[2])
-    page = int(parts[3]) if len(parts) > 3 else 1
-    # Для ресурса мы не знаем location_id, поэтому возвращаемся к списку локаций
-    # Но сохраняем страницу? Невозможно, поэтому просто на выбор локаций.
+    location_id = int(parts[3])
+    page = int(parts[4])
 
     res = get_resource_info(resource_id)
     if not res:
@@ -388,8 +387,8 @@ async def view_resource(callback_query: types.CallbackQuery):
         text += "Ни с кого не падает (возможно, крафтовый).\n"
 
     back_button = InlineKeyboardButton(
-        text="🔙 Назад к выбору локации",
-        callback_data="back_to_locations_resources"
+        text="🔙 Назад к списку ресурсов",
+        callback_data=f"list_resources_{location_id}_{page}"
     )
     await callback_query.message.edit_text(
         text, parse_mode="Markdown",
@@ -400,10 +399,11 @@ async def view_resource(callback_query: types.CallbackQuery):
 # ----- Просмотр снаряжения -----
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
+    # data = "view_gear_{gear_id}_{rarity}_{page}"
     parts = callback_query.data.split("_")
     gear_id = int(parts[2])
-    rarity = parts[3] if len(parts) > 3 else "common"
-    page = int(parts[4]) if len(parts) > 4 else 1
+    rarity = parts[3]
+    page = int(parts[4])
 
     gear = get_gear_info(gear_id)
     if not gear:
