@@ -1,13 +1,10 @@
 import os
 import logging
-from typing import Dict, List, Any, Optional
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
 
-# Импортируем все функции для работы с БД из database.py
 from database import (
     get_locations,
     get_mobs_by_location,
@@ -20,15 +17,16 @@ from database import (
     get_gear_mobs,
     search,
     get_location_by_id,
-    get_resource_info  # если понадобится
+    get_resource_info,
+    execute_query
 )
 
-# --- Настройки ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("Переменная окружения BOT_TOKEN не установлена")
+    raise ValueError("BOT_TOKEN not set")
 
 ITEMS_PER_PAGE = 10
+MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,44 +35,26 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-
-# --- Клавиатуры ---
+# ---------------------- Клавиатуры ----------------------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Reply-клавиатура (сворачиваемая) с главными кнопками."""
-    keyboard = ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        one_time_keyboard=False,
-        row_width=2
-    )
-    buttons = [
-        KeyboardButton("🐾 Мобы"),
-        KeyboardButton("📦 Ресурсы"),
-        KeyboardButton("⚔️ Снаряжение"),
-        KeyboardButton("🔍 Поиск")
-    ]
-    keyboard.add(*buttons)
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False, row_width=2)
+    keyboard.add(KeyboardButton("🐾 Мобы"), KeyboardButton("📦 Ресурсы"))
+    keyboard.add(KeyboardButton("⚔️ Снаряжение"), KeyboardButton("🔍 Поиск"))
     return keyboard
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
-    """Инлайн-клавиатура для выбора локации."""
     locations = get_locations()
     keyboard = InlineKeyboardMarkup(row_width=1)
     for loc in locations:
-        keyboard.add(InlineKeyboardButton(
-            f"{loc['emoji']} {loc['name']}",
-            callback_data=f"list_{category}_{loc['id']}_1"
-        ))
+        keyboard.add(InlineKeyboardButton(f"{loc['emoji']} {loc['name']}", callback_data=f"list_{category}_{loc['id']}_1"))
     keyboard.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu"))
     return keyboard
 
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
-    """Инлайн-клавиатура со списком предметов и пагинацией."""
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
-        # Для подсчёта общего количества используем тот же запрос без лимита, но лучше сделать отдельную функцию count_*
-        # Временно: просто проверяем, есть ли следующая страница
         next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
-        total_items = page*ITEMS_PER_PAGE + len(next_items)  # грубо
+        total_items = page*ITEMS_PER_PAGE + len(next_items)
     elif category == "resources":
         items = get_resources_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_resources_by_location(location_id, page*ITEMS_PER_PAGE, 1)
@@ -89,9 +69,7 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard = InlineKeyboardMarkup(row_width=1)
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback = f"view_{category}_{item['id']}"
-        keyboard.add(InlineKeyboardButton(name, callback_data=callback))
-
+        keyboard.add(InlineKeyboardButton(name, callback_data=f"view_{category}_{item['id']}"))
     nav_buttons = []
     if page > 1:
         nav_buttons.append(InlineKeyboardButton("◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
@@ -102,16 +80,10 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu"))
     return keyboard
 
-
-# --- Обработчики команд и сообщений ---
+# ---------------------- Обработчики ----------------------
 @dp.message_handler(commands=['start', 'menu'])
 async def send_menu(message: types.Message):
-    """Отправляет приветствие и reply-клавиатуру без реплая на сообщение пользователя."""
-    await message.answer(
-        "Выбери категорию:",
-        reply_markup=get_main_menu_reply_keyboard()
-    )
-    # Удаляем команду /start или /menu, чтобы чат был чище
+    await message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
     await message.delete()
 
 @dp.message_handler(commands=['search'])
@@ -119,9 +91,28 @@ async def search_command(message: types.Message):
     await message.answer("Введите поисковый запрос (название моба, ресурса или снаряжения):")
     await message.delete()
 
-@dp.message_handler(lambda message: message.text and not message.text.startswith('/'))
+@dp.message_handler(lambda message: message.text == "🐾 Мобы")
+async def mobs_button(message: types.Message):
+    await message.delete()
+    await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
+
+@dp.message_handler(lambda message: message.text == "📦 Ресурсы")
+async def resources_button(message: types.Message):
+    await message.delete()
+    await message.answer("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
+
+@dp.message_handler(lambda message: message.text == "⚔️ Снаряжение")
+async def gear_button(message: types.Message):
+    await message.delete()
+    await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
+
+@dp.message_handler(lambda message: message.text == "🔍 Поиск")
+async def search_button(message: types.Message):
+    await message.delete()
+    await search_command(message)
+
+@dp.message_handler(lambda message: message.text and not message.text.startswith('/') and message.text not in MAIN_MENU_BUTTONS)
 async def handle_search(message: types.Message):
-    """Обработка поискового запроса (после команды /search или просто текста)."""
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
