@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 
 from aiogram import Bot, Dispatcher, types, F
@@ -9,7 +10,6 @@ from aiogram.types import (
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
 from aiogram.filters import Command
-from aiogram.utils.markdown import hbold
 
 from database import (
     get_locations,
@@ -40,29 +40,36 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ---------------------- Клавиатуры ----------------------
+# ---------------------- Клавиатуры (исправленные для aiogram 3) ----------------------
+
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
-    keyboard = ReplyKeyboardMarkup(
+    """Reply-клавиатура с главными кнопками (сворачиваемая)."""
+    keyboard_rows = [
+        [KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы")],
+        [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск")]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard_rows,
         resize_keyboard=True,
-        one_time_keyboard=False,
-        row_width=2
+        one_time_keyboard=False
     )
-    keyboard.add(KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы"))
-    keyboard.add(KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск"))
-    return keyboard
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура со списком локаций."""
     locations = get_locations()
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard_rows = []
     for loc in locations:
-        keyboard.add(InlineKeyboardButton(
-            text=f"{loc['emoji']} {loc['name']}",
-            callback_data=f"list_{category}_{loc['id']}_1"
-        ))
-    keyboard.add(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
-    return keyboard
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=f"{loc['emoji']} {loc['name']}",
+                callback_data=f"list_{category}_{loc['id']}_1"
+            )
+        ])
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура со списком предметов и пагинацией."""
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
@@ -76,26 +83,31 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
         next_items = get_gear_by_location(location_id, page*ITEMS_PER_PAGE, 1)
         total_items = page*ITEMS_PER_PAGE + len(next_items)
     else:
-        return InlineKeyboardMarkup()
+        return InlineKeyboardMarkup(inline_keyboard=[])
 
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard_rows = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        keyboard.add(InlineKeyboardButton(
-            text=name,
-            callback_data=f"view_{category}_{item['id']}"
-        ))
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=name,
+                callback_data=f"view_{category}_{item['id']}"
+            )
+        ])
+
     nav_buttons = []
     if page > 1:
         nav_buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
     if page * ITEMS_PER_PAGE < total_items:
         nav_buttons.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{category}_{location_id}_{page+1}"))
     if nav_buttons:
-        keyboard.row(*nav_buttons)
-    keyboard.add(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
-    return keyboard
+        keyboard_rows.append(nav_buttons)
+
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 # ---------------------- Обработчики команд ----------------------
+
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
     await message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
@@ -106,7 +118,8 @@ async def search_command(message: types.Message):
     await message.answer("Введите поисковый запрос (название моба, ресурса или снаряжения):")
     await message.delete()
 
-# ---------------------- Обработчики кнопок главного меню (reply) ----------------------
+# ---------------------- Обработчики reply-кнопок главного меню ----------------------
+
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     await message.delete()
@@ -128,6 +141,7 @@ async def search_button(message: types.Message):
     await search_command(message)
 
 # ---------------------- Обработчик обычного текстового поиска ----------------------
+
 @dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS))
 async def handle_search(message: types.Message):
     query_text = message.text.strip()
@@ -161,6 +175,7 @@ async def handle_search(message: types.Message):
     await message.answer(reply, parse_mode="Markdown")
 
 # ---------------------- ИНЛАЙН-ПОИСК (реального времени) ----------------------
+
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
@@ -235,6 +250,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
 # ---------------------- Callback-обработчики (инлайн навигация) ----------------------
+
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
@@ -284,11 +300,11 @@ async def view_mob(callback_query: types.CallbackQuery):
         text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
     if gear_drops:
         text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
-    back_btn = InlineKeyboardButton(text="🔙 Назад", callback_data=f"list_mobs_{mob['location_id']}_1")
+    back_button = InlineKeyboardButton(text="🔙 Назад", callback_data=f"list_mobs_{mob['location_id']}_1")
     await callback_query.message.edit_text(
         text,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
     )
     await callback_query.answer()
 
@@ -306,11 +322,11 @@ async def view_resource(callback_query: types.CallbackQuery):
         text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
     else:
         text += "Ни с кого не падает (возможно, крафтовый).\n"
-    back_btn = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
+    back_button = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
     await callback_query.message.edit_text(
         text,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
     )
     await callback_query.answer()
 
@@ -332,18 +348,18 @@ async def view_gear(callback_query: types.CallbackQuery):
         text += "Крафт: нет (выпадает)\n"
     if mobs:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
-    back_btn = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
+    back_button = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
     await callback_query.message.edit_text(
         text,
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn)
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
     )
     await callback_query.answer()
 
 # ---------------------- Запуск ----------------------
+
 async def main():
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
