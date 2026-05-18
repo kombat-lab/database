@@ -15,16 +15,17 @@ def execute_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
 
 def search(query: str) -> Dict[str, List[Dict]]:
     search_pattern = f"%{query}%"
+    # Используем LOWER для обеих сторон – это работает с кириллицей
     mobs = execute_query(
-        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE name COLLATE NOCASE LIKE ?",
+        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE LOWER(name) LIKE LOWER(?)",
         (search_pattern,)
     )
     resources = execute_query(
-        "SELECT id, name, emoji FROM resources WHERE name COLLATE NOCASE LIKE ?",
+        "SELECT id, name, emoji FROM resources WHERE LOWER(name) LIKE LOWER(?)",
         (search_pattern,)
     )
     gear = execute_query(
-        "SELECT id, name, rarity, slot, emoji FROM gear WHERE name COLLATE NOCASE LIKE ?",
+        "SELECT id, name, rarity, slot, emoji FROM gear WHERE LOWER(name) LIKE LOWER(?)",
         (search_pattern,)
     )
     return {"mobs": mobs, "resources": resources, "gear": gear}
