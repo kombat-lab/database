@@ -80,7 +80,7 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu"))
     return keyboard
 
-# ---------------------- Обработчики ----------------------
+# ---------------------- Обработчики команд ----------------------
 @dp.message_handler(commands=['start', 'menu'])
 async def send_menu(message: types.Message):
     await message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
@@ -91,6 +91,7 @@ async def search_command(message: types.Message):
     await message.answer("Введите поисковый запрос (название моба, ресурса или снаряжения):")
     await message.delete()
 
+# ---------------------- Обработчики кнопок главного меню (reply-клавиатура) ----------------------
 @dp.message_handler(lambda message: message.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     await message.delete()
@@ -111,9 +112,11 @@ async def search_button(message: types.Message):
     await message.delete()
     await search_command(message)
 
+# ---------------------- Обработчик поиска (для всего остального текста) ----------------------
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/') and message.text not in MAIN_MENU_BUTTONS)
 async def handle_search(message: types.Message):
     query_text = message.text.strip()
+    logger.info(f"Поисковый запрос: '{query_text}'")  # отладочный вывод
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
         return
@@ -143,34 +146,9 @@ async def handle_search(message: types.Message):
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.answer(reply, parse_mode="Markdown")
 
-# --- Обработчики reply-кнопок (текстовые сообщения) ---
-# При нажатии на кнопку удаляем сообщение пользователя, чтобы не было видно текст кнопки,
-# и отправляем ответ без реплая.
-@dp.message_handler(lambda message: message.text == "🐾 Мобы")
-async def mobs_button(message: types.Message):
-    await message.delete()  # убираем сообщение "🐾 Мобы"
-    await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
-
-@dp.message_handler(lambda message: message.text == "📦 Ресурсы")
-async def resources_button(message: types.Message):
-    await message.delete()
-    await message.answer("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
-
-@dp.message_handler(lambda message: message.text == "⚔️ Снаряжение")
-async def gear_button(message: types.Message):
-    await message.delete()
-    await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
-
-@dp.message_handler(lambda message: message.text == "🔍 Поиск")
-async def search_button(message: types.Message):
-    await message.delete()
-    await search_command(message)  # отправляем сообщение с просьбой ввести запрос
-
-
-# --- Инлайн-колбэки (навигация и просмотр) ---
+# ---------------------- Инлайн-колбэки (навигация и просмотр) ----------------------
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
-    """Возврат в главное меню: удаляем текущее инлайн-сообщение и показываем новое с reply-клавиатурой."""
     await callback_query.message.delete()
     await callback_query.message.answer(
         "Выбери категорию:",
@@ -203,10 +181,6 @@ async def page_callback(callback_query: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
     mob_id = int(callback_query.data.split("_")[2])
-    # Функции get_mob_* работают с database.py, нужно импортировать execute_query? Нет, они уже есть.
-    # Однако в database.py нет прямой функции get_mob_by_id, поэтому используем execute_query? Но лучше добавить.
-    # Для простоты воспользуемся execute_query, но чтобы не плодить зависимости, перепишем: можно импортировать execute_query из database.py.
-    from database import execute_query
     mob = execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
         await callback_query.message.edit_text("Моб не найден.")
@@ -232,7 +206,7 @@ async def view_mob(callback_query: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
     resource_id = int(callback_query.data.split("_")[2])
-    res = get_resource_info(resource_id)  # используем функцию из database.py
+    res = get_resource_info(resource_id)
     if not res:
         await callback_query.message.edit_text("Ресурс не найден.")
         await callback_query.answer()
@@ -269,7 +243,6 @@ async def view_gear(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn))
     await callback_query.answer()
 
-
-# --- Запуск ---
+# ---------------------- Запуск ----------------------
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
