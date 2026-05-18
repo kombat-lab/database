@@ -5,7 +5,6 @@ import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
 from aiogram.filters import Command
@@ -31,7 +30,6 @@ if not TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
 ITEMS_PER_PAGE = 10
-MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,16 +38,14 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ---------------------- Клавиатуры ----------------------
-def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
-    keyboard_rows = [
-        [KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы")],
-        [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск")]
+def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="🐾 Мобы", callback_data="main_menu_mobs")],
+        [InlineKeyboardButton(text="📦 Ресурсы", callback_data="main_menu_resources")],
+        [InlineKeyboardButton(text="⚔️ Снаряжение", callback_data="main_menu_gear")],
+        [InlineKeyboardButton(text="🔍 Поиск", switch_inline_query_current_chat="")]
     ]
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard_rows,
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     locations = get_locations()
@@ -101,39 +97,14 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
 # ---------------------- Обработчики команд ----------------------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
-    await message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
-    # Не удаляем команду, чтобы не было ошибки, но можно закомментировать:
-    # await message.delete()  # если хотите удалить команду, но тогда обработайте исключение
+    await message.answer("Выбери категорию:", reply_markup=get_main_menu_inline_keyboard())
 
 @dp.message(Command("search"))
 async def search_command(message: types.Message):
-    # Просто отвечаем, не удаляем сообщение, чтобы избежать ошибки
     await message.answer("🔎 Просто напишите название моба, ресурса или предмета снаряжения в чат.")
 
-# ---------------------- Обработчики reply-кнопок ----------------------
-@dp.message(F.text == "🐾 Мобы")
-async def mobs_button(message: types.Message):
-    await message.delete()  # удаляем кнопку
-    await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
-
-@dp.message(F.text == "📦 Ресурсы")
-async def resources_button(message: types.Message):
-    await message.delete()
-    await message.answer("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
-
-@dp.message(F.text == "⚔️ Снаряжение")
-async def gear_button(message: types.Message):
-    await message.delete()
-    await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
-
-@dp.message(F.text == "🔍 Поиск")
-async def search_button(message: types.Message):
-    await message.delete()  # удаляем кнопку
-    # Отправляем короткое приглашение, не вызывая search_command
-    await message.answer("🔎 Введите название моба, ресурса или предмета снаряжения.", reply_markup=get_main_menu_reply_keyboard())
-
 # ---------------------- Обработчик обычного текстового поиска ----------------------
-@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
+@dp.message(F.text & ~F.text.startswith('/') & ~F.via_bot)
 async def handle_search(message: types.Message):
     query_text = message.text.strip()
     if len(query_text) < 2:
@@ -219,11 +190,25 @@ async def inline_search_handler(inline_query: InlineQuery):
 
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------------------- Callback-обработчики (навигация) ----------------------
+# ---------------------- Callback-обработчики ----------------------
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
-    await callback_query.message.delete()
-    await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
+    await callback_query.message.edit_text("Выбери категорию:", reply_markup=get_main_menu_inline_keyboard())
+    await callback_query.answer()
+
+@dp.callback_query(F.data == "main_menu_mobs")
+async def main_menu_mobs_callback(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
+    await callback_query.answer()
+
+@dp.callback_query(F.data == "main_menu_resources")
+async def main_menu_resources_callback(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
+    await callback_query.answer()
+
+@dp.callback_query(F.data == "main_menu_gear")
+async def main_menu_gear_callback(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
     await callback_query.answer()
 
 @dp.callback_query(F.data.startswith("list_"))
