@@ -14,7 +14,7 @@ if not TOKEN:
     raise ValueError("Переменная окружения BOT_TOKEN не установлена")
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
-ITEMS_PER_PAGE = 5
+ITEMS_PER_PAGE = 10
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
