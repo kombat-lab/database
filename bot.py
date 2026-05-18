@@ -1,6 +1,5 @@
 import os
 import logging
-import sqlite3
 from typing import Dict, List, Any, Optional
 
 from aiogram import Bot, Dispatcher, types
@@ -8,12 +7,27 @@ from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
 
+# Импортируем все функции для работы с БД из database.py
+from database import (
+    get_locations,
+    get_mobs_by_location,
+    get_mob_drops,
+    get_mob_gear_drops,
+    get_resources_by_location,
+    get_resource_mobs,
+    get_gear_by_location,
+    get_gear_info,
+    get_gear_mobs,
+    search,
+    get_location_by_id,
+    get_resource_info  # если понадобится
+)
+
 # --- Настройки ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("Переменная окружения BOT_TOKEN не установлена")
 
-DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 ITEMS_PER_PAGE = 10
 
 logging.basicConfig(level=logging.INFO)
@@ -23,105 +37,13 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# --- Работа с базой данных (без изменений) ---
-def get_db_connection():
-    return sqlite3.connect(DB_PATH)
-
-def execute_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    with get_db_connection() as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(query, params)
-        return [dict(row) for row in cursor.fetchall()]
-
-def get_locations() -> List[Dict]:
-    return execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
-
-def get_mobs_by_location(location_id: int, offset: int, limit: int) -> List[Dict]:
-    return execute_query(
-        "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs WHERE location_id = ? LIMIT ? OFFSET ?",
-        (location_id, limit, offset)
-    )
-
-def get_mob_drops(mob_id: int) -> List[Dict]:
-    return execute_query(
-        "SELECT r.id, r.name, r.emoji FROM mob_drops md JOIN resources r ON md.resource_id = r.id WHERE md.mob_id = ?",
-        (mob_id,)
-    )
-
-def get_mob_gear_drops(mob_id: int) -> List[Dict]:
-    return execute_query(
-        "SELECT g.id, g.name, g.rarity, g.slot, g.emoji FROM gear_drops gd JOIN gear g ON gd.gear_id = g.id WHERE gd.mob_id = ? AND g.rarity = 'common'",
-        (mob_id,)
-    )
-
-def get_resources_by_location(location_id: int, offset: int, limit: int) -> List[Dict]:
-    query = """
-        SELECT DISTINCT r.id, r.name, r.emoji
-        FROM resources r
-        JOIN mob_drops md ON r.id = md.resource_id
-        JOIN mobs m ON md.mob_id = m.id
-        WHERE m.location_id = ?
-        LIMIT ? OFFSET ?
-    """
-    return execute_query(query, (location_id, limit, offset))
-
-def get_resource_mobs(resource_id: int) -> List[Dict]:
-    return execute_query(
-        "SELECT m.id, m.name, m.emoji FROM mob_drops md JOIN mobs m ON md.mob_id = m.id WHERE md.resource_id = ?",
-        (resource_id,)
-    )
-
-def get_gear_by_location(location_id: int, offset: int, limit: int) -> List[Dict]:
-    query = """
-        SELECT DISTINCT g.id, g.name, g.rarity, g.slot, g.emoji
-        FROM gear g
-        JOIN gear_drops gd ON g.id = gd.gear_id
-        JOIN mobs m ON gd.mob_id = m.id
-        WHERE m.location_id = ? AND g.rarity = 'common'
-        LIMIT ? OFFSET ?
-    """
-    return execute_query(query, (location_id, limit, offset))
-
-def get_gear_info(gear_id: int) -> Optional[Dict]:
-    res = execute_query(
-        "SELECT id, name, rarity, slot, craftable, craft_dust, emoji FROM gear WHERE id = ?",
-        (gear_id,)
-    )
-    return res[0] if res else None
-
-def get_gear_mobs(gear_id: int) -> List[Dict]:
-    return execute_query(
-        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ?",
-        (gear_id,)
-    )
-
-def search(query: str) -> Dict[str, List[Dict]]:
-    query = f"%{query}%"
-    mobs = execute_query(
-        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE name LIKE ?",
-        (query,)
-    )
-    resources = execute_query(
-        "SELECT id, name, emoji FROM resources WHERE name LIKE ?",
-        (query,)
-    )
-    gear = execute_query(
-        "SELECT id, name, rarity, slot, emoji FROM gear WHERE name LIKE ?",
-        (query,)
-    )
-    return {"mobs": mobs, "resources": resources, "gear": gear}
-
-def get_location_by_id(location_id: int) -> Optional[Dict]:
-    res = execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
-    return res[0] if res else None
-
 
 # --- Клавиатуры ---
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Reply-клавиатура, которая видна всегда и сворачивается кнопкой у поля ввода."""
+    """Reply-клавиатура (сворачиваемая) с главными кнопками."""
     keyboard = ReplyKeyboardMarkup(
-        resize_keyboard=True,      # подгоняет размер под экран
-        one_time_keyboard=False,   # не исчезает после нажатия
+        resize_keyboard=True,
+        one_time_keyboard=False,
         row_width=2
     )
     buttons = [
@@ -134,7 +56,7 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     return keyboard
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
-    """Инлайн-клавиатура для выбора локации (остаётся инлайн)."""
+    """Инлайн-клавиатура для выбора локации."""
     locations = get_locations()
     keyboard = InlineKeyboardMarkup(row_width=1)
     for loc in locations:
@@ -149,13 +71,18 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     """Инлайн-клавиатура со списком предметов и пагинацией."""
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
-        total_items = len(get_mobs_by_location(location_id, 0, 1000))
+        # Для подсчёта общего количества используем тот же запрос без лимита, но лучше сделать отдельную функцию count_*
+        # Временно: просто проверяем, есть ли следующая страница
+        next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
+        total_items = page*ITEMS_PER_PAGE + len(next_items)  # грубо
     elif category == "resources":
         items = get_resources_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
-        total_items = len(get_resources_by_location(location_id, 0, 1000))
+        next_items = get_resources_by_location(location_id, page*ITEMS_PER_PAGE, 1)
+        total_items = page*ITEMS_PER_PAGE + len(next_items)
     elif category == "gear":
         items = get_gear_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
-        total_items = len(get_gear_by_location(location_id, 0, 1000))
+        next_items = get_gear_by_location(location_id, page*ITEMS_PER_PAGE, 1)
+        total_items = page*ITEMS_PER_PAGE + len(next_items)
     else:
         return InlineKeyboardMarkup()
 
@@ -179,27 +106,29 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
 # --- Обработчики команд и сообщений ---
 @dp.message_handler(commands=['start', 'menu'])
 async def send_menu(message: types.Message):
-    """Отправляет приветствие и reply-клавиатуру."""
+    """Отправляет приветствие и reply-клавиатуру без реплая на сообщение пользователя."""
     await message.answer(
         "Выбери категорию:",
         reply_markup=get_main_menu_reply_keyboard()
     )
+    # Удаляем команду /start или /menu, чтобы чат был чище
+    await message.delete()
 
 @dp.message_handler(commands=['search'])
 async def search_command(message: types.Message):
-    """Команда /search — просит ввести запрос."""
-    await message.reply("Введите поисковый запрос (название моба, ресурса или снаряжения):")
+    await message.answer("Введите поисковый запрос (название моба, ресурса или снаряжения):")
+    await message.delete()
 
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/'))
 async def handle_search(message: types.Message):
-    """Обработка поискового запроса (срабатывает после /search или просто так)."""
+    """Обработка поискового запроса (после команды /search или просто текста)."""
     query_text = message.text.strip()
     if len(query_text) < 2:
-        await message.reply("Введите хотя бы 2 символа для поиска.")
+        await message.answer("Введите хотя бы 2 символа для поиска.")
         return
     results = search(query_text)
     if not any(results.values()):
-        await message.reply("Ничего не найдено.")
+        await message.answer("Ничего не найдено.")
         return
     reply = "🔎 *Результаты поиска:*\n\n"
     if results["mobs"]:
@@ -221,32 +150,37 @@ async def handle_search(message: types.Message):
             reply += f"{g['emoji']} {g['name']} {rarity_emoji}\n"
         reply += "\n"
     reply += "Для подробностей используй меню или введи новый запрос."
-    await message.reply(reply, parse_mode="Markdown")
+    await message.answer(reply, parse_mode="Markdown")
 
 # --- Обработчики reply-кнопок (текстовые сообщения) ---
+# При нажатии на кнопку удаляем сообщение пользователя, чтобы не было видно текст кнопки,
+# и отправляем ответ без реплая.
 @dp.message_handler(lambda message: message.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    """Кнопка 'Мобы' -> показываем выбор локации."""
+    await message.delete()  # убираем сообщение "🐾 Мобы"
     await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
 
 @dp.message_handler(lambda message: message.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
+    await message.delete()
     await message.answer("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
 
 @dp.message_handler(lambda message: message.text == "⚔️ Снаряжение")
 async def gear_button(message: types.Message):
+    await message.delete()
     await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
 
 @dp.message_handler(lambda message: message.text == "🔍 Поиск")
 async def search_button(message: types.Message):
-    """Кнопка 'Поиск' отправляет команду /search."""
-    await search_command(message)
+    await message.delete()
+    await search_command(message)  # отправляем сообщение с просьбой ввести запрос
+
 
 # --- Инлайн-колбэки (навигация и просмотр) ---
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
-    """Возврат в главное меню: удаляем старое сообщение и отправляем новое с reply-клавиатурой."""
-    await callback_query.message.delete()  # убираем сообщение с инлайн-кнопками
+    """Возврат в главное меню: удаляем текущее инлайн-сообщение и показываем новое с reply-клавиатурой."""
+    await callback_query.message.delete()
     await callback_query.message.answer(
         "Выбери категорию:",
         reply_markup=get_main_menu_reply_keyboard()
@@ -255,7 +189,6 @@ async def main_menu_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("list_"))
 async def list_callback(callback_query: types.CallbackQuery):
-    """Показывает список предметов (мобов/ресурсов/снаряжения) для выбранной локации."""
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id = int(loc_id)
     page = int(page)
@@ -267,7 +200,6 @@ async def list_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("page_"))
 async def page_callback(callback_query: types.CallbackQuery):
-    """Пагинация внутри списка."""
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id = int(loc_id)
     page = int(page)
@@ -279,8 +211,11 @@ async def page_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
-    """Просмотр деталей моба."""
     mob_id = int(callback_query.data.split("_")[2])
+    # Функции get_mob_* работают с database.py, нужно импортировать execute_query? Нет, они уже есть.
+    # Однако в database.py нет прямой функции get_mob_by_id, поэтому используем execute_query? Но лучше добавить.
+    # Для простоты воспользуемся execute_query, но чтобы не плодить зависимости, перепишем: можно импортировать execute_query из database.py.
+    from database import execute_query
     mob = execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
         await callback_query.message.edit_text("Моб не найден.")
@@ -305,14 +240,12 @@ async def view_mob(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
-    """Просмотр деталей ресурса."""
     resource_id = int(callback_query.data.split("_")[2])
-    res = execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
+    res = get_resource_info(resource_id)  # используем функцию из database.py
     if not res:
         await callback_query.message.edit_text("Ресурс не найден.")
         await callback_query.answer()
         return
-    res = res[0]
     mobs = get_resource_mobs(resource_id)
     text = f"{res['emoji']} *{res['name']}*\n\n"
     if mobs:
@@ -325,7 +258,6 @@ async def view_resource(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
-    """Просмотр деталей снаряжения."""
     gear_id = int(callback_query.data.split("_")[2])
     gear = get_gear_info(gear_id)
     if not gear:
