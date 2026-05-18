@@ -18,7 +18,6 @@ def lower_unicode(s: str) -> str:
 # --------------------------------------------------------------
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
-    # Регистрируем функцию 'LOWER_UNICODE' для использования в SQL
     conn.create_function("LOWER_UNICODE", 1, lower_unicode)
     return conn
 
@@ -50,7 +49,7 @@ def search(query: str) -> Dict[str, List[Dict]]:
     return {"mobs": mobs, "resources": resources, "gear": gear}
 
 # --------------------------------------------------------------
-# Остальные функции (без изменений)
+# Основные функции
 # --------------------------------------------------------------
 def get_location_by_id(location_id: int) -> Optional[Dict]:
     res = execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
@@ -106,6 +105,14 @@ def get_gear_by_location(location_id: int, offset: int, limit: int) -> List[Dict
     """
     return execute_query(query, (location_id, limit, offset))
 
+# ---------- НОВАЯ ФУНКЦИЯ: получение снаряжения по редкости (без локации) ----------
+def get_gear_by_rarity(rarity: str, offset: int, limit: int) -> List[Dict]:
+    """Возвращает список снаряжения указанной редкости с пагинацией."""
+    return execute_query(
+        "SELECT id, name, rarity, slot, emoji, craftable, craft_dust FROM gear WHERE rarity = ? LIMIT ? OFFSET ?",
+        (rarity, limit, offset)
+    )
+
 def get_gear_info(gear_id: int) -> Optional[Dict]:
     res = execute_query(
         "SELECT id, name, rarity, slot, craftable, craft_dust, emoji FROM gear WHERE id = ?",
@@ -114,8 +121,9 @@ def get_gear_info(gear_id: int) -> Optional[Dict]:
     return res[0] if res else None
 
 def get_gear_mobs(gear_id: int) -> List[Dict]:
+    # Исправлено: правильный JOIN (было m.id = ?)
     return execute_query(
-        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.gear_id = m.id WHERE gd.gear_id = ?",
+        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ?",
         (gear_id,)
     )
 
