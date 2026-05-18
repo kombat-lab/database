@@ -1,236 +1,223 @@
 import os
 import logging
-import sqlite3
-from pathlib import Path
-from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes
+)
+import database as db
 
-# Загружаем переменные окружения
-load_dotenv()
+# Токен из переменной окружения
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Переменная окружения BOT_TOKEN не установлена")
 
-# --- Переменные окружения ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ITEMS_PER_PAGE = 5
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не задан")
-if ADMIN_ID == 0:
-    logging.warning("ADMIN_ID не задан")
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- Настройка хранения данных (Bothost) ---
-DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / "game.db"
+def build_menu_buttons(category: str, location_id: int = None, page: int = 1):
+    """Строит инлайн-клавиатуру для списка элементов"""
+    buttons = []
+    if category == "mobs":
+        items = db.get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
+        total_items = len(db.get_mobs_by_location(location_id, 0, 1000))
+    elif category == "resources":
+        items = db.get_resources_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
+        total_items = len(db.get_resources_by_location(location_id, 0, 1000))
+    elif category == "gear":
+        items = db.get_gear_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
+        total_items = len(db.get_gear_by_location(location_id, 0, 1000))
+    else:
+        return [], 0, 0
 
-# --- Инициализация бота ---
-logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
-dp.middleware.setup(LoggingMiddleware())
+    for item in items:
+        name = f"{item.get('emoji', '')} {item['name']}"
+        callback = f"view_{category}_{item['id']}"
+        buttons.append([InlineKeyboardButton(name, callback_data=callback)])
 
-# ==================== БАЗА ДАННЫХ ====================
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
+    if page * ITEMS_PER_PAGE < total_items:
+        nav_buttons.append(InlineKeyboardButton("Вперед ▶", callback_data=f"page_{category}_{location_id}_{page+1}"))
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    back_btn = [InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu")]
+    buttons.append(back_btn)
+    return buttons, items, total_items
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    """Создаёт таблицы, если они ещё не существуют (без данных)"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS locations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS resources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS mobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            location_id INTEGER NOT NULL,
-            hp INTEGER,
-            dust INTEGER,
-            exp INTEGER,
-            resource_id INTEGER,
-            FOREIGN KEY(location_id) REFERENCES locations(id),
-            FOREIGN KEY(resource_id) REFERENCES resources(id)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS drops (
-            mob_id INTEGER,
-            resource_id INTEGER,
-            chance REAL DEFAULT 100,
-            PRIMARY KEY (mob_id, resource_id),
-            FOREIGN KEY(mob_id) REFERENCES mobs(id),
-            FOREIGN KEY(resource_id) REFERENCES resources(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logging.info("Схема БД проверена/создана")
-
-# ==================== КОМАНДЫ БОТА ====================
-
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    await message.reply(
-        "👋 Привет! Я бот с базой знаний по игре.\n\n"
-        "🔍 Доступные команды:\n"
-        "/resources – список ресурсов и кто их даёт\n"
-        "/mobs – список всех мобов\n"
-        "/mob <название> – найти моба по имени\n\n"
-        "Пример: /mob светлячок",
-        parse_mode=None  # Отключаем Markdown
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Привет! Я бот для игры.\n"
+        "Используй кнопки в меню или команду /menu для навигации.\n"
+        "Также ты можешь искать мобов, ресурсы и снаряжение через /search."
     )
 
-@dp.message_handler(commands=['resources'])
-async def cmd_resources(message: types.Message):
-    """Показывает все ресурсы, а под каждым – моба и локацию"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    query = '''
-        SELECT r.name AS resource_name,
-               m.name AS mob_name,
-               l.name AS location_name
-        FROM resources r
-        JOIN drops d ON d.resource_id = r.id
-        JOIN mobs m ON m.id = d.mob_id
-        JOIN locations l ON l.id = m.location_id
-        ORDER BY r.name
-    '''
-    c.execute(query)
-    rows = c.fetchall()
-    conn.close()
-    
-    if not rows:
-        await message.answer("В базе пока нет ресурсов. Данные добавляются отдельно.")
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🐾 Мобы", callback_data="cat_mobs")],
+        [InlineKeyboardButton("📦 Ресурсы", callback_data="cat_resources")],
+        [InlineKeyboardButton("⚔️ Снаряжение", callback_data="cat_gear")],
+        [InlineKeyboardButton("🔍 Поиск", callback_data="search_mode")],
+    ]
+    await update.message.reply_text("Выбери категорию:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Введите поисковый запрос (название моба, ресурса или снаряжения):")
+
+async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query_text = update.message.text.strip()
+    if len(query_text) < 2:
+        await update.message.reply_text("Введите хотя бы 2 символа для поиска.")
         return
-    
-    response = "📦 *Список ресурсов:*\n\n"
-    for row in rows:
-        response += f"🌿 *{row['resource_name']}*\n"
-        response += f"   🧟 Моб: {row['mob_name']}\n"
-        response += f"   📍 Локация: {row['location_name']}\n\n"
-    
-    if len(response) > 4096:
-        # Если слишком длинное – разбиваем (можно добавить пагинацию)
-        await message.answer(response[:4000] + "\n... (обрезано)")
-    else:
-        await message.answer(response, parse_mode="Markdown")
-
-@dp.message_handler(commands=['mobs'])
-async def cmd_mobs_list(message: types.Message):
-    """Выводит список мобов в виде инлайн-кнопок. При нажатии – карточка"""
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT id, name FROM mobs ORDER BY name")
-    mobs = c.fetchall()
-    conn.close()
-    
-    if not mobs:
-        await message.answer("Список мобов пуст. Данные добавляются отдельно.")
+    results = db.search(query_text)
+    if not any(results.values()):
+        await update.message.reply_text("Ничего не найдено.")
         return
-    
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    for mob in mobs:
-        keyboard.add(InlineKeyboardButton(mob['name'], callback_data=f"mob_{mob['id']}"))
-    
-    await message.answer("📋 *Выберите моба:*", reply_markup=keyboard, parse_mode="Markdown")
+    reply = "🔎 *Результаты поиска:*\n\n"
+    if results["mobs"]:
+        reply += "*Мобы:*\n"
+        for m in results["mobs"]:
+            loc = db.get_location_by_id(m["location_id"])
+            loc_emoji = loc["emoji"] if loc else ""
+            reply += f"{m['emoji']} {m['name']} ({loc_emoji} {loc['name'] if loc else '?'})\n"
+        reply += "\n"
+    if results["resources"]:
+        reply += "*Ресурсы:*\n"
+        for r in results["resources"]:
+            reply += f"{r['emoji']} {r['name']}\n"
+        reply += "\n"
+    if results["gear"]:
+        reply += "*Снаряжение:*\n"
+        for g in results["gear"]:
+            rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(g["rarity"], "")
+            reply += f"{g['emoji']} {g['name']} {rarity_emoji}\n"
+        reply += "\n"
+    reply += "Для подробностей используй меню или введи новый запрос."
+    await update.message.reply_text(reply, parse_mode="Markdown")
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('mob_'))
-async def show_mob_card(callback_query: types.CallbackQuery):
-    mob_id = int(callback_query.data.split('_')[1])
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        SELECT m.name, m.hp, m.dust, m.exp,
-               l.name AS location_name,
-               r.name AS resource_name
-        FROM mobs m
-        JOIN locations l ON l.id = m.location_id
-        LEFT JOIN resources r ON r.id = m.resource_id
-        WHERE m.id = ?
-    ''', (mob_id,))
-    mob = c.fetchone()
-    conn.close()
-    
-    if not mob:
-        await callback_query.answer("Моб не найден", show_alert=True)
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "main_menu":
+        keyboard = [
+            [InlineKeyboardButton("🐾 Мобы", callback_data="cat_mobs")],
+            [InlineKeyboardButton("📦 Ресурсы", callback_data="cat_resources")],
+            [InlineKeyboardButton("⚔️ Снаряжение", callback_data="cat_gear")],
+            [InlineKeyboardButton("🔍 Поиск", callback_data="search_mode")],
+        ]
+        await query.edit_message_text("Выбери категорию:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
-    
-    text = f"👾 *{mob['name']}*\n"
-    text += f"📍 *Локация:* {mob['location_name']}\n"
-    text += f"❤️ *HP:* {mob['hp']}\n"
-    text += f"💰 *Пыль (золото):* {mob['dust']}\n"
-    text += f"✨ *Опыт:* {mob['exp']}\n"
-    text += f"🎁 *Дроп:* {mob['resource_name'] if mob['resource_name'] else 'Нет данных'}\n"
-    
-    await callback_query.message.answer(text, parse_mode="Markdown")
-    await callback_query.answer()
 
-@dp.message_handler(commands=['mob'])
-async def cmd_mob_search(message: types.Message):
-    query = message.get_args().strip()
-    if not query:
-        await message.answer("Укажите имя моба, например: `/mob светлячок`", parse_mode="Markdown")
+    if data == "search_mode":
+        await query.edit_message_text("Введите поисковый запрос (название моба, ресурса или снаряжения):")
         return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        SELECT m.id, m.name, m.hp, m.dust, m.exp,
-               l.name AS location_name,
-               r.name AS resource_name
-        FROM mobs m
-        JOIN locations l ON l.id = m.location_id
-        LEFT JOIN resources r ON r.id = m.resource_id
-        WHERE LOWER(m.name) LIKE LOWER(?)
-    ''', (f'%{query}%',))
-    mob = c.fetchone()
-    conn.close()
-    
-    if not mob:
-        await message.answer(f"Моб `{query}` не найден.", parse_mode="Markdown")
+
+    if data.startswith("cat_"):
+        category = data[4:]  # mobs, resources, gear
+        locations = db.get_locations()
+        buttons = []
+        for loc in locations:
+            buttons.append([InlineKeyboardButton(f"{loc['emoji']} {loc['name']}", callback_data=f"list_{category}_{loc['id']}_1")])
+        buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="main_menu")])
+        await query.edit_message_text(f"Выбери локацию для {category}:", reply_markup=InlineKeyboardMarkup(buttons))
         return
-    
-    text = f"👾 *{mob['name']}*\n"
-    text += f"📍 *Локация:* {mob['location_name']}\n"
-    text += f"❤️ *HP:* {mob['hp']}\n"
-    text += f"💰 *Пыль (золото):* {mob['dust']}\n"
-    text += f"✨ *Опыт:* {mob['exp']}\n"
-    text += f"🎁 *Дроп:* {mob['resource_name'] if mob['resource_name'] else 'Нет данных'}\n"
-    await message.answer(text, parse_mode="Markdown")
 
-@dp.message_handler(commands=['help'])
-async def cmd_help(message: types.Message):
-    await cmd_start(message)
+    if data.startswith("list_"):
+        # format: list_{category}_{location_id}_{page}
+        _, category, loc_id, page = data.split("_")
+        loc_id = int(loc_id)
+        page = int(page)
+        buttons, items, total = build_menu_buttons(category, loc_id, page)
+        location = db.get_location_by_id(loc_id)
+        title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}\n"
+        if not items:
+            title += "В этой локации ничего нет."
+        await query.edit_message_text(title, reply_markup=InlineKeyboardMarkup(buttons))
+        return
 
-# ==================== ЗАПУСК ====================
+    if data.startswith("page_"):
+        # page_{category}_{location_id}_{page}
+        _, category, loc_id, page = data.split("_")
+        loc_id = int(loc_id)
+        page = int(page)
+        buttons, items, total = build_menu_buttons(category, loc_id, page)
+        location = db.get_location_by_id(loc_id)
+        title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}\n"
+        await query.edit_message_text(title, reply_markup=InlineKeyboardMarkup(buttons))
+        return
 
-async def on_startup(dp):
-    init_db()
-    logging.info("Бот запущен. База данных готова (без данных).")
-    # Проверка, есть ли данные – можно отправить админу уведомление, если пусто
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM mobs")
-    count = c.fetchone()[0]
-    conn.close()
-    if count == 0:
-        logging.warning("В базе нет данных. Заполните её через SQL-скрипты или админ-команды.")
+    if data.startswith("view_"):
+        # view_{category}_{id}
+        _, category, item_id = data.split("_")
+        item_id = int(item_id)
+        if category == "mobs":
+            mob = db.execute_query("SELECT * FROM mobs WHERE id = ?", (item_id,))
+            if not mob:
+                await query.edit_message_text("Моб не найден.")
+                return
+            mob = mob[0]
+            loc = db.get_location_by_id(mob["location_id"])
+            drops = db.get_mob_drops(item_id)
+            gear_drops = db.get_mob_gear_drops(item_id)
+            text = f"{mob['emoji']} *{mob['name']}*\n"
+            text += f"❤️ HP: {mob['hp']}\n"
+            text += f"✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n"
+            text += f"⭐ Опыт: {mob['exp']}\n"
+            text += f"📍 Локация: {loc['emoji']} {loc['name']}\n\n"
+            if drops:
+                text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
+            if gear_drops:
+                text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
+            back_btn = InlineKeyboardButton("🔙 Назад", callback_data=f"list_mobs_{mob['location_id']}_1")
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[back_btn]]))
+        elif category == "resources":
+            res = db.get_resource_info(item_id)
+            if not res:
+                await query.edit_message_text("Ресурс не найден.")
+                return
+            mobs = db.get_resource_mobs(item_id)
+            text = f"{res['emoji']} *{res['name']}*\n\n"
+            if mobs:
+                text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+            else:
+                text += "Ни с кого не падает (возможно, крафтовый).\n"
+            back_btn = InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[back_btn]]))
+        elif category == "gear":
+            gear = db.get_gear_info(item_id)
+            if not gear:
+                await query.edit_message_text("Предмет не найден.")
+                return
+            mobs = db.get_gear_mobs(item_id) if gear["rarity"] == "common" else []
+            text = f"{gear['emoji']} *{gear['name']}*\n"
+            text += f"Редкость: {gear['rarity']}\n"
+            text += f"Слот: {gear['slot']}\n"
+            if gear["craftable"]:
+                text += f"Крафт: да, пыль: {gear['craft_dust']}\n"
+            else:
+                text += "Крафт: нет (выпадает)\n"
+            if mobs:
+                text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+            back_btn = InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[back_btn]]))
 
-if __name__ == '__main__':
-    executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
+def main():
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("search", search_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
+    app.add_handler(CallbackQueryHandler(menu_callback))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
