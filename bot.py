@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils import executor
 
 # --- Настройки ---
@@ -23,7 +23,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# --- Работа с базой данных ---
+# --- Работа с базой данных (без изменений) ---
 def get_db_connection():
     return sqlite3.connect(DB_PATH)
 
@@ -115,26 +115,38 @@ def get_location_by_id(location_id: int) -> Optional[Dict]:
     res = execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
     return res[0] if res else None
 
-# --- Клавиатуры и навигация ---
-def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("🐾 Мобы", callback_data="cat_mobs"),
-        InlineKeyboardButton("📦 Ресурсы", callback_data="cat_resources"),
-        InlineKeyboardButton("⚔️ Снаряжение", callback_data="cat_gear"),
-        InlineKeyboardButton("🔍 Поиск", callback_data="search_mode")
+
+# --- Клавиатуры ---
+def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Reply-клавиатура, которая видна всегда и сворачивается кнопкой у поля ввода."""
+    keyboard = ReplyKeyboardMarkup(
+        resize_keyboard=True,      # подгоняет размер под экран
+        one_time_keyboard=False,   # не исчезает после нажатия
+        row_width=2
     )
+    buttons = [
+        KeyboardButton("🐾 Мобы"),
+        KeyboardButton("📦 Ресурсы"),
+        KeyboardButton("⚔️ Снаряжение"),
+        KeyboardButton("🔍 Поиск")
+    ]
+    keyboard.add(*buttons)
     return keyboard
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура для выбора локации (остаётся инлайн)."""
     locations = get_locations()
     keyboard = InlineKeyboardMarkup(row_width=1)
     for loc in locations:
-        keyboard.add(InlineKeyboardButton(f"{loc['emoji']} {loc['name']}", callback_data=f"list_{category}_{loc['id']}_1"))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="main_menu"))
+        keyboard.add(InlineKeyboardButton(
+            f"{loc['emoji']} {loc['name']}",
+            callback_data=f"list_{category}_{loc['id']}_1"
+        ))
+    keyboard.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu"))
     return keyboard
 
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура со списком предметов и пагинацией."""
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         total_items = len(get_mobs_by_location(location_id, 0, 1000))
@@ -163,17 +175,24 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard.add(InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu"))
     return keyboard
 
-# --- Обработчики ---
+
+# --- Обработчики команд и сообщений ---
 @dp.message_handler(commands=['start', 'menu'])
 async def send_menu(message: types.Message):
-    await message.reply("Выбери категорию:", reply_markup=get_main_menu_keyboard())
+    """Отправляет приветствие и reply-клавиатуру."""
+    await message.answer(
+        "Выбери категорию:",
+        reply_markup=get_main_menu_reply_keyboard()
+    )
 
 @dp.message_handler(commands=['search'])
 async def search_command(message: types.Message):
+    """Команда /search — просит ввести запрос."""
     await message.reply("Введите поисковый запрос (название моба, ресурса или снаряжения):")
 
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/'))
 async def handle_search(message: types.Message):
+    """Обработка поискового запроса (срабатывает после /search или просто так)."""
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.reply("Введите хотя бы 2 символа для поиска.")
@@ -204,24 +223,39 @@ async def handle_search(message: types.Message):
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.reply(reply, parse_mode="Markdown")
 
+# --- Обработчики reply-кнопок (текстовые сообщения) ---
+@dp.message_handler(lambda message: message.text == "🐾 Мобы")
+async def mobs_button(message: types.Message):
+    """Кнопка 'Мобы' -> показываем выбор локации."""
+    await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
+
+@dp.message_handler(lambda message: message.text == "📦 Ресурсы")
+async def resources_button(message: types.Message):
+    await message.answer("Выбери локацию для ресурсов:", reply_markup=get_locations_keyboard("resources"))
+
+@dp.message_handler(lambda message: message.text == "⚔️ Снаряжение")
+async def gear_button(message: types.Message):
+    await message.answer("Выбери локацию для снаряжения:", reply_markup=get_locations_keyboard("gear"))
+
+@dp.message_handler(lambda message: message.text == "🔍 Поиск")
+async def search_button(message: types.Message):
+    """Кнопка 'Поиск' отправляет команду /search."""
+    await search_command(message)
+
+# --- Инлайн-колбэки (навигация и просмотр) ---
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
-    await callback_query.message.edit_text("Выбери категорию:", reply_markup=get_main_menu_keyboard())
-    await callback_query.answer()
-
-@dp.callback_query_handler(lambda c: c.data == "search_mode")
-async def search_mode_callback(callback_query: types.CallbackQuery):
-    await callback_query.message.edit_text("Введите поисковый запрос (название моба, ресурса или снаряжения):")
-    await callback_query.answer()
-
-@dp.callback_query_handler(lambda c: c.data.startswith("cat_"))
-async def category_callback(callback_query: types.CallbackQuery):
-    category = callback_query.data[4:]  # mobs, resources, gear
-    await callback_query.message.edit_text(f"Выбери локацию для {category}:", reply_markup=get_locations_keyboard(category))
+    """Возврат в главное меню: удаляем старое сообщение и отправляем новое с reply-клавиатурой."""
+    await callback_query.message.delete()  # убираем сообщение с инлайн-кнопками
+    await callback_query.message.answer(
+        "Выбери категорию:",
+        reply_markup=get_main_menu_reply_keyboard()
+    )
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("list_"))
 async def list_callback(callback_query: types.CallbackQuery):
+    """Показывает список предметов (мобов/ресурсов/снаряжения) для выбранной локации."""
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id = int(loc_id)
     page = int(page)
@@ -233,6 +267,7 @@ async def list_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("page_"))
 async def page_callback(callback_query: types.CallbackQuery):
+    """Пагинация внутри списка."""
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id = int(loc_id)
     page = int(page)
@@ -244,6 +279,7 @@ async def page_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
+    """Просмотр деталей моба."""
     mob_id = int(callback_query.data.split("_")[2])
     mob = execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
@@ -269,6 +305,7 @@ async def view_mob(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
+    """Просмотр деталей ресурса."""
     resource_id = int(callback_query.data.split("_")[2])
     res = execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
     if not res:
@@ -282,12 +319,13 @@ async def view_resource(callback_query: types.CallbackQuery):
         text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
     else:
         text += "Ни с кого не падает (возможно, крафтовый).\n"
-    back_btn = InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+    back_btn = InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu")
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn))
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
+    """Просмотр деталей снаряжения."""
     gear_id = int(callback_query.data.split("_")[2])
     gear = get_gear_info(gear_id)
     if not gear:
@@ -304,9 +342,10 @@ async def view_gear(callback_query: types.CallbackQuery):
         text += "Крафт: нет (выпадает)\n"
     if mobs:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
-    back_btn = InlineKeyboardButton("🔙 Назад", callback_data="main_menu")
+    back_btn = InlineKeyboardButton("🔙 Назад в меню", callback_data="main_menu")
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(row_width=1).add(back_btn))
     await callback_query.answer()
+
 
 # --- Запуск ---
 if __name__ == "__main__":
