@@ -92,7 +92,8 @@ async def cmd_start(message: types.Message):
         "/resources – список ресурсов и кто их даёт\n"
         "/mobs – список всех мобов\n"
         "/mob <название> – найти моба по имени\n\n"
-        "Пример: /mob светлячок"
+        "Пример: /mob светлячок",
+        parse_mode=None  # Отключаем Markdown
     )
 
 @dp.message_handler(commands=['resources'])
