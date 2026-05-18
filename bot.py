@@ -1,24 +1,17 @@
 import os
 import logging
-import json
-import redis.asyncio as aioredis
+import sqlite3
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.utils import executor
 
-# Загружаем переменные окружения из файла .env (для локальной разработки)
+# Загружаем переменные окружения
 load_dotenv()
 
 # --- Переменные окружения ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
-# Redis
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-REDIS_DB = int(os.getenv("REDIS_DB", 0))
 
 # Проверка обязательных переменных
 if not BOT_TOKEN:
@@ -32,63 +25,53 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# --- Функция подключения к Redis ---
-async def get_redis():
-    return await aioredis.from_url(
-        f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
-        decode_responses=True
-    )
+# --- Инициализация базы данных SQLite ---
+DB_PATH = "game.db"
 
-# --- Загрузка тестовых данных (при первом запуске) ---
-async def load_initial_data():
-    redis = await get_redis()
-    # Проверяем, есть ли уже индекс мобов
-    if await redis.exists("mob_index"):
-        logging.info("Данные уже загружены в Redis, пропускаем инициализацию.")
-        await redis.close()
-        return
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Таблица мобов
+    c.execute('''CREATE TABLE IF NOT EXISTS mobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        location TEXT,
+        level INTEGER,
+        description TEXT
+    )''')
+    # Таблица дропа
+    c.execute('''CREATE TABLE IF NOT EXISTS drops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mob_id INTEGER,
+        item_name TEXT,
+        chance TEXT,
+        FOREIGN KEY(mob_id) REFERENCES mobs(id)
+    )''')
+    conn.commit()
+    conn.close()
 
-    logging.info("Загрузка начальных данных в Redis...")
-    test_mobs = {
-        1: {
-            "name": "Лесной голем",
-            "location": "Тёмный лес",
-            "level": 15,
-            "description": "Огромное каменное существо, охраняющее древние руины.",
-            "drops": [
-                {"item_name": "древесный уголь", "chance": "100%"},
-                {"item_name": "камень души", "chance": "5%"}
-            ]
-        },
-        2: {
-            "name": "Огненный слизень",
-            "location": "Пепельные земли",
-            "level": 22,
-            "description": "Раскалённая субстанция, оставляющая за собой след из лавы.",
-            "drops": [
-                {"item_name": "огненная слизь", "chance": "80%"},
-                {"item_name": "искра магии", "chance": "30%"}
-            ]
-        }
-    }
-
-    for mob_id, mob_data in test_mobs.items():
-        # Сохраняем карточку моба (Hash)
-        await redis.hset(f"mob:{mob_id}", mapping={
-            "name": mob_data["name"],
-            "location": mob_data["location"],
-            "level": mob_data["level"],
-            "description": mob_data["description"]
-        })
-        # Сохраняем дроп (JSON строка)
-        await redis.set(f"mob_drops:{mob_id}", json.dumps(mob_data["drops"], ensure_ascii=False))
-        # Добавляем имя в индекс для поиска
-        await redis.sadd("mob_index", mob_data["name"])
-        # Сохраняем связь имя -> ID (для быстрого поиска)
-        await redis.set(f"mob_name_to_id:{mob_data['name']}", mob_id)
-
-    logging.info("Тестовые данные загружены.")
-    await redis.close()
+def load_initial_data():
+    """Загружает тестовых мобов, если база пуста"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM mobs")
+    if c.fetchone()[0] == 0:
+        test_mobs = [
+            ("Лесной голем", "Тёмный лес", 15, "Огромное каменное существо, охраняющее древние руины.",
+             [("древесный уголь", "100%"), ("камень души", "5%")]),
+            ("Огненный слизень", "Пепельные земли", 22, "Раскалённая субстанция, оставляющая за собой след из лавы.",
+             [("огненная слизь", "80%"), ("искра магии", "30%")])
+        ]
+        for name, loc, lvl, desc, drops_list in test_mobs:
+            c.execute("INSERT INTO mobs (name, location, level, description) VALUES (?,?,?,?)",
+                      (name, loc, lvl, desc))
+            mob_id = c.lastrowid
+            for item, chance in drops_list:
+                c.execute("INSERT INTO drops (mob_id, item_name, chance) VALUES (?,?,?)",
+                          (mob_id, item, chance))
+        conn.commit()
+        logging.info("Тестовые данные загружены в SQLite")
+    conn.close()
 
 # --- Команда /start ---
 @dp.message_handler(commands=['start'])
@@ -116,21 +99,18 @@ async def cmd_help(message: types.Message):
 # --- Команда /list_mobs ---
 @dp.message_handler(commands=['list_mobs'])
 async def cmd_list_mobs(message: types.Message):
-    redis = await get_redis()
-    mob_names = []
-    async for name in redis.sscan_iter("mob_index"):
-        mob_names.append(name)
-    await redis.close()
-
-    if not mob_names:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name FROM mobs ORDER BY name")
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
         await message.answer("Список мобов пуст.")
         return
-
-    # Формируем красивое сообщение
     response = "📋 *Список мобов:*\n\n"
-    for name in sorted(mob_names):
+    for (name,) in rows:
         response += f"• {name}\n"
-        if len(response) > 3500:  # Telegram ограничение
+        if len(response) > 3500:
             response += "..."
             break
     await message.answer(response, parse_mode="Markdown")
@@ -143,67 +123,47 @@ async def cmd_mob(message: types.Message):
         await message.answer("❓ Укажите название моба после команды.\nПример: `/mob голем`", parse_mode="Markdown")
         return
 
-    redis = await get_redis()
-    # Ищем моба по индексу
-    found_mobs = []
-    async for mob_name in redis.sscan_iter("mob_index"):
-        if query.lower() in mob_name.lower():
-            found_mobs.append(mob_name)
-
-    if not found_mobs:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Поиск моба по частичному совпадению (без учёта регистра)
+    c.execute("SELECT id, name, location, level, description FROM mobs WHERE LOWER(name) LIKE LOWER(?)", (f'%{query}%',))
+    mob = c.fetchone()
+    if not mob:
         await message.answer(f"❌ Моб по запросу `{query}` не найден.", parse_mode="Markdown")
-        await redis.close()
+        conn.close()
         return
 
-    # Берём первого подходящего
-    mob_name = found_mobs[0]
+    mob_id, name, loc, lvl, desc = mob
+    c.execute("SELECT item_name, chance FROM drops WHERE mob_id = ?", (mob_id,))
+    drops = c.fetchall()
+    conn.close()
 
-    # Получаем ID моба по имени
-    mob_id = await redis.get(f"mob_name_to_id:{mob_name}")
-    if not mob_id:
-        await message.answer(f"❌ Ошибка: не найден ID для моба `{mob_name}`.", parse_mode="Markdown")
-        await redis.close()
-        return
-
-    # Получаем карточку моба
-    mob_data = await redis.hgetall(f"mob:{mob_id}")
-    if not mob_data:
-        await message.answer("❌ Данные моба не найдены.")
-        await redis.close()
-        return
-
-    # Получаем дроп
-    drops_json = await redis.get(f"mob_drops:{mob_id}")
-    drops = json.loads(drops_json) if drops_json else []
-
-    # Формируем ответ
-    response = f"👾 *{mob_data['name']}*\n"
-    response += f"📍 *Локация:* {mob_data['location']}\n"
-    response += f"⭐ *Уровень:* {mob_data['level']}\n"
-    response += f"📖 *Описание:* {mob_data['description']}\n\n"
+    response = f"👾 *{name}*\n"
+    response += f"📍 *Локация:* {loc}\n"
+    response += f"⭐ *Уровень:* {lvl}\n"
+    response += f"📖 *Описание:* {desc}\n\n"
     response += "🎁 *Дроп:*\n"
     if drops:
-        for drop in drops:
-            response += f"• {drop['item_name']} ({drop['chance']})\n"
+        for item, chance in drops:
+            response += f"• {item} ({chance})\n"
     else:
         response += "Нет информации о дропе.\n"
 
     await message.answer(response, parse_mode="Markdown")
-    await redis.close()
 
 # --- Обработка текстовых сообщений (поиск по ключевым словам) ---
 @dp.message_handler(content_types=types.ContentType.TEXT)
 async def text_search(message: types.Message):
-    # Если сообщение не начинается с /, пробуем поискать моба
     text = message.text.strip()
     if text.startswith('/'):
         return
-    # Эмулируем команду /mob
+    # Перенаправляем на команду /mob
     await cmd_mob(message)
 
 # --- Запуск бота ---
 async def on_startup(dp):
-    await load_initial_data()
+    init_db()
+    load_initial_data()
     logging.info("Бот запущен и готов к работе!")
 
 if __name__ == '__main__':
