@@ -17,8 +17,7 @@ from database import (
     get_mob_gear_drops,
     get_resources_by_location,
     get_resource_mobs,
-    get_gear_by_location,
-    get_gear_by_rarity,          # новая
+    get_gear_by_rarity,
     get_gear_info,
     get_gear_mobs,
     search,
@@ -53,6 +52,7 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
+    """Клавиатура со списком локаций для мобов или ресурсов."""
     locations = get_locations()
     keyboard_rows = []
     for loc in locations:
@@ -65,45 +65,20 @@ def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
-# ----- Новая клавиатура для выбора редкости снаряжения -----
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура с типами редкости для снаряжения."""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    """Клавиатура выбора редкости для снаряжения."""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
         [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
         [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")],
         [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
     ])
-    return keyboard
-
-def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
-    """Клавиатура со списком предметов указанной редкости и пагинацией."""
-    offset = (page - 1) * ITEMS_PER_PAGE
-    items = get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + 1)  # +1 для проверки след. страницы
-    has_next = len(items) > ITEMS_PER_PAGE
-    items = items[:ITEMS_PER_PAGE]
-
-    keyboard_rows = []
-    for item in items:
-        name = f"{item.get('emoji', '')} {item['name']}"
-        keyboard_rows.append([
-            InlineKeyboardButton(text=name, callback_data=f"view_gear_{item['id']}")
-        ])
-
-    nav_buttons = []
-    if page > 1:
-        nav_buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
-    if has_next:
-        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
-    if nav_buttons:
-        keyboard_rows.append(nav_buttons)
-
-    keyboard_rows.append([InlineKeyboardButton(text="🔙 Выбрать другую редкость", callback_data="gear_rarities")])
-    keyboard_rows.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
-    """Для мобов и ресурсов (сохраняем старую логику)."""
+    """
+    Клавиатура со списком мобов или ресурсов в выбранной локации.
+    Кнопка «Назад» ведёт к выбору локаций.
+    """
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
@@ -118,9 +93,8 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard_rows = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        keyboard_rows.append([
-            InlineKeyboardButton(text=name, callback_data=f"view_{category}_{item['id']}")
-        ])
+        callback_data = f"view_{category}_{item['id']}_{page}"
+        keyboard_rows.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
 
     nav_buttons = []
     if page > 1:
@@ -130,7 +104,36 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     if nav_buttons:
         keyboard_rows.append(nav_buttons)
 
-    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
+    # Вместо "Назад в меню" – "Назад к локациям"
+    keyboard_rows.append([InlineKeyboardButton(
+        text="🔙 Назад к локациям",
+        callback_data=f"back_to_locations_{category}"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
+    """Клавиатура со списком снаряжения выбранной редкости."""
+    offset = (page - 1) * ITEMS_PER_PAGE
+    items = get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + 1)
+    has_next = len(items) > ITEMS_PER_PAGE
+    items = items[:ITEMS_PER_PAGE]
+
+    keyboard_rows = []
+    for item in items:
+        name = f"{item.get('emoji', '')} {item['name']}"
+        callback_data = f"view_gear_{item['id']}_{rarity}_{page}"
+        keyboard_rows.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
+    if has_next:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
+    if nav_buttons:
+        keyboard_rows.append(nav_buttons)
+
+    keyboard_rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -150,7 +153,7 @@ async def search_command(message: types.Message):
 # ---------------------- Обработчики reply-кнопок ----------------------
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    await message.delete()
+    await message.delete()  # удаляем сообщение с кнопкой, чтобы не засорять чат
     await message.answer("Выбери локацию для мобов:", reply_markup=get_locations_keyboard("mobs"))
 
 @dp.message(F.text == "📦 Ресурсы")
@@ -161,7 +164,6 @@ async def resources_button(message: types.Message):
 @dp.message(F.text == "⚔️ Снаряжение")
 async def gear_button(message: types.Message):
     await message.delete()
-    # Показываем выбор редкости вместо локаций
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
 @dp.message(F.text == "🔍 Поиск")
@@ -264,32 +266,28 @@ async def inline_search_handler(inline_query: InlineQuery):
 # ---------------------- Callback-обработчики ----------------------
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
+    """Полностью удаляет текущее сообщение и показывает reply-клавиатуру."""
     await callback_query.message.delete()
     await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
-# ----- НОВЫЙ обработчик для выбора редкости из меню снаряжения -----
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback_query: types.CallbackQuery):
+    """Возврат к выбору редкости снаряжения."""
     await callback_query.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback_query.answer()
 
-# ----- Обработчики для списка снаряжения по редкости -----
-@dp.callback_query(F.data.startswith("list_gear_"))
-async def list_gear_by_rarity(callback_query: types.CallbackQuery):
-    # data = "list_gear_common_1" или "list_gear_rare_1" и т.д.
-    parts = callback_query.data.split("_")
-    rarity = parts[2]          # common, rare, epic
-    page = int(parts[3])
-    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
-    keyboard = get_gear_by_rarity_keyboard(rarity, page)
-    text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
-    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+@dp.callback_query(F.data.startswith("back_to_locations_"))
+async def back_to_locations(callback_query: types.CallbackQuery):
+    """Возврат к списку локаций для мобов или ресурсов."""
+    category = callback_query.data.split("_")[3]  # back_to_locations_mobs или back_to_locations_resources
+    text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
+    await callback_query.message.edit_text(text, reply_markup=get_locations_keyboard(category))
     await callback_query.answer()
 
-@dp.callback_query(F.data.startswith("page_gear_"))
-async def page_gear_rarity(callback_query: types.CallbackQuery):
-    # data = "page_gear_common_2"
+# ----- Списки по редкости (снаряжение) -----
+@dp.callback_query(F.data.startswith("list_gear_"))
+async def list_gear_by_rarity(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
     rarity = parts[2]
     page = int(parts[3])
@@ -299,17 +297,27 @@ async def page_gear_rarity(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
     await callback_query.answer()
 
-# ----- Обработчики для мобов и ресурсов (старые) -----
+@dp.callback_query(F.data.startswith("page_gear_"))
+async def page_gear_rarity(callback_query: types.CallbackQuery):
+    parts = callback_query.data.split("_")
+    rarity = parts[2]
+    page = int(parts[3])
+    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
+    keyboard = get_gear_by_rarity_keyboard(rarity, page)
+    text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
+    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await callback_query.answer()
+
+# ----- Списки мобов и ресурсов по локациям -----
 @dp.callback_query(F.data.startswith("list_"))
 async def list_callback(callback_query: types.CallbackQuery):
     if callback_query.data.startswith("list_gear_"):
-        # обрабатывается выше
         return
     _, category, loc_id, page = callback_query.data.split("_")
     loc_id, page = int(loc_id), int(page)
     location = get_location_by_id(loc_id)
     keyboard = get_items_keyboard(category, loc_id, page)
-    title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}\n"
+    title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}"
     await callback_query.message.edit_text(title, reply_markup=keyboard)
     await callback_query.answer()
 
@@ -321,13 +329,17 @@ async def page_callback(callback_query: types.CallbackQuery):
     loc_id, page = int(loc_id), int(page)
     location = get_location_by_id(loc_id)
     keyboard = get_items_keyboard(category, loc_id, page)
-    title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}\n"
+    title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}"
     await callback_query.message.edit_text(title, reply_markup=keyboard)
     await callback_query.answer()
 
+# ----- Просмотр моба -----
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
-    mob_id = int(callback_query.data.split("_")[2])
+    parts = callback_query.data.split("_")
+    mob_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else 1
+
     mob = execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
         await callback_query.message.edit_text("Моб не найден.")
@@ -343,13 +355,26 @@ async def view_mob(callback_query: types.CallbackQuery):
         text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
     if gear_drops:
         text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
-    back_button = InlineKeyboardButton(text="🔙 Назад", callback_data=f"list_mobs_{mob['location_id']}_1")
-    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку мобов",
+        callback_data=f"list_mobs_{mob['location_id']}_{page}"
+    )
+    await callback_query.message.edit_text(
+        text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+    )
     await callback_query.answer()
 
+# ----- Просмотр ресурса -----
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
-    resource_id = int(callback_query.data.split("_")[2])
+    parts = callback_query.data.split("_")
+    resource_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else 1
+    # Для ресурса мы не знаем location_id, поэтому возвращаемся к списку локаций
+    # Но сохраняем страницу? Невозможно, поэтому просто на выбор локаций.
+
     res = get_resource_info(resource_id)
     if not res:
         await callback_query.message.edit_text("Ресурс не найден.")
@@ -361,13 +386,25 @@ async def view_resource(callback_query: types.CallbackQuery):
         text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
     else:
         text += "Ни с кого не падает (возможно, крафтовый).\n"
-    back_button = InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")
-    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к выбору локации",
+        callback_data="back_to_locations_resources"
+    )
+    await callback_query.message.edit_text(
+        text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+    )
     await callback_query.answer()
 
+# ----- Просмотр снаряжения -----
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
-    gear_id = int(callback_query.data.split("_")[2])
+    parts = callback_query.data.split("_")
+    gear_id = int(parts[2])
+    rarity = parts[3] if len(parts) > 3 else "common"
+    page = int(parts[4]) if len(parts) > 4 else 1
+
     gear = get_gear_info(gear_id)
     if not gear:
         await callback_query.message.edit_text("Предмет не найден.")
@@ -381,8 +418,19 @@ async def view_gear(callback_query: types.CallbackQuery):
         text += "Крафт: нет (выпадает)\n"
     if mobs:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
-    back_button = InlineKeyboardButton(text="🔙 Назад к списку редкостей", callback_data="gear_rarities")
-    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"list_gear_{rarity}_{page}"
+    )
+    other_rarity_button = InlineKeyboardButton(
+        text="🔄 Выбрать другую редкость",
+        callback_data="gear_rarities"
+    )
+    await callback_query.message.edit_text(
+        text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button], [other_rarity_button]])
+    )
     await callback_query.answer()
 
 # ---------------------- Запуск ----------------------
