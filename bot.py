@@ -52,7 +52,6 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
-    """Клавиатура со списком локаций для мобов или ресурсов."""
     locations = get_locations()
     keyboard_rows = []
     for loc in locations:
@@ -66,7 +65,6 @@ def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура выбора редкости для снаряжения."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
         [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
@@ -75,10 +73,6 @@ def get_rarities_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
-    """
-    Клавиатура со списком мобов или ресурсов в выбранной локации.
-    Для ресурсов в callback_data передаём ещё и location_id для возврата.
-    """
     if category == "mobs":
         items = get_mobs_by_location(location_id, (page-1)*ITEMS_PER_PAGE, ITEMS_PER_PAGE)
         next_items = get_mobs_by_location(location_id, page*ITEMS_PER_PAGE, 1)
@@ -93,7 +87,6 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     keyboard_rows = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        # Важно: для ресурсов добавляем location_id и page
         callback_data = f"view_{category}_{item['id']}_{location_id}_{page}"
         keyboard_rows.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
 
@@ -112,7 +105,6 @@ def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
-    """Клавиатура со списком снаряжения выбранной редкости."""
     offset = (page - 1) * ITEMS_PER_PAGE
     items = get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + 1)
     has_next = len(items) > ITEMS_PER_PAGE
@@ -209,7 +201,7 @@ async def handle_search(message: types.Message):
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.answer(reply, parse_mode="Markdown")
 
-# ---------------------- ИНЛАЙН-ПОИСК ----------------------
+# ---------------------- ИНЛАЙН-ПОИСК (с полными карточками) ----------------------
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
@@ -223,40 +215,76 @@ async def inline_search_handler(inline_query: InlineQuery):
     results = search(query)
     inline_results = []
 
+    # ----- Мобы (полная карточка с дропами) -----
     for mob in results.get("mobs", [])[:50]:
-        description = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
+        mob_id = mob['id']
+        drops = get_mob_drops(mob_id)
+        gear_drops = get_mob_gear_drops(mob_id)
         loc = get_location_by_id(mob["location_id"])
         loc_str = f"{loc['emoji']} {loc['name']}" if loc else "Неизвестно"
+        
         message_text = (
             f"{mob['emoji']} *{mob['name']}*\n"
             f"❤️ HP: {mob['hp']}\n"
             f"✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n"
             f"⭐ Опыт: {mob['exp']}\n"
-            f"📍 Локация: {loc_str}\n"
+            f"📍 Локация: {loc_str}\n\n"
         )
+        if drops:
+            message_text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
+        if gear_drops:
+            message_text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
+        
+        description = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
-            id=f"mob_{mob['id']}",
+            id=f"mob_{mob_id}",
             title=mob['name'],
             description=description,
             input_message_content=InputTextMessageContent(message_text=message_text, parse_mode="Markdown")
         ))
 
+    # ----- Ресурсы (полная карточка со списком мобов) -----
     for res in results.get("resources", [])[:50]:
-        message_text = f"{res['emoji']} *{res['name']}*\n\n_Ресурс, который падает с мобов._"
+        res_id = res['id']
+        mobs = get_resource_mobs(res_id)
+        message_text = f"{res['emoji']} *{res['name']}*\n\n"
+        if mobs:
+            message_text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+        else:
+            message_text += "_Ни с кого не падает (возможно, крафтовый)._"
+        
         inline_results.append(InlineQueryResultArticle(
-            id=f"res_{res['id']}",
+            id=f"res_{res_id}",
             title=res['name'],
             description="Ресурс",
             input_message_content=InputTextMessageContent(message_text=message_text, parse_mode="Markdown")
         ))
 
+    # ----- Снаряжение (полная карточка с информацией о крафте и мобах) -----
     for gear in results.get("gear", [])[:50]:
-        rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(gear["rarity"], "")
-        description = f"{gear['slot']} | Редкость: {gear['rarity']}"
-        message_text = f"{gear['emoji']} *{gear['name']}* {rarity_emoji}\nСлот: {gear['slot']}\nРедкость: {gear['rarity']}"
+        gear_id = gear['id']
+        full_gear = get_gear_info(gear_id)  # получаем полные данные (craftable, craft_dust)
+        if not full_gear:
+            continue
+        mobs = get_gear_mobs(gear_id) if full_gear["rarity"] == "common" else []
+        rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(full_gear["rarity"], "")
+        
+        message_text = (
+            f"{full_gear['emoji']} *{full_gear['name']}* {rarity_emoji}\n"
+            f"Редкость: {full_gear['rarity']}\n"
+            f"Слот: {full_gear['slot']}\n"
+        )
+        if full_gear.get("craftable"):
+            message_text += f"Крафт: да, пыль: {full_gear['craft_dust']}\n"
+        else:
+            message_text += "Крафт: нет (выпадает)\n"
+        if mobs:
+            message_text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+        
+        description = f"{full_gear['slot']} | Редкость: {full_gear['rarity']}"
         inline_results.append(InlineQueryResultArticle(
-            id=f"gear_{gear['id']}",
-            title=gear['name'],
+            id=f"gear_{gear_id}",
+            title=full_gear['name'],
             description=description,
             input_message_content=InputTextMessageContent(message_text=message_text, parse_mode="Markdown")
         ))
@@ -333,7 +361,6 @@ async def page_callback(callback_query: types.CallbackQuery):
 # ----- Просмотр моба -----
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
-    # data = "view_mobs_{mob_id}_{location_id}_{page}"
     parts = callback_query.data.split("_")
     mob_id = int(parts[2])
     location_id = int(parts[3])
@@ -365,10 +392,9 @@ async def view_mob(callback_query: types.CallbackQuery):
     )
     await callback_query.answer()
 
-# ----- Просмотр ресурса (исправлен: возврат к списку ресурсов той же локации) -----
+# ----- Просмотр ресурса -----
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
-    # data = "view_resources_{resource_id}_{location_id}_{page}"
     parts = callback_query.data.split("_")
     resource_id = int(parts[2])
     location_id = int(parts[3])
@@ -399,7 +425,6 @@ async def view_resource(callback_query: types.CallbackQuery):
 # ----- Просмотр снаряжения -----
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
-    # data = "view_gear_{gear_id}_{rarity}_{page}"
     parts = callback_query.data.split("_")
     gear_id = int(parts[2])
     rarity = parts[3]
