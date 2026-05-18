@@ -2,7 +2,11 @@ import os
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineQuery, InlineQueryResultArticle, InputTextMessageContent
+)
 from aiogram.utils import executor
 
 from database import (
@@ -91,7 +95,7 @@ async def search_command(message: types.Message):
     await message.answer("Введите поисковый запрос (название моба, ресурса или снаряжения):")
     await message.delete()
 
-# ---------------------- Обработчики кнопок главного меню (reply-клавиатура) ----------------------
+# ---------------------- Обработчики кнопок главного меню ----------------------
 @dp.message_handler(lambda message: message.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     await message.delete()
@@ -112,11 +116,10 @@ async def search_button(message: types.Message):
     await message.delete()
     await search_command(message)
 
-# ---------------------- Обработчик поиска (для всего остального текста) ----------------------
+# ---------------------- Обработчик текстового поиска (обычный) ----------------------
 @dp.message_handler(lambda message: message.text and not message.text.startswith('/') and message.text not in MAIN_MENU_BUTTONS)
 async def handle_search(message: types.Message):
     query_text = message.text.strip()
-    logger.info(f"Поисковый запрос: '{query_text}'")  # отладочный вывод
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
         return
@@ -146,14 +149,90 @@ async def handle_search(message: types.Message):
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.answer(reply, parse_mode="Markdown")
 
+# ---------------------- ИНЛАЙН-ПОИСК (реального времени) ----------------------
+@dp.inline_query()
+async def inline_search_handler(inline_query: InlineQuery):
+    query = inline_query.query.strip()
+    user_id = inline_query.from_user.id
+    logger.info(f"Инлайн-поиск от {user_id}: '{query}'")
+
+    # Если запрос пустой, показываем подсказку (например, последние добавленные предметы)
+    if not query:
+        # Можно вернуть пустой список или подсказку
+        await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
+        return
+
+    # Выполняем поиск по базе данных (используем вашу функцию search)
+    results = search(query)
+
+    inline_results = []
+
+    # --- Добавляем мобов ---
+    for mob in results.get("mobs", [])[:50]:
+        # Краткое описание для превью
+        description = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
+        # Полный текст при отправке
+        loc = get_location_by_id(mob["location_id"])
+        loc_str = f"{loc['emoji']} {loc['name']}" if loc else "Неизвестно"
+        message_text = (
+            f"{mob['emoji']} *{mob['name']}*\n"
+            f"❤️ HP: {mob['hp']}\n"
+            f"✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n"
+            f"⭐ Опыт: {mob['exp']}\n"
+            f"📍 Локация: {loc_str}\n"
+        )
+        # Дроп ресурсов тоже можно добавить, но для краткости оставим так
+        # При желании можно добавить кнопку "Подробнее", но для инлайна это не обязательно
+        result = InlineQueryResultArticle(
+            id=f"mob_{mob['id']}",
+            title=mob['name'],
+            description=description,
+            thumbnail_url=None,  # можно поставить ссылку на иконку, если есть
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode="Markdown"
+            )
+        )
+        inline_results.append(result)
+
+    # --- Добавляем ресурсы ---
+    for res in results.get("resources", [])[:50]:
+        message_text = f"{res['emoji']} *{res['name']}*\n\n_Ресурс, который падает с мобов._"
+        result = InlineQueryResultArticle(
+            id=f"res_{res['id']}",
+            title=res['name'],
+            description="Ресурс",
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode="Markdown"
+            )
+        )
+        inline_results.append(result)
+
+    # --- Добавляем снаряжение ---
+    for gear in results.get("gear", [])[:50]:
+        rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(gear["rarity"], "")
+        description = f"{gear['slot']} | Редкость: {gear['rarity']}"
+        message_text = f"{gear['emoji']} *{gear['name']}* {rarity_emoji}\nСлот: {gear['slot']}\nРедкость: {gear['rarity']}"
+        result = InlineQueryResultArticle(
+            id=f"gear_{gear['id']}",
+            title=gear['name'],
+            description=description,
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode="Markdown"
+            )
+        )
+        inline_results.append(result)
+
+    # Отправляем результаты (cache_time=0, чтобы не кешировалось)
+    await inline_query.answer(inline_results, cache_time=0, is_personal=True)
+
 # ---------------------- Инлайн-колбэки (навигация и просмотр) ----------------------
 @dp.callback_query_handler(lambda c: c.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
-    await callback_query.message.answer(
-        "Выбери категорию:",
-        reply_markup=get_main_menu_reply_keyboard()
-    )
+    await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("list_"))
