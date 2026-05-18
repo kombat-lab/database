@@ -5,64 +5,52 @@ from typing import List, Dict, Any, Optional
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
 # --------------------------------------------------------------
-# 1. Функция регистронезависимого сравнения для кириллицы
+# Функция для приведения строки к нижнему регистру (Юникод)
 # --------------------------------------------------------------
-def case_insensitive_collation(string1: str, string2: str) -> int:
-    """Сравнивает две строки, игнорируя регистр (работает с кириллицей)."""
-    if string1 is None and string2 is None:
-        return 0
-    if string1 is None:
-        return -1
-    if string2 is None:
-        return 1
-    # Приводим к нижнему регистру с помощью Python (поддерживает Юникод)
-    s1_lower = string1.lower()
-    s2_lower = string2.lower()
-    if s1_lower < s2_lower:
-        return -1
-    elif s1_lower > s2_lower:
-        return 1
-    else:
-        return 0
+def lower_unicode(s: str) -> str:
+    """Возвращает строку в нижнем регистре. Работает с любой Юникод-строкой (кириллицей)."""
+    if s is None:
+        return None
+    return s.lower()
 
 # --------------------------------------------------------------
-# 2. Подключение к БД с регистрацией collation
+# Подключение с регистрацией пользовательской SQL-функции
 # --------------------------------------------------------------
 def get_db_connection():
-    """Создаёт подключение к SQLite и регистрирует collation NOCASE_UTF8."""
     conn = sqlite3.connect(DB_PATH)
-    conn.create_collation("NOCASE_UTF8", case_insensitive_collation)
+    # Регистрируем функцию 'LOWER_UNICODE' для использования в SQL
+    conn.create_function("LOWER_UNICODE", 1, lower_unicode)
     return conn
 
 def execute_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    """Выполняет запрос к БД и возвращает результат в виде списка словарей."""
+    """Выполняет запрос и возвращает список словарей."""
     with get_db_connection() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
 # --------------------------------------------------------------
-# 3. Поиск (регистронезависимый для кириллицы)
+# ПОИСК (регистронезависимый для кириллицы)
 # --------------------------------------------------------------
 def search(query: str) -> Dict[str, List[Dict]]:
-    """Ищет мобов, ресурсы и снаряжение по имени без учёта регистра."""
     search_pattern = f"%{query}%"
+    
     mobs = execute_query(
-        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE name COLLATE NOCASE_UTF8 LIKE ?",
+        "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)",
         (search_pattern,)
     )
     resources = execute_query(
-        "SELECT id, name, emoji FROM resources WHERE name COLLATE NOCASE_UTF8 LIKE ?",
+        "SELECT id, name, emoji FROM resources WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)",
         (search_pattern,)
     )
     gear = execute_query(
-        "SELECT id, name, rarity, slot, emoji FROM gear WHERE name COLLATE NOCASE_UTF8 LIKE ?",
+        "SELECT id, name, rarity, slot, emoji FROM gear WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)",
         (search_pattern,)
     )
     return {"mobs": mobs, "resources": resources, "gear": gear}
 
 # --------------------------------------------------------------
-# 4. Остальные функции (без изменений, но используют execute_query)
+# Остальные функции (без изменений)
 # --------------------------------------------------------------
 def get_location_by_id(location_id: int) -> Optional[Dict]:
     res = execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
@@ -127,7 +115,7 @@ def get_gear_info(gear_id: int) -> Optional[Dict]:
 
 def get_gear_mobs(gear_id: int) -> List[Dict]:
     return execute_query(
-        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ?",
+        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.gear_id = m.id WHERE gd.gear_id = ?",
         (gear_id,)
     )
 
