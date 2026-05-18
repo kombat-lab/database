@@ -2,7 +2,6 @@ import os
 import sqlite3
 from typing import List, Dict, Any, Optional
 
-# Путь к базе из переменной окружения, по умолчанию 'game.db'
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
 def get_db_connection():
@@ -15,7 +14,6 @@ def execute_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 def search(query: str) -> Dict[str, List[Dict]]:
-    """Поиск по мобам, ресурсам, снаряжению"""
     query = f"%{query}%"
     mobs = execute_query(
         "SELECT id, name, emoji, hp, dust_min, dust_max, exp, location_id FROM mobs WHERE name LIKE ?",
@@ -94,7 +92,7 @@ def get_gear_info(gear_id: int) -> Optional[Dict]:
 
 def get_gear_mobs(gear_id: int) -> List[Dict]:
     return execute_query(
-        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ?",
+        "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.gear_id = m.id WHERE gd.gear_id = ?",
         (gear_id,)
     )
 
