@@ -19,7 +19,11 @@ admin_router = Router()
 ADMIN_ITEMS_PER_PAGE = 10
 
 def is_valid_emoji(s: str) -> bool:
-    return len(s) == 1 and not s.isalnum()
+    if not s:
+        return False
+    if len(s) > 2:
+        return False
+    return all(not ch.isalnum() for ch in s)
 
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
