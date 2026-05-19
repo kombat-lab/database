@@ -668,7 +668,7 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
     page = int(parts[4])
     data = await state.get_data()
     mob_id = data['mob_id']
-    has_drop = await db.get_mob_drop_status(mob_id, category, item_id)
+    has_drop = await db.get_drop_status(mob_id, category, item_id)
     if has_drop:
         await db.remove_drop(mob_id, category, item_id)
     else:
