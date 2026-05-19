@@ -17,7 +17,7 @@ def _lower_unicode(s: str) -> str:
     return s.lower()
 
 # --------------------------------------------------------------
-# Класс для управления подключением к БД (одно соединение + блокировка)
+# Класс для управления подключением к БД
 # --------------------------------------------------------------
 class Database:
     def __init__(self):
@@ -25,10 +25,9 @@ class Database:
         self._lock = asyncio.Lock()
 
     async def connect(self):
-        """Инициализирует соединение и регистрирует SQL-функцию."""
         self._conn = await aiosqlite.connect(DB_PATH)
+        self._conn.row_factory = aiosqlite.Row
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
-        # Включаем поддержку внешних ключей (опционально)
         await self._conn.execute("PRAGMA foreign_keys = ON")
         logger.info("Database connected")
 
@@ -37,16 +36,25 @@ class Database:
             await self._conn.close()
             logger.info("Database closed")
 
+    @staticmethod
+    def _row_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+        """Безопасно преобразует aiosqlite.Row в dict."""
+        return {key: row[key] for key in row.keys()}
+
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """Выполняет запрос и возвращает список словарей."""
         async with self._lock:
             async with self._conn.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                # Преобразуем aiosqlite.Row в dict
-                return [dict(row) for row in rows]
+                if not rows:
+                    return []
+                # Если вдруг row_factory не сработал (кортежи), используем описание курсора
+                if not hasattr(rows[0], 'keys'):
+                    col_names = [desc[0] for desc in cursor.description]
+                    return [dict(zip(col_names, row)) for row in rows]
+                return [self._row_to_dict(row) for row in rows]
 
     # --------------------------------------------------------------
-    # ПОИСК (регистронезависимый для кириллицы)
+    # Поиск и все остальные методы (они такие же, как в предыдущей версии)
     # --------------------------------------------------------------
     async def search(self, query: str) -> Dict[str, List[Dict]]:
         search_pattern = f"%{query}%"
@@ -65,9 +73,6 @@ class Database:
         )
         return {"mobs": mobs, "resources": resources, "gear": gear}
 
-    # --------------------------------------------------------------
-    # Основные функции
-    # --------------------------------------------------------------
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         res = await self.execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
         return res[0] if res else None
@@ -140,10 +145,6 @@ class Database:
         return await self.execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
 
     async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
-        """
-        Возвращает список ингредиентов для крафта снаряжения.
-        Каждый элемент: {'resource_id': int, 'name': str, 'emoji': str, 'quantity': int}
-        """
         query = """
             SELECT ri.resource_id, r.name, r.emoji, ri.quantity
             FROM recipes rc
@@ -155,9 +156,6 @@ class Database:
         return await self.execute_query(query, (gear_id,))
 
     async def get_recipe_owners(self, gear_id: int) -> List[str]:
-        """
-        Возвращает список Telegram username владельцев рецепта для данного снаряжения.
-        """
         query = """
             SELECT player_username
             FROM recipes rc
