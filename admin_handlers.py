@@ -570,22 +570,15 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         items = await db.get_common_gear_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
         has_next = len(items) > ADMIN_ITEMS_PER_PAGE
         items = items[:ADMIN_ITEMS_PER_PAGE]
-    elif category == 'recipe':
-        items = await db.get_recipes_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
-        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-        items = items[:ADMIN_ITEMS_PER_PAGE]
     else:
         return InlineKeyboardMarkup(inline_keyboard=[])
     keyboard = []
     for item in items:
-        has_drop = await db.get_mob_drop_status(mob_id, category, item['id'])
+        has_drop = await db.get_drop_status(mob_id, category, item['id'])
         status = "✅" if has_drop else "❌"
-        if category == 'recipe':
-            text = f"{status} {item['name']}"
-        else:
-            text = f"{status} {item.get('emoji', '')} {item['name']}"
-            if category == 'gear' and 'slot' in item:
-                text += f" ({item['slot']})"
+        text = f"{status} {item.get('emoji', '')} {item['name']}"
+        if category == 'gear' and 'slot' in item:
+            text += f" ({item['slot']})"
         callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
     nav = []
@@ -604,7 +597,6 @@ async def drop_category_menu(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
         [InlineKeyboardButton(text="⚔️ Экипировка (common)", callback_data="drop_category_gear")],
-        [InlineKeyboardButton(text="📜 Рецепты (свитки)", callback_data="drop_category_recipe")],
         [InlineKeyboardButton(text="🔙 Назад к редактированию", callback_data="back_to_edit_mob")]
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
