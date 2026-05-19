@@ -149,20 +149,10 @@ class Database:
     # ---------- Снаряжение ----------
 async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
     query = """
-        SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji,
-               -- Для common и rare: мобы через gear_drops
+        SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji, g.scroll_resource_id,
                (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
                 FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id
                 WHERE gd.gear_id = g.id) as gear_drops_mobs,
-               -- Для epic: мобы через mob_drops на ресурсы-ингредиенты (свитки)
-               (SELECT GROUP_CONCAT(DISTINCT m.id || '|' || m.name || '|' || m.emoji)
-                FROM recipe_ingredients ri
-                JOIN recipes rc ON ri.recipe_id = rc.id
-                JOIN mob_drops md ON ri.resource_id = md.resource_id
-                JOIN mobs m ON md.mob_id = m.id
-                WHERE rc.result_type = 'gear' AND rc.result_id = g.id
-               ) as recipe_mobs,
-               -- Ингредиенты и владельцы (без изменений)
                (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
                 FROM recipes rc
                 JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
@@ -177,17 +167,29 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
     if not res:
         return None
     row = res[0]
-    # Выбираем нужный список мобов в зависимости от редкости
-    if row['rarity'] == 'epic':
-        mobs_str = row['recipe_mobs']
+    
+    # Для эпического снаряжения ищем мобов через свиток
+    if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
+        mobs_data = await self.execute_query(
+            "SELECT m.id, m.name, m.emoji FROM mob_drops md "
+            "JOIN mobs m ON md.mob_id = m.id WHERE md.resource_id = ? ORDER BY m.id",
+            (row['scroll_resource_id'],)
+        )
+        row["mobs"] = mobs_data
     else:
+        # Для common и rare берём прямые дропы из gear_drops (если есть)
         mobs_str = row['gear_drops_mobs']
-    row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
+        row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
+    
     row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
     row["owners"] = row["owners"].split(",") if row["owners"] else []
-    # Удаляем временные поля
-    del row['gear_drops_mobs']
-    del row['recipe_mobs']
+    
+    # Чистим временные поля
+    if 'gear_drops_mobs' in row:
+        del row['gear_drops_mobs']
+    if 'scroll_resource_id' in row:
+        del row['scroll_resource_id']
+    
     return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
