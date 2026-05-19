@@ -162,41 +162,23 @@ class Database:
         if not res:
             return None
         row = res[0]
-
-        # Если есть прямые дропы из gear_drops, используем их
+    
+        # Прямые дропы из таблицы gear_drops (только для common)
         if row['gear_drops_mobs']:
             row["mobs"] = [self._parse_drop_item(s) for s in row['gear_drops_mobs'].split(",")]
         else:
-            # Нет прямых дропов – ищем мобов через ингредиенты рецепта (для rare и epic)
+            # Для epic – если есть свиток, показываем мобов, которые дропают этот свиток
             if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
-                # Для epic – через свиток
                 mobs_data = await self.execute_query(
                     "SELECT m.id, m.name, m.emoji FROM mob_drops md "
                     "JOIN mobs m ON md.mob_id = m.id WHERE md.resource_id = ? ORDER BY m.id",
                     (row['scroll_resource_id'],)
                 )
                 row["mobs"] = mobs_data
-            elif row['craftable'] and row['rarity'] == 'rare':
-                # Для rare – через ингредиенты рецепта (ресурсы, которые падают с мобов)
-                ing_ids = [ing['resource_id'] for ing in self._parse_ingredients_from_row(row['ingredients'])]
-                if ing_ids:
-                    placeholders = ','.join('?' for _ in ing_ids)
-                    mobs_data = await self.execute_query(
-                        f"""
-                        SELECT DISTINCT m.id, m.name, m.emoji
-                        FROM mob_drops md
-                        JOIN mobs m ON md.mob_id = m.id
-                        WHERE md.resource_id IN ({placeholders})
-                        ORDER BY m.id
-                        """,
-                        tuple(ing_ids)
-                    )
-                    row["mobs"] = mobs_data
-                else:
-                    row["mobs"] = []
             else:
+                # Для rare и epic без свитка – предмет не выпадает с мобов, только крафт
                 row["mobs"] = []
-
+    
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
         if 'gear_drops_mobs' in row:
