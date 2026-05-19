@@ -3,6 +3,7 @@ import asyncio
 import logging
 import aiosqlite
 from typing import List, Dict, Any, Optional
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,12 @@ def _lower_unicode(s: str) -> str:
     return s.lower()
 
 class Database:
+    ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
+
     def __init__(self):
         self._conn: Optional[aiosqlite.Connection] = None
         self._locations_cache: Dict[int, Dict] = {}
+        self._in_transaction = False
 
     async def connect(self):
         self._conn = await aiosqlite.connect(DB_PATH, timeout=30.0)
@@ -52,11 +56,13 @@ class Database:
         if self._conn:
             await self._conn.close()
 
+    # === ОСНОВНОЙ МЕТОД ВЫПОЛНЕНИЯ ЗАПРОСОВ ===
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Выполняет запрос. Если не SELECT и не внутри транзакции — делает commit."""
         async with self._conn.execute(query, params) as cursor:
             try:
                 rows = await cursor.fetchall()
-                if not query.strip().upper().startswith("SELECT"):
+                if not query.strip().upper().startswith("SELECT") and not self._in_transaction:
                     await self._conn.commit()
                 if not rows:
                     return []
@@ -65,20 +71,36 @@ class Database:
                     return [dict(zip(col_names, row)) for row in rows]
                 return [dict(row) for row in rows]
             except Exception as e:
-                await self._conn.rollback()
+                if not self._in_transaction:
+                    await self._conn.rollback()
                 raise e
 
-    # ---------- Кэшированные локации ----------
+    # === ТРАНЗАКЦИИ ===
+    @asynccontextmanager
+    async def transaction(self):
+        """Контекстный менеджер для атомарных операций."""
+        self._in_transaction = True
+        try:
+            await self._conn.execute("BEGIN")
+            yield
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+        finally:
+            self._in_transaction = False
+
+    # === КЭШ ЛОКАЦИЙ ===
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         return self._locations_cache.get(location_id)
 
     async def get_locations(self) -> List[Dict]:
         return list(self._locations_cache.values())
 
-    def invalidate_location_cache(self):
-        asyncio.create_task(self._load_locations_cache())
+    async def invalidate_location_cache(self):
+        await self._load_locations_cache()
 
-    # ---------- Мобы ----------
+    # === МОБЫ ===
     async def get_mob_full_card(self, mob_id: int) -> Optional[Dict]:
         query = """
             SELECT
@@ -109,7 +131,18 @@ class Database:
             (location_id, limit, offset)
         )
 
-    # ---------- Ресурсы ----------
+    async def update_mob_field(self, mob_id: int, field: str, value):
+        if field not in self.ALLOWED_MOB_FIELDS:
+            raise ValueError(f"Invalid field: {field}")
+        query = f"UPDATE mobs SET {field} = ? WHERE id = ?"
+        await self.execute_query(query, (value, mob_id))
+
+    async def delete_mob(self, mob_id: int):
+        await self.execute_query("DELETE FROM mob_drops WHERE mob_id = ?", (mob_id,))
+        await self.execute_query("DELETE FROM gear_drops WHERE mob_id = ?", (mob_id,))
+        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
+
+    # === РЕСУРСЫ ===
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
             SELECT r.id, r.name, r.emoji,
@@ -141,7 +174,23 @@ class Database:
         """
         return await self.execute_query(query, (location_id, limit, offset))
 
-    # ---------- Снаряжение ----------
+    async def get_resource_by_id(self, resource_id: int) -> Optional[Dict]:
+        res = await self.execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
+        return res[0] if res else None
+
+    async def add_resource(self, name: str, emoji: str) -> int:
+        await self.execute_query("INSERT INTO resources (name, emoji) VALUES (?, ?)", (name, emoji))
+        res = await self.execute_query("SELECT last_insert_rowid() as id")
+        return res[0]['id']
+
+    async def update_resource(self, resource_id: int, name: str, emoji: str):
+        await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
+
+    async def delete_resource(self, resource_id: int):
+        await self.execute_query("DELETE FROM mob_drops WHERE resource_id = ?", (resource_id,))
+        await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
+
+    # === СНАРЯЖЕНИЕ ===
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji, g.scroll_resource_id,
@@ -162,12 +211,10 @@ class Database:
         if not res:
             return None
         row = res[0]
-    
-        # Прямые дропы из таблицы gear_drops (только для common)
+
         if row['gear_drops_mobs']:
             row["mobs"] = [self._parse_drop_item(s) for s in row['gear_drops_mobs'].split(",")]
         else:
-            # Для epic – если есть свиток, показываем мобов, которые дропают этот свиток
             if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
                 mobs_data = await self.execute_query(
                     "SELECT m.id, m.name, m.emoji FROM mob_drops md "
@@ -176,70 +223,57 @@ class Database:
                 )
                 row["mobs"] = mobs_data
             else:
-                # Для rare и epic без свитка – предмет не выпадает с мобов, только крафт
                 row["mobs"] = []
-    
+
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
-        if 'gear_drops_mobs' in row:
-            del row['gear_drops_mobs']
-        if 'scroll_resource_id' in row:
-            del row['scroll_resource_id']
+        row.pop('gear_drops_mobs', None)
+        row.pop('scroll_resource_id', None)
         return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
-        """Возвращает список предметов указанной редкости с пагинацией."""
         return await self.execute_query(
             "SELECT id, name, rarity, slot, emoji, craftable, craft_dust "
             "FROM gear WHERE rarity = ? ORDER BY id LIMIT ? OFFSET ?",
             (rarity, limit, offset)
         )
 
-    @staticmethod
-    def _parse_ingredients_from_row(ingredients_str: str) -> List[Dict]:
-        """Парсит строку ингредиентов из GROUP_CONCAT в список словарей с resource_id и quantity."""
-        if not ingredients_str:
-            return []
-        parts = ingredients_str.split(",")
-        result = []
-        for part in parts:
-            sub = part.split("|")
-            if len(sub) >= 4:
-                result.append({"resource_id": int(sub[0]), "quantity": int(sub[3])})
-        return result
+    async def get_gear_info(self, gear_id: int) -> Optional[Dict]:
+        res = await self.execute_query(
+            "SELECT id, name, rarity, slot, craftable, craft_dust, emoji FROM gear WHERE id = ?",
+            (gear_id,)
+        )
+        return res[0] if res else None
 
-    # ---------- Поиск ----------
-    async def search(self, query: str) -> Dict[str, List[Dict]]:
-        search_pattern = f"%{query}%"
-        mobs = await self.execute_query(
-            "SELECT m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp, "
-            "l.id as location_id, l.name as location_name, l.emoji as location_emoji "
-            "FROM mobs m JOIN locations l ON m.location_id = l.id "
-            "WHERE LOWER_UNICODE(m.name) LIKE LOWER_UNICODE(?) ORDER BY m.id LIMIT 50",
-            (search_pattern,)
+    async def get_gear_mobs(self, gear_id: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT m.id, m.name, m.emoji FROM gear_drops gd "
+            "JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ? ORDER BY m.id",
+            (gear_id,)
         )
-        resources = await self.execute_query(
-            "SELECT id, name, emoji FROM resources "
-            "WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?) ORDER BY id LIMIT 50",
-            (search_pattern,)
-        )
-        gear = await self.execute_query(
-            "SELECT id, name, rarity, slot, emoji FROM gear "
-            "WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?) ORDER BY id LIMIT 50",
-            (search_pattern,)
-        )
-        return {"mobs": mobs, "resources": resources, "gear": gear}
 
-    # ---------- Крафт ресурсов ----------
-    async def get_craftable_resources(self) -> List[Dict]:
+    async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
         query = """
-            SELECT DISTINCT r.id, r.name, r.emoji
-            FROM resources r
-            JOIN recipes rc ON rc.result_type = 'resource' AND rc.result_id = r.id
-            ORDER BY r.id
+            SELECT ri.resource_id, r.name, r.emoji, ri.quantity
+            FROM recipes rc
+            JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
+            JOIN resources r ON ri.resource_id = r.id
+            WHERE rc.result_type = 'gear' AND rc.result_id = ?
+            ORDER BY ri.resource_id
         """
-        return await self.execute_query(query)
+        return await self.execute_query(query, (gear_id,))
 
+    async def get_recipe_owners(self, gear_id: int) -> List[str]:
+        query = """
+            SELECT player_username
+            FROM recipes rc
+            JOIN recipe_owners ro ON rc.id = ro.recipe_id
+            WHERE rc.result_type = 'gear' AND rc.result_id = ?
+        """
+        owners = await self.execute_query(query, (gear_id,))
+        return [owner['player_username'] for owner in owners]
+
+    # === РЕЦЕПТЫ ===
     async def get_recipe_for_resource(self, resource_id: int) -> Optional[Dict]:
         recipe_info = await self.execute_query(
             "SELECT id, craft_dust FROM recipes WHERE result_type = 'resource' AND result_id = ?",
@@ -263,32 +297,17 @@ class Database:
             'ingredients': ingredients
         }
 
-    # ---------- Парсеры ----------
-    @staticmethod
-    def _parse_drop_item(s: str, gear: bool = False) -> Dict:
-        parts = s.split("|")
-        if gear:
-            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3]}
-        else:
-            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
+    async def get_craftable_resources(self) -> List[Dict]:
+        query = """
+            SELECT DISTINCT r.id, r.name, r.emoji
+            FROM resources r
+            JOIN recipes rc ON rc.result_type = 'resource' AND rc.result_id = r.id
+            ORDER BY r.id
+        """
+        return await self.execute_query(query)
 
-    @staticmethod
-    def _parse_ingredient(s: str) -> Dict:
-        parts = s.split("|")
-        return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "quantity": int(parts[3])}
-
-    # ---------- Пагинация для админки ----------
-    async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, emoji FROM resources ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
-
-    async def get_common_gear_page(self, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common' ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
+    async def get_all_recipes(self):
+        return await self.execute_query("SELECT id, name FROM recipes")
 
     async def get_recipes_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
@@ -296,25 +315,29 @@ class Database:
             (limit, offset)
         )
 
-    async def get_total_resources_count(self) -> int:
-        res = await self.execute_query("SELECT COUNT(*) as cnt FROM resources")
-        return res[0]["cnt"]
+    # === ПОИСК ===
+    async def search(self, query: str) -> Dict[str, List[Dict]]:
+        search_pattern = f"%{query}%"
+        mobs = await self.execute_query(
+            "SELECT m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp, "
+            "l.id as location_id, l.name as location_name, l.emoji as location_emoji "
+            "FROM mobs m JOIN locations l ON m.location_id = l.id "
+            "WHERE LOWER_UNICODE(m.name) LIKE LOWER_UNICODE(?) ORDER BY m.id LIMIT 50",
+            (search_pattern,)
+        )
+        resources = await self.execute_query(
+            "SELECT id, name, emoji FROM resources "
+            "WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?) ORDER BY id LIMIT 50",
+            (search_pattern,)
+        )
+        gear = await self.execute_query(
+            "SELECT id, name, rarity, slot, emoji FROM gear "
+            "WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?) ORDER BY id LIMIT 50",
+            (search_pattern,)
+        )
+        return {"mobs": mobs, "resources": resources, "gear": gear}
 
-    # ---------- Управление мобами ----------
-    ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
-    
-    async def update_mob_field(self, mob_id: int, field: str, value):
-        if field not in self.ALLOWED_MOB_FIELDS:
-            raise ValueError(f"Недопустимое поле: {field}")
-        query = f"UPDATE mobs SET {field} = ? WHERE id = ?"
-        await self.execute_query(query, (value, mob_id))
-
-    async def delete_mob(self, mob_id: int):
-        await self.execute_query("DELETE FROM mob_drops WHERE mob_id = ?", (mob_id,))
-        await self.execute_query("DELETE FROM gear_drops WHERE mob_id = ?", (mob_id,))
-        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
-
-    # ---------- Дроп ----------
+    # === ДРОПЫ ===
     async def get_mob_drop_status(self, mob_id: int, category: str, item_id: int) -> bool:
         if category == 'resource':
             res = await self.execute_query(
@@ -369,7 +392,23 @@ class Database:
                 (mob_id, item_id)
             )
 
-    # ---------- Совместимость со старым кодом ----------
+    # === ВСПОМОГАТЕЛЬНЫЕ ДЛЯ АДМИНКИ ===
+    async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji FROM resources ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+
+    async def get_common_gear_page(self, offset: int, limit: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common' ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+
+    async def get_total_resources_count(self) -> int:
+        res = await self.execute_query("SELECT COUNT(*) as cnt FROM resources")
+        return res[0]["cnt"]
+
     async def get_all_resources(self):
         return await self.execute_query("SELECT id, name, emoji FROM resources")
 
@@ -378,58 +417,18 @@ class Database:
             "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common'"
         )
 
-    async def get_all_recipes(self):
-        return await self.execute_query("SELECT id, name, emoji FROM recipes")
+    # === ПАРСЕРЫ ===
+    @staticmethod
+    def _parse_drop_item(s: str, gear: bool = False) -> Dict:
+        parts = s.split("|")
+        if gear:
+            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3]}
+        else:
+            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
 
-    async def get_resource_by_id(self, resource_id: int) -> Optional[Dict]:
-        res = await self.execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
-        return res[0] if res else None
-
-    async def add_resource(self, name: str, emoji: str) -> int:
-        await self.execute_query("INSERT INTO resources (name, emoji) VALUES (?, ?)", (name, emoji))
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
-
-    async def update_resource(self, resource_id: int, name: str, emoji: str):
-        await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
-
-    async def delete_resource(self, resource_id: int):
-        await self.execute_query("DELETE FROM mob_drops WHERE resource_id = ?", (resource_id,))
-        await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
-
-    async def get_gear_info(self, gear_id: int) -> Optional[Dict]:
-        res = await self.execute_query(
-            "SELECT id, name, rarity, slot, craftable, craft_dust, emoji FROM gear WHERE id = ?",
-            (gear_id,)
-        )
-        return res[0] if res else None
-
-    async def get_gear_mobs(self, gear_id: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT m.id, m.name, m.emoji FROM gear_drops gd "
-            "JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ? ORDER BY m.id",
-            (gear_id,)
-        )
-
-    async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
-        query = """
-            SELECT ri.resource_id, r.name, r.emoji, ri.quantity
-            FROM recipes rc
-            JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
-            JOIN resources r ON ri.resource_id = r.id
-            WHERE rc.result_type = 'gear' AND rc.result_id = ?
-            ORDER BY ri.resource_id
-        """
-        return await self.execute_query(query, (gear_id,))
-
-    async def get_recipe_owners(self, gear_id: int) -> List[str]:
-        query = """
-            SELECT player_username
-            FROM recipes rc
-            JOIN recipe_owners ro ON rc.id = ro.recipe_id
-            WHERE rc.result_type = 'gear' AND rc.result_id = ?
-        """
-        owners = await self.execute_query(query, (gear_id,))
-        return [owner['player_username'] for owner in owners]
+    @staticmethod
+    def _parse_ingredient(s: str) -> Dict:
+        parts = s.split("|")
+        return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "quantity": int(parts[3])}
 
 db = Database()
