@@ -189,6 +189,7 @@ class Database:
 
     # === СНАРЯЖЕНИЕ ===
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
+        # Основной запрос
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji,
                    (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
@@ -209,10 +210,36 @@ class Database:
         if not res:
             return None
         row = res[0]
-        row["mobs"] = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
+        
+        # Парсим мобов из прямых дропов
+        direct_mobs = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
+        
+        # Если это epic и прямых дропов нет – ищем мобов через свиток
+        if row['rarity'] == 'epic' and not direct_mobs:
+            # Находим resource_id свитка в ингредиентах (обычно это id от 59 до 69)
+            ingredients = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
+            scroll_resource_id = None
+            for ing in ingredients:
+                # Свитки имеют id 59-69 или название содержит "Старинный свиток"
+                if ing['id'] in range(59, 70) or 'свиток' in ing['name'].lower():
+                    scroll_resource_id = ing['id']
+                    break
+            if scroll_resource_id:
+                # Ищем мобов, у которых в дропах есть этот ресурс
+                mobs_data = await self.execute_query(
+                    "SELECT m.id, m.name, m.emoji FROM drops d "
+                    "JOIN mobs m ON d.mob_id = m.id "
+                    "WHERE d.item_type = 'resource' AND d.item_id = ? ORDER BY m.id",
+                    (scroll_resource_id,)
+                )
+                row["mobs"] = mobs_data
+            else:
+                row["mobs"] = []
+        else:
+            row["mobs"] = direct_mobs
+        
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
-        # craftable = есть хотя бы один ингредиент
         row["craftable"] = bool(row["ingredients"])
         return row
 
