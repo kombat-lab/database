@@ -20,7 +20,7 @@ if not TOKEN:
 
 ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
-MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
+MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "⚗️ Крафт", "🔍 Поиск"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,12 +90,30 @@ async def format_gear_card(gear_id: int) -> str:
         text += "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
     return text
 
+async def format_craft_resource_card(resource_id: int) -> str:
+    res = await db.get_resource_by_id(resource_id)
+    if not res:
+        return "Ресурс не найден."
+    recipe = await db.get_recipe_for_resource(resource_id)
+    if not recipe:
+        return f"{res['emoji']} <b>{escape_html(res['name'])}</b>\n\n<i>Рецепт не найден.</i>"
+    text = "⚗️ <b>Крафт ресурса</b>\n\n"
+    text += f"{res['emoji']} <b>{escape_html(res['name'])}</b>\n"
+    text += f"✨ Пыль: {recipe['craft_dust']}\n"
+    text += "<b>Ингредиенты:</b>\n"
+    for ing in recipe['ingredients']:
+        text += f"{ing['emoji']} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
+    text += "\n🏛 <b>Где крафтить:</b>\n"
+    text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+    return text
+
 # ---------- Клавиатуры ----------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы")],
-            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск")]
+            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="⚗️ Крафт")],
+            [KeyboardButton(text="🔍 Поиск")]
         ],
         resize_keyboard=True
     )
@@ -161,6 +179,35 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+async def show_craft_resources_list(target, resources: list, page: int):
+    """Показывает список крафтовых ресурсов с пагинацией.
+       target может быть message или callback."""
+    total = len(resources)
+    start = (page - 1) * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
+    page_items = resources[start:end]
+    has_next = end < total
+
+    keyboard = []
+    for res in page_items:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{res['emoji']} {res['name']}",
+            callback_data=f"craft_resource_{res['id']}_{page}"
+        )])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"craft_page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"craft_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")])
+
+    if isinstance(target, types.Message):
+        await target.answer("⚗️ Выберите ресурс для крафта:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await target.message.edit_text("⚗️ Выберите ресурс для крафта:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
@@ -184,6 +231,15 @@ async def resources_button(message: types.Message):
 async def gear_button(message: types.Message):
     await message.delete()
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
+
+@dp.message(F.text == "⚗️ Крафт")
+async def craft_button(message: types.Message):
+    await message.delete()
+    craftable_resources = await db.get_craftable_resources()
+    if not craftable_resources:
+        await message.answer("Пока нет доступных рецептов крафта ресурсов.")
+        return
+    await show_craft_resources_list(message, craftable_resources, 1)
 
 @dp.message(F.text == "🔍 Поиск")
 async def search_button(message: types.Message):
@@ -418,6 +474,41 @@ async def view_gear(callback: types.CallbackQuery):
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.answer()
+
+# ---------- Крафт ----------
+@dp.callback_query(F.data.startswith("craft_page_"))
+async def craft_page_callback(callback: types.CallbackQuery):
+    page = int(callback.data.split("_")[2])
+    craftable_resources = await db.get_craftable_resources()
+    await show_craft_resources_list(callback, craftable_resources, page)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("craft_resource_"))
+async def view_craft_resource(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    resource_id = int(parts[2])
+    page = int(parts[3])
+    text = await format_craft_resource_card(resource_id)
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"craft_back_to_list_{page}"
+    )
+    keyboard = [[back_button]]
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("craft_back_to_list_"))
+async def craft_back_to_list(callback: types.CallbackQuery):
+    page = int(callback.data.split("_")[4])
+    craftable_resources = await db.get_craftable_resources()
+    await show_craft_resources_list(callback, craftable_resources, page)
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_main_menu")
+async def back_to_main_menu(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
     await callback.answer()
 
 # ---------- Запуск ----------
