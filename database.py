@@ -162,8 +162,6 @@ class Database:
         if not res:
             return None
         row = res[0]
-
-        # Для эпического снаряжения ищем мобов через свиток
         if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
             mobs_data = await self.execute_query(
                 "SELECT m.id, m.name, m.emoji FROM mob_drops md "
@@ -174,16 +172,12 @@ class Database:
         else:
             mobs_str = row['gear_drops_mobs']
             row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
-
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
-
-        # Удаляем временные поля
         if 'gear_drops_mobs' in row:
             del row['gear_drops_mobs']
         if 'scroll_resource_id' in row:
             del row['scroll_resource_id']
-
         return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
@@ -214,6 +208,39 @@ class Database:
             (search_pattern,)
         )
         return {"mobs": mobs, "resources": resources, "gear": gear}
+
+    # ---------- Крафт ресурсов ----------
+    async def get_craftable_resources(self) -> List[Dict]:
+        query = """
+            SELECT DISTINCT r.id, r.name, r.emoji
+            FROM resources r
+            JOIN recipes rc ON rc.result_type = 'resource' AND rc.result_id = r.id
+            ORDER BY r.id
+        """
+        return await self.execute_query(query)
+
+    async def get_recipe_for_resource(self, resource_id: int) -> Optional[Dict]:
+        recipe_info = await self.execute_query(
+            "SELECT id, craft_dust FROM recipes WHERE result_type = 'resource' AND result_id = ?",
+            (resource_id,)
+        )
+        if not recipe_info:
+            return None
+        recipe = recipe_info[0]
+        ingredients = await self.execute_query(
+            """
+            SELECT ri.resource_id, r.name, r.emoji, ri.quantity
+            FROM recipe_ingredients ri
+            JOIN resources r ON ri.resource_id = r.id
+            WHERE ri.recipe_id = ?
+            ORDER BY ri.resource_id
+            """,
+            (recipe['id'],)
+        )
+        return {
+            'craft_dust': recipe['craft_dust'],
+            'ingredients': ingredients
+        }
 
     # ---------- Парсеры ----------
     @staticmethod
