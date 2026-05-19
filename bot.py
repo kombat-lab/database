@@ -406,6 +406,7 @@ async def view_gear(callback_query: types.CallbackQuery):
 # ---------------------- Запуск ----------------------
 async def main():
     await db.connect()
+    dp.include_router(admin_router)
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
