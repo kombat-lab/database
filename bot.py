@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import re
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# ---------- Экранирование Markdown ----------
+def escape_markdown(text: str) -> str:
+    """Экранирует специальные символы для Telegram MarkdownV2 и Markdown."""
+    # Для parse_mode="Markdown" достаточно экранировать: _ * [ ] ( ) ~ ` > # + - = | { } . !
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
 
 # ---------------------- Клавиатуры ----------------------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -138,8 +146,8 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
 # ---------------------- Обработчики команд ----------------------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
-    # Отправляем только клавиатуру, без лишнего текста
-    await message.answer("", reply_markup=get_main_menu_reply_keyboard())
+    # Отправляем сообщение с клавиатурой, текст не пустой
+    await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
 
 @dp.message(Command("search"))
 async def search_command(message: types.Message):
@@ -188,18 +196,18 @@ async def handle_search(message: types.Message):
         for m in results["mobs"]:
             loc = get_location_by_id(m["location_id"])
             loc_emoji = loc["emoji"] if loc else ""
-            reply += f"{m['emoji']} {m['name']} ({loc_emoji} {loc['name'] if loc else '?'})\n"
+            reply += f"{m['emoji']} {escape_markdown(m['name'])} ({loc_emoji} {escape_markdown(loc['name']) if loc else '?'})\n"
         reply += "\n"
     if results["resources"]:
         reply += "*Ресурсы:*\n"
         for r in results["resources"]:
-            reply += f"{r['emoji']} {r['name']}\n"
+            reply += f"{r['emoji']} {escape_markdown(r['name'])}\n"
         reply += "\n"
     if results["gear"]:
         reply += "*Снаряжение:*\n"
         for g in results["gear"]:
             rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(g["rarity"], "")
-            reply += f"{g['emoji']} {g['name']} {rarity_emoji}\n"
+            reply += f"{g['emoji']} {escape_markdown(g['name'])} {rarity_emoji}\n"
         reply += "\n"
     reply += "Для подробностей используй меню или введи новый запрос."
     await message.answer(reply, parse_mode="Markdown")
@@ -224,19 +232,19 @@ async def inline_search_handler(inline_query: InlineQuery):
         drops = get_mob_drops(mob_id)
         gear_drops = get_mob_gear_drops(mob_id)
         loc = get_location_by_id(mob["location_id"])
-        loc_str = f"{loc['emoji']} {loc['name']}" if loc else "Неизвестно"
+        loc_str = f"{loc['emoji']} {escape_markdown(loc['name'])}" if loc else "Неизвестно"
         
         message_text = (
-            f"{mob['emoji']} *{mob['name']}*\n"
+            f"{mob['emoji']} *{escape_markdown(mob['name'])}*\n"
             f"❤️ HP: {mob['hp']}\n"
             f"✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n"
             f"⭐ Опыт: {mob['exp']}\n"
             f"📍 Локация: {loc_str}\n\n"
         )
         if drops:
-            message_text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
+            message_text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {escape_markdown(r['name'])}" for r in drops) + "\n"
         if gear_drops:
-            message_text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
+            message_text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {escape_markdown(g['name'])} ({g['slot']})" for g in gear_drops) + "\n"
         
         description = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
@@ -250,9 +258,9 @@ async def inline_search_handler(inline_query: InlineQuery):
     for res in results.get("resources", [])[:50]:
         res_id = res['id']
         mobs = get_resource_mobs(res_id)
-        message_text = f"{res['emoji']} *{res['name']}*\n\n"
+        message_text = f"{res['emoji']} *{escape_markdown(res['name'])}*\n\n"
         if mobs:
-            message_text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+            message_text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {escape_markdown(m['name'])}" for m in mobs) + "\n"
         else:
             message_text += "_Ни с кого не падает (возможно, крафтовый)._"
         
@@ -277,7 +285,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         rarity_text = f"{rarity_emoji[full_gear['rarity']]} {rarity_names[full_gear['rarity']]}"
         
         message_text = (
-            f"{full_gear['emoji']} *{full_gear['name']}*\n"
+            f"{full_gear['emoji']} *{escape_markdown(full_gear['name'])}*\n"
             f"Редкость: {rarity_text}\n"
             f"Слот: {full_gear['slot']}\n"
         )
@@ -288,23 +296,21 @@ async def inline_search_handler(inline_query: InlineQuery):
             ingredients = get_recipe_for_gear(gear_id)
             if ingredients:
                 for ing in ingredients:
-                    message_text += f"{ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+                    message_text += f"{ing['emoji']} {escape_markdown(ing['name'])} — {ing['quantity']} шт.\n"
             else:
                 message_text += "_Рецепт не найден._\n"
             
-            # Владельцы рецепта (только для эпического, но можно и для всех)
             owners = get_recipe_owners(gear_id)
             if owners:
                 message_text += "\n👥 *Владельцы рецепта:*\n"
                 for username in owners:
-                    # Убираем @ если есть, чтобы не дублировать
                     clean_username = username.lstrip('@')
-                    message_text += f"@{clean_username}\n"
+                    message_text += f"@{escape_markdown(clean_username)}\n"
         else:
             message_text += "Крафт: нет\n"
         
         if mobs:
-            message_text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+            message_text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {escape_markdown(m['name'])}" for m in mobs) + "\n"
         
         description = f"{full_gear['slot']} | {rarity_names[full_gear['rarity']]}"
         inline_results.append(InlineQueryResultArticle(
@@ -320,8 +326,8 @@ async def inline_search_handler(inline_query: InlineQuery):
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
-    # Отправляем только клавиатуру
-    await callback_query.message.answer("", reply_markup=get_main_menu_reply_keyboard())
+    # Отправляем новое сообщение с клавиатурой, текст не пустой
+    await callback_query.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
 @dp.callback_query(F.data == "gear_rarities")
@@ -403,12 +409,12 @@ async def view_mob(callback_query: types.CallbackQuery):
     loc = get_location_by_id(mob["location_id"])
     drops = get_mob_drops(mob_id)
     gear_drops = get_mob_gear_drops(mob_id)
-    text = f"{mob['emoji']} *{mob['name']}*\n"
-    text += f"❤️ HP: {mob['hp']}\n✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n⭐ Опыт: {mob['exp']}\n📍 Локация: {loc['emoji']} {loc['name']}\n\n"
+    text = f"{mob['emoji']} *{escape_markdown(mob['name'])}*\n"
+    text += f"❤️ HP: {mob['hp']}\n✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n⭐ Опыт: {mob['exp']}\n📍 Локация: {loc['emoji']} {escape_markdown(loc['name'])}\n\n"
     if drops:
-        text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {r['name']}" for r in drops) + "\n"
+        text += "*Падает:*\n" + "\n".join(f"{r['emoji']} {escape_markdown(r['name'])}" for r in drops) + "\n"
     if gear_drops:
-        text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {g['name']} ({g['slot']})" for g in gear_drops) + "\n"
+        text += "\n*Снаряжение:*\n" + "\n".join(f"{g['emoji']} {escape_markdown(g['name'])} ({g['slot']})" for g in gear_drops) + "\n"
 
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку мобов",
@@ -434,9 +440,9 @@ async def view_resource(callback_query: types.CallbackQuery):
         await callback_query.answer()
         return
     mobs = get_resource_mobs(resource_id)
-    text = f"{res['emoji']} *{res['name']}*\n\n"
+    text = f"{res['emoji']} *{escape_markdown(res['name'])}*\n\n"
     if mobs:
-        text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+        text += "*Падает с мобов:*\n" + "\n".join(f"{m['emoji']} {escape_markdown(m['name'])}" for m in mobs) + "\n"
     else:
         text += "Ни с кого не падает (возможно, крафтовый).\n"
 
@@ -469,7 +475,7 @@ async def view_gear(callback_query: types.CallbackQuery):
     rarity_text = f"{rarity_emoji[gear['rarity']]} {rarity_names[gear['rarity']]}"
     
     mobs = get_gear_mobs(gear_id) if gear["rarity"] == "common" else []
-    text = f"{gear['emoji']} *{gear['name']}*\n"
+    text = f"{gear['emoji']} *{escape_markdown(gear['name'])}*\n"
     text += f"Редкость: {rarity_text}\n"
     text += f"Слот: {gear['slot']}\n"
     
@@ -480,7 +486,7 @@ async def view_gear(callback_query: types.CallbackQuery):
         ingredients = get_recipe_for_gear(gear_id)
         if ingredients:
             for ing in ingredients:
-                text += f"{ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+                text += f"{ing['emoji']} {escape_markdown(ing['name'])} — {ing['quantity']} шт.\n"
         else:
             text += "_Рецепт не найден._\n"
         
@@ -489,12 +495,12 @@ async def view_gear(callback_query: types.CallbackQuery):
             text += "\n👥 *Владельцы рецепта:*\n"
             for username in owners:
                 clean_username = username.lstrip('@')
-                text += f"@{clean_username}\n"
+                text += f"@{escape_markdown(clean_username)}\n"
     else:
         text += "Крафт: нет\n"
     
     if mobs:
-        text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
+        text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {escape_markdown(m['name'])}" for m in mobs) + "\n"
 
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
