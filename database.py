@@ -95,9 +95,25 @@ class Database:
             (mob_id,)
         )
 
-    # ---------- Ресурсы (все, включая рецепты) ----------
+    # ---------- Ресурсы (CRUD + получение) ----------
     async def get_all_resources(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY name")
+
+    async def get_resource_by_id(self, resource_id: int) -> Optional[Dict]:
+        res = await self.execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
+        return res[0] if res else None
+
+    async def add_resource(self, name: str, emoji: str) -> int:
+        await self.execute_query("INSERT INTO resources (name, emoji) VALUES (?, ?)", (name, emoji))
+        res = await self.execute_query("SELECT last_insert_rowid() as id")
+        return res[0]['id']
+
+    async def update_resource(self, resource_id: int, name: str, emoji: str) -> None:
+        await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
+
+    async def delete_resource(self, resource_id: int) -> None:
+        await self.execute_query("DELETE FROM mob_drops WHERE resource_id = ?", (resource_id,))
+        await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         query = """
@@ -148,14 +164,13 @@ class Database:
             (gear_id,)
         )
 
-    # ---------- Рецепты (как ресурсы) – дополнительные методы для удобства ----------
+    # ---------- Рецепты (как ресурсы) ----------
     async def get_all_recipes(self) -> List[Dict]:
-        """Возвращает все ресурсы с id >= 59 (рецепты) для отображения в отдельной категории."""
         return await self.execute_query(
             "SELECT id, name, emoji FROM resources WHERE id >= 59 ORDER BY name"
         )
 
-    # ---------- Крафт снаряжения (рецепты крафта) ----------
+    # ---------- Крафт ----------
     async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
         query = """
             SELECT ri.resource_id, r.name, r.emoji, ri.quantity
@@ -177,7 +192,7 @@ class Database:
         owners = await self.execute_query(query, (gear_id,))
         return [owner['player_username'] for owner in owners]
 
-    # ---------- Управление дропами (общие методы) ----------
+    # ---------- Управление дропами (общее) ----------
     async def get_mob_drop_status(self, mob_id: int, category: str, item_id: int) -> bool:
         if category == 'resource':
             res = await self.execute_query(
@@ -190,13 +205,10 @@ class Database:
                 (mob_id, item_id)
             )
         elif category == 'recipe':
-            # Для рецептов используем ту же таблицу mob_drops, так как рецепты — это ресурсы с id >= 59
             res = await self.execute_query(
                 "SELECT 1 FROM mob_drops WHERE mob_id = ? AND resource_id = ? LIMIT 1",
                 (mob_id, item_id)
             )
-        elif category == 'map':
-            return False
         else:
             return False
         return len(res) > 0
@@ -217,8 +229,6 @@ class Database:
                 "INSERT OR IGNORE INTO mob_drops (mob_id, resource_id) VALUES (?, ?)",
                 (mob_id, item_id)
             )
-        elif category == 'map':
-            pass
 
     async def remove_drop(self, mob_id: int, category: str, item_id: int) -> None:
         if category == 'resource':
@@ -236,11 +246,9 @@ class Database:
                 "DELETE FROM mob_drops WHERE mob_id = ? AND resource_id = ?",
                 (mob_id, item_id)
             )
-        elif category == 'map':
-            pass
 
     # ---------- Карты (заглушка) ----------
     async def get_all_maps(self) -> List[Dict]:
-        return []  # TODO: когда появится таблица maps, заменить
+        return []
 
 db = Database()
