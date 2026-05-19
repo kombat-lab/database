@@ -8,7 +8,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter   # <-- добавлен StateFilter
 from aiogram.fsm.context import FSMContext
 
 from database import db
@@ -34,7 +34,7 @@ def escape_html(text: str) -> str:
 def clean_username(username: str) -> str:
     return username.lstrip('@') if username else ''
 
-# ---------- Формирование карточек ----------
+# ---------- Формирование карточек (те же, что были) ----------
 async def format_mob_card(mob_id: int) -> str:
     data = await db.get_mob_full_card(mob_id)
     if not data:
@@ -189,10 +189,9 @@ async def search_button(message: types.Message):
         parse_mode="HTML"
     )
 
-@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
+# ГЛАВНОЕ ИСПРАВЛЕНИЕ: добавлен StateFilter(None)
+@dp.message(StateFilter(None), F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
 async def handle_search(message: types.Message, state: FSMContext):
-    if await state.get_state() is not None:
-        return
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
@@ -246,7 +245,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         ))
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------- Callback-обработчики ----------
+# ---------- Callback-обработчики (без изменений) ----------
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
