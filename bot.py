@@ -68,9 +68,20 @@ async def format_gear_card(gear_id: int) -> str:
     rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"Редкость: {rarity_text}\nСлот: {data['slot']}\n"
+    
     if data.get('craftable'):
-        text += f"Крафт: да\n\n<b>Требуемые ресурсы:</b>\n✨ Пыль — {data['craft_dust']}\n"
+        text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
+        # Отделяем пыль (id=71) от остальных
+        dust = None
+        other = []
         for ing in data['ingredients']:
+            if ing['id'] == 71:
+                dust = ing
+            else:
+                other.append(ing)
+        if dust:
+            text += f"✨ Пыль — {dust['quantity']}\n"
+        for ing in other:
             text += f"{ing['emoji']} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
         if not data['ingredients']:
             text += "<i>Рецепт не найден.</i>\n"
@@ -95,13 +106,21 @@ async def format_craft_resource_card(resource_id: int) -> str:
     if not res:
         return "Ресурс не найден."
     recipe = await db.get_recipe_for_resource(resource_id)
-    if not recipe:
+    if not recipe or not recipe['ingredients']:
         return f"{res['emoji']} <b>{escape_html(res['name'])}</b>\n\n<i>Рецепт не найден.</i>"
     text = "⚗️ <b>Крафт ресурса</b>\n\n"
     text += f"{res['emoji']} <b>{escape_html(res['name'])}</b>\n"
-    text += f"✨ Пыль: {recipe['craft_dust']}\n"
     text += "<b>Ингредиенты:</b>\n"
+    dust = None
+    other = []
     for ing in recipe['ingredients']:
+        if ing['resource_id'] == 71:
+            dust = ing
+        else:
+            other.append(ing)
+    if dust:
+        text += f"✨ Пыль — {dust['quantity']}\n"
+    for ing in other:
         text += f"{ing['emoji']} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
     text += "\n🏛 <b>Где крафтить:</b>\n"
     text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
