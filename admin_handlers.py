@@ -21,6 +21,9 @@ def is_admin(user_id: int) -> bool:
 # ---------- Роутер ----------
 admin_router = Router()
 
+# Константы для пагинации в админке
+ADMIN_ITEMS_PER_PAGE = 10
+
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
@@ -177,32 +180,60 @@ async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
-# ==================== РЕДАКТИРОВАНИЕ МОБА ====================
+# ==================== РЕДАКТИРОВАНИЕ МОБА (с пагинацией) ====================
 class EditMobStates(StatesGroup):
-    select_mob = State()      # выбор моба по ID
+    select_mob = State()      # выбор моба (с пагинацией)
     select_field = State()    # выбор поля для редактирования
     new_value = State()       # ввод нового значения
+
+async def get_mob_selection_keyboard(page: int) -> InlineKeyboardMarkup:
+    """Возвращает клавиатуру со списком мобов для выбора (с пагинацией)."""
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    mobs = await db.execute_query(
+        "SELECT id, name FROM mobs ORDER BY id LIMIT ? OFFSET ?",
+        (ADMIN_ITEMS_PER_PAGE + 1, offset)  # запрашиваем на 1 больше для определения has_next
+    )
+    has_next = len(mobs) > ADMIN_ITEMS_PER_PAGE
+    mobs = mobs[:ADMIN_ITEMS_PER_PAGE]
+
+    keyboard = []
+    for mob in mobs:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{mob['name']} (ID {mob['id']})",
+            callback_data=f"edit_mob_{mob['id']}"
+        )])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"edit_mob_page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"edit_mob_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @admin_router.callback_query(F.data == "admin_edit_mob")
 async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа")
         return
-    mobs = await db.execute_query("SELECT id, name FROM mobs ORDER BY id")
-    if not mobs:
-        await callback.message.edit_text("❌ Нет мобов для редактирования.")
-        await callback.answer()
-        return
-    # Строим клавиатуру из мобов (постранично? для простоты – до 20 кнопок)
-    keyboard = []
-    for mob in mobs[:20]:
-        keyboard.append([InlineKeyboardButton(text=f"{mob['name']} (ID {mob['id']})", callback_data=f"edit_mob_{mob['id']}")])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_cancel_edit")])
-    await callback.message.edit_text("Выберите моба для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await state.update_data(edit_page=1)
+    keyboard = await get_mob_selection_keyboard(1)
+    await callback.message.edit_text("Выберите моба для редактирования:", reply_markup=keyboard)
     await state.set_state(EditMobStates.select_mob)
     await callback.answer()
 
-@admin_router.callback_query(EditMobStates.select_mob, F.data.startswith("edit_mob_"))
+@admin_router.callback_query(EditMobStates.select_mob, F.data.startswith("edit_mob_page_"))
+async def edit_mob_page(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[3])
+    await state.update_data(edit_page=page)
+    keyboard = await get_mob_selection_keyboard(page)
+    await callback.message.edit_text("Выберите моба для редактирования:", reply_markup=keyboard)
+    await callback.answer()
+
+@admin_router.callback_query(EditMobStates.select_mob, F.data.startswith("edit_mob_") & ~F.data.startswith("edit_mob_page_"))
 async def select_mob_for_edit(callback: types.CallbackQuery, state: FSMContext):
     mob_id = int(callback.data.split("_")[2])
     await state.update_data(mob_id=mob_id)
@@ -245,14 +276,12 @@ async def set_new_value(message: types.Message, state: FSMContext):
     data = await state.get_data()
     mob_id = data['mob_id']
     field = data['edit_field']
-    # Валидация в зависимости от типа поля
     if field in ('hp', 'dust_min', 'dust_max', 'exp', 'location_id'):
         try:
             new_value = int(new_value)
         except ValueError:
             await message.answer("Ошибка: поле должно быть целым числом. Попробуйте снова:")
             return
-    # Обновление в БД
     query = f"UPDATE mobs SET {field} = ? WHERE id = ?"
     try:
         await db.execute_query(query, (new_value, mob_id))
@@ -263,33 +292,56 @@ async def set_new_value(message: types.Message, state: FSMContext):
     # Возвращаем в главное меню админки
     await message.answer("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
 
-@admin_router.callback_query(F.data == "admin_cancel_edit")
-async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
-    await callback.answer()
-
-# ==================== УДАЛЕНИЕ МОБА ====================
+# ==================== УДАЛЕНИЕ МОБА (с пагинацией) ====================
 class DeleteMobStates(StatesGroup):
     select_mob = State()
     confirm = State()
+
+async def get_delete_mob_selection_keyboard(page: int) -> InlineKeyboardMarkup:
+    """Клавиатура для выбора моба на удаление с пагинацией."""
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    mobs = await db.execute_query(
+        "SELECT id, name FROM mobs ORDER BY id LIMIT ? OFFSET ?",
+        (ADMIN_ITEMS_PER_PAGE + 1, offset)
+    )
+    has_next = len(mobs) > ADMIN_ITEMS_PER_PAGE
+    mobs = mobs[:ADMIN_ITEMS_PER_PAGE]
+
+    keyboard = []
+    for mob in mobs:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{mob['name']} (ID {mob['id']})",
+            callback_data=f"del_mob_{mob['id']}"
+        )])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"delete_mob_page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"delete_mob_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 @admin_router.callback_query(F.data == "admin_delete_mob")
 async def start_delete_mob(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа")
         return
-    mobs = await db.execute_query("SELECT id, name FROM mobs ORDER BY id")
-    if not mobs:
-        await callback.message.edit_text("❌ Нет мобов для удаления.")
-        await callback.answer()
-        return
-    keyboard = []
-    for mob in mobs[:20]:
-        keyboard.append([InlineKeyboardButton(text=f"{mob['name']} (ID {mob['id']})", callback_data=f"del_mob_{mob['id']}")])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_cancel_edit")])
-    await callback.message.edit_text("Выберите моба для УДАЛЕНИЯ:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await state.update_data(delete_page=1)
+    keyboard = await get_delete_mob_selection_keyboard(1)
+    await callback.message.edit_text("Выберите моба для УДАЛЕНИЯ:", reply_markup=keyboard)
     await state.set_state(DeleteMobStates.select_mob)
+    await callback.answer()
+
+@admin_router.callback_query(DeleteMobStates.select_mob, F.data.startswith("delete_mob_page_"))
+async def delete_mob_page(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[3])
+    await state.update_data(delete_page=page)
+    keyboard = await get_delete_mob_selection_keyboard(page)
+    await callback.message.edit_text("Выберите моба для УДАЛЕНИЯ:", reply_markup=keyboard)
     await callback.answer()
 
 @admin_router.callback_query(DeleteMobStates.select_mob, F.data.startswith("del_mob_"))
@@ -316,7 +368,6 @@ async def delete_mob(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     mob_id = data['mob_id']
     try:
-        # Сначала удаляем связанные записи (mob_drops, gear_drops), если есть внешние ключи
         await db.execute_query("DELETE FROM mob_drops WHERE mob_id = ?", (mob_id,))
         await db.execute_query("DELETE FROM gear_drops WHERE mob_id = ?", (mob_id,))
         await db.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
@@ -325,4 +376,10 @@ async def delete_mob(callback: types.CallbackQuery, state: FSMContext):
         logger.exception("Ошибка удаления моба")
         await callback.message.edit_text(f"❌ Ошибка: {e}")
     await state.clear()
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "admin_cancel_edit")
+async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
     await callback.answer()
