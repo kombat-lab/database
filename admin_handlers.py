@@ -114,8 +114,9 @@ async def resource_add_name(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ResourceStates.add_name)
     await callback.answer()
 
-@admin_router.message(ResourceStates.add_name)
+@admin_router.message(ResourceStates.add_name, F.text)
 async def resource_add_emoji(message: types.Message, state: FSMContext):
+    logger.info(f"resource_add_emoji получил текст: {message.text}")
     name = message.text.strip()
     if not name:
         await message.answer("Название не может быть пустым. Попробуйте снова:")
@@ -124,8 +125,9 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await message.answer("Теперь введите эмодзи для ресурса (один символ, например 🍎):")
     await state.set_state(ResourceStates.add_emoji)
 
-@admin_router.message(ResourceStates.add_emoji)
+@admin_router.message(ResourceStates.add_emoji, F.text)
 async def resource_save(message: types.Message, state: FSMContext):
+    logger.info(f"resource_save получил эмодзи: {message.text}")
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
@@ -175,8 +177,9 @@ async def resource_edit_name_prompt(callback: types.CallbackQuery, state: FSMCon
     await state.set_state(ResourceStates.edit_name)
     await callback.answer()
 
-@admin_router.message(ResourceStates.edit_name)
+@admin_router.message(ResourceStates.edit_name, F.text)
 async def resource_update_name(message: types.Message, state: FSMContext):
+    logger.info(f"resource_update_name получил текст: {message.text}")
     new_name = message.text.strip()
     if not new_name:
         await message.answer("Название не может быть пустым. Попробуйте снова:")
@@ -214,8 +217,9 @@ async def resource_edit_emoji_prompt(callback: types.CallbackQuery, state: FSMCo
     await state.set_state(ResourceStates.edit_emoji)
     await callback.answer()
 
-@admin_router.message(ResourceStates.edit_emoji)
+@admin_router.message(ResourceStates.edit_emoji, F.text)
 async def resource_update_emoji(message: types.Message, state: FSMContext):
+    logger.info(f"resource_update_emoji получил эмодзи: {message.text}")
     new_emoji = message.text.strip()
     if not is_valid_emoji(new_emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
@@ -294,8 +298,9 @@ async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AddMobStates.name)
     await callback.answer()
 
-@admin_router.message(AddMobStates.name)
+@admin_router.message(AddMobStates.name, F.text)
 async def add_mob_name(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_name получил текст: {message.text}")
     name = message.text.strip()
     if not name:
         await message.answer("Название не может быть пустым. Попробуйте снова:")
@@ -304,8 +309,9 @@ async def add_mob_name(message: types.Message, state: FSMContext):
     await message.answer("Введите эмодзи моба (один символ, например 🐺):")
     await state.set_state(AddMobStates.emoji)
 
-@admin_router.message(AddMobStates.emoji)
+@admin_router.message(AddMobStates.emoji, F.text)
 async def add_mob_emoji(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_emoji получил эмодзи: {message.text}")
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
@@ -314,8 +320,9 @@ async def add_mob_emoji(message: types.Message, state: FSMContext):
     await message.answer("Введите HP (целое положительное число):")
     await state.set_state(AddMobStates.hp)
 
-@admin_router.message(AddMobStates.hp)
+@admin_router.message(AddMobStates.hp, F.text)
 async def add_mob_hp(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_hp получил текст: {message.text}")
     try:
         hp = int(message.text.strip())
         if hp < 0:
@@ -327,8 +334,9 @@ async def add_mob_hp(message: types.Message, state: FSMContext):
     await message.answer("Введите минимальное количество пыли (dust_min):")
     await state.set_state(AddMobStates.dust_min)
 
-@admin_router.message(AddMobStates.dust_min)
+@admin_router.message(AddMobStates.dust_min, F.text)
 async def add_mob_dust_min(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_dust_min получил текст: {message.text}")
     try:
         dust_min = int(message.text.strip())
         if dust_min < 0:
@@ -340,8 +348,9 @@ async def add_mob_dust_min(message: types.Message, state: FSMContext):
     await message.answer("Введите максимальное количество пыли (dust_max):")
     await state.set_state(AddMobStates.dust_max)
 
-@admin_router.message(AddMobStates.dust_max)
+@admin_router.message(AddMobStates.dust_max, F.text)
 async def add_mob_dust_max(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_dust_max получил текст: {message.text}")
     try:
         dust_max = int(message.text.strip())
         if dust_max < 0:
@@ -357,8 +366,9 @@ async def add_mob_dust_max(message: types.Message, state: FSMContext):
     await message.answer("Введите опыт (exp):")
     await state.set_state(AddMobStates.exp)
 
-@admin_router.message(AddMobStates.exp)
+@admin_router.message(AddMobStates.exp, F.text)
 async def add_mob_exp(message: types.Message, state: FSMContext):
+    logger.info(f"add_mob_exp получил текст: {message.text}")
     try:
         exp = int(message.text.strip())
         if exp < 0:
@@ -494,8 +504,9 @@ async def select_field_to_edit(callback: types.CallbackQuery, state: FSMContext)
     await state.set_state(EditMobStates.new_value)
     await callback.answer()
 
-@admin_router.message(EditMobStates.new_value)
+@admin_router.message(EditMobStates.new_value, F.text)
 async def set_new_value(message: types.Message, state: FSMContext):
+    logger.info(f"set_new_value получил текст: {message.text}")
     new_value = message.text.strip()
     data = await state.get_data()
     mob_id = data['mob_id']
