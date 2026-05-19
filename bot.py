@@ -3,7 +3,7 @@ import logging
 import asyncio
 import re
 
-from aiogram import Bot, Dispatcher, Router, types, F
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ---------- Экранирование Markdown ----------
+# ---------- Экранирование ----------
 def escape_markdown(text: str) -> str:
     escape_chars = r'_*[]()~`>#+=|{}.!'
     return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
@@ -37,13 +37,12 @@ def escape_markdown(text: str) -> str:
 def clean_username(username: str) -> str:
     return username.lstrip('@') if username else ''
 
-# ---------------------- Формирование карточек ----------------------
+# ---------- Формирование карточек (как ранее) ----------
 async def format_mob_card(mob: dict) -> str:
     loc = await db.get_location_by_id(mob["location_id"])
     loc_str = f"{loc['emoji']} {escape_markdown(loc['name'])}" if loc else "Неизвестно"
     drops = await db.get_mob_drops(mob["id"])
     gear_drops = await db.get_mob_gear_drops(mob["id"])
-
     text = f"{mob['emoji']} *{escape_markdown(mob['name'])}*\n"
     text += f"❤️ HP: {mob['hp']}\n✨ Пыль: {mob['dust_min']}-{mob['dust_max']}\n⭐ Опыт: {mob['exp']}\n📍 Локация: {loc_str}\n\n"
     if drops:
@@ -65,11 +64,9 @@ async def format_gear_card(gear: dict) -> str:
     rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
     rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
     rarity_text = f"{rarity_emoji[gear['rarity']]} {rarity_names[gear['rarity']]}"
-
     mobs = await db.get_gear_mobs(gear["id"]) if gear["rarity"] == "common" else []
     ingredients = await db.get_recipe_for_gear(gear["id"]) if gear.get("craftable") else []
     owners = await db.get_recipe_owners(gear["id"]) if gear.get("craftable") else []
-
     text = f"{gear['emoji']} *{escape_markdown(gear['name'])}*\n"
     text += f"Редкость: {rarity_text}\nСлот: {gear['slot']}\n"
     if gear.get("craftable"):
@@ -89,7 +86,7 @@ async def format_gear_card(gear: dict) -> str:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {escape_markdown(m['name'])}" for m in mobs) + "\n"
     return text
 
-# ---------------------- Клавиатуры ----------------------
+# ---------- Клавиатуры ----------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -120,16 +117,13 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         items = await db.get_resources_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     else:
         return InlineKeyboardMarkup(inline_keyboard=[])
-
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
-
     keyboard = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
         callback_data = f"view_{category}_{item['id']}_{location_id}_{page}"
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
-
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
@@ -137,9 +131,7 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{category}_{location_id}_{page+1}"))
     if nav:
         keyboard.append(nav)
-
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к локациям",
-                                          callback_data=f"back_to_locations_{category}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к локациям", callback_data=f"back_to_locations_{category}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
@@ -147,13 +139,11 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
     items = await db.get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
-
     keyboard = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
         callback_data = f"view_gear_{item['id']}_{rarity}_{page}"
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
-
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
@@ -161,7 +151,6 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
     if nav:
         keyboard.append(nav)
-
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -170,7 +159,7 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔍 Искать через @fog_database_bot", switch_inline_query_current_chat="")]
     ])
 
-# ---------------------- Обработчики команд и reply-кнопок ----------------------
+# ---------- Обработчики команд ----------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
@@ -179,6 +168,7 @@ async def send_menu(message: types.Message):
 async def search_command(message: types.Message):
     await message.answer("🔎 Просто напишите название моба, ресурса или предмета снаряжения в чат.")
 
+# ---------- Reply-кнопки ----------
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     await message.delete()
@@ -203,21 +193,19 @@ async def search_button(message: types.Message):
         parse_mode="Markdown"
     )
 
-# ---------------------- Поисковый роутер (низкий приоритет) ----------------------
-search_router = Router()
-
-@search_router.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
+# ---------- Текстовый поиск (с проверкой FSM) ----------
+@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
 async def handle_search(message: types.Message, state: FSMContext):
+    if await state.get_state() is not None:
+        return
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
         return
-
     results = await db.search(query_text)
     if not any(results.values()):
         await message.answer("Ничего не найдено.")
         return
-
     reply = "🔎 *Результаты поиска:*\n\n"
     if results["mobs"]:
         reply += "*Мобы:*\n"
@@ -235,67 +223,55 @@ async def handle_search(message: types.Message, state: FSMContext):
             reply += f"{g['emoji']} {escape_markdown(g['name'])} {rarity_emoji.get(g['rarity'], '')}\n"
     await message.answer(reply, parse_mode="Markdown")
 
-# ---------------------- Инлайн-поиск ----------------------
+# ---------- Инлайн-поиск ----------
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
         return
-
     results = await db.search(query)
     inline_results = []
-
     for mob in results.get("mobs", [])[:50]:
         text = await format_mob_card(mob)
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
-            id=f"mob_{mob['id']}",
-            title=mob['name'],
-            description=desc,
+            id=f"mob_{mob['id']}", title=mob['name'], description=desc,
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown")
         ))
-
     for res in results.get("resources", [])[:50]:
         text = await format_resource_card(res)
         inline_results.append(InlineQueryResultArticle(
-            id=f"res_{res['id']}",
-            title=res['name'],
-            description="Ресурс",
+            id=f"res_{res['id']}", title=res['name'], description="Ресурс",
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown")
         ))
-
     for gear in results.get("gear", [])[:50]:
         full_gear = await db.get_gear_info(gear["id"])
-        if not full_gear:
-            continue
+        if not full_gear: continue
         text = await format_gear_card(full_gear)
         inline_results.append(InlineQueryResultArticle(
-            id=f"gear_{gear['id']}",
-            title=full_gear['name'],
-            description=f"{full_gear['slot']} | {full_gear['rarity']}",
+            id=f"gear_{gear['id']}", title=full_gear['name'], description=f"{full_gear['slot']} | {full_gear['rarity']}",
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown")
         ))
-
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------------------- Callback-обработчики ----------------------
+# ---------- Callback-обработчики (основные) ----------
 @dp.callback_query(F.data == "gear_rarities")
-async def gear_rarities_callback(callback_query: types.CallbackQuery):
-    await callback_query.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
-    await callback_query.answer()
+async def gear_rarities_callback(callback: types.CallbackQuery):
+    await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("back_to_locations_"))
-async def back_to_locations(callback_query: types.CallbackQuery):
-    category = callback_query.data.split("_")[3]
+async def back_to_locations(callback: types.CallbackQuery):
+    category = callback.data.split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
-    await callback_query.message.edit_text(text, reply_markup=keyboard)
-    await callback_query.answer()
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
-async def list_or_page_callback(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split("_")
+async def list_or_page_callback(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
     if parts[0] in ("list", "page"):
         category = parts[1]
         loc_id = int(parts[2])
@@ -304,105 +280,80 @@ async def list_or_page_callback(callback_query: types.CallbackQuery):
         category = parts[1]
         loc_id = int(parts[2])
         page = int(parts[3])
-
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}"
-    await callback_query.message.edit_text(title, reply_markup=keyboard)
-    await callback_query.answer()
+    await callback.message.edit_text(title, reply_markup=keyboard)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
-async def gear_list_or_page_callback(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split("_")
+async def gear_list_or_page_callback(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
     rarity = parts[2]
     page = int(parts[3])
     rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
     rarity_name = rarity_names.get(rarity, rarity)
     keyboard = await get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
-    await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
-    await callback_query.answer()
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
-async def view_mob(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split("_")
+async def view_mob(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-
     mob_res = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob_res:
-        await callback_query.message.edit_text("Моб не найден.")
-        await callback_query.answer()
+        await callback.message.edit_text("Моб не найден.")
+        await callback.answer()
         return
     mob = mob_res[0]
     text = await format_mob_card(mob)
-    back_button = InlineKeyboardButton(
-        text="🔙 Назад к списку мобов",
-        callback_data=f"list_mobs_{location_id}_{page}"
-    )
-    await callback_query.message.edit_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-    )
-    await callback_query.answer()
+    back_button = InlineKeyboardButton(text="🔙 Назад к списку мобов", callback_data=f"list_mobs_{location_id}_{page}")
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
-async def view_resource(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split("_")
+async def view_resource(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
     resource_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-
     res = await db.get_resource_info(resource_id)
     if not res:
-        await callback_query.message.edit_text("Ресурс не найден.")
-        await callback_query.answer()
+        await callback.message.edit_text("Ресурс не найден.")
+        await callback.answer()
         return
     text = await format_resource_card(res)
-    back_button = InlineKeyboardButton(
-        text="🔙 Назад к списку ресурсов",
-        callback_data=f"list_resources_{location_id}_{page}"
-    )
-    await callback_query.message.edit_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-    )
-    await callback_query.answer()
+    back_button = InlineKeyboardButton(text="🔙 Назад к списку ресурсов", callback_data=f"list_resources_{location_id}_{page}")
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_gear_"))
-async def view_gear(callback_query: types.CallbackQuery):
-    parts = callback_query.data.split("_")
+async def view_gear(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
     gear_id = int(parts[2])
     rarity = parts[3]
     page = int(parts[4])
-
     gear = await db.get_gear_info(gear_id)
     if not gear:
-        await callback_query.message.edit_text("Предмет не найден.")
-        await callback_query.answer()
+        await callback.message.edit_text("Предмет не найден.")
+        await callback.answer()
         return
-
     text = await format_gear_card(gear)
     back_button = InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"list_gear_{rarity}_{page}")
     other_rarity_button = InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")
-    await callback_query.message.edit_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button], [other_rarity_button]])
-    )
-    await callback_query.answer()
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button], [other_rarity_button]]))
+    await callback.answer()
 
-# ---------------------- Запуск ----------------------
+# ---------- Запуск ----------
 async def main():
     await db.connect()
-    # Важно: сначала подключаем админ-роутер (он обрабатывает сообщения при активных состояниях)
     dp.include_router(admin_router)
-    # Затем поисковый роутер (только если админ-роутер не сработал)
-    dp.include_router(search_router)
-    try:
-        await dp.start_polling(bot, skip_updates=True)
-    finally:
-        await db.close()
+    await dp.start_polling(bot, skip_updates=True)
+    await db.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
