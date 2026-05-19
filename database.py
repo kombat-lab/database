@@ -3,14 +3,12 @@ import asyncio
 import logging
 import aiosqlite
 from typing import List, Dict, Any, Optional
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
 def _lower_unicode(s: str) -> str:
-    """Кастомная SQL-функция для case-insensitive сравнения."""
     if s is None:
         return None
     return s.lower()
@@ -25,14 +23,12 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.execute("PRAGMA journal_mode = WAL")
-        # Регистрируем кастомную функцию
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
         await self._ensure_indexes()
         await self._load_locations_cache()
         logger.info(f"Database connected: {DB_PATH}")
 
     async def _ensure_indexes(self):
-        """Создаёт индексы, если их ещё нет."""
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_mobs_location ON mobs(location_id)",
             "CREATE INDEX IF NOT EXISTS idx_mobs_name ON mobs(name)",
@@ -57,7 +53,6 @@ class Database:
             await self._conn.close()
 
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """Выполняет запрос с автоматическим rollback при ошибке."""
         async with self._conn.execute(query, params) as cursor:
             try:
                 rows = await cursor.fetchall()
@@ -83,7 +78,7 @@ class Database:
     def invalidate_location_cache(self):
         asyncio.create_task(self._load_locations_cache())
 
-    # ---------- Мобы (один запрос на карточку) ----------
+    # ---------- Мобы ----------
     async def get_mob_full_card(self, mob_id: int) -> Optional[Dict]:
         query = """
             SELECT
@@ -147,50 +142,49 @@ class Database:
         return await self.execute_query(query, (location_id, limit, offset))
 
     # ---------- Снаряжение ----------
-async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
-    query = """
-        SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji, g.scroll_resource_id,
-               (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
-                FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id
-                WHERE gd.gear_id = g.id) as gear_drops_mobs,
-               (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
-                FROM recipes rc
-                JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
-                JOIN resources r ON ri.resource_id = r.id
-                WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
-               (SELECT GROUP_CONCAT(player_username) FROM recipe_owners ro
-                WHERE ro.recipe_id = (SELECT id FROM recipes WHERE result_type='gear' AND result_id=g.id)) as owners
-        FROM gear g
-        WHERE g.id = ?
-    """
-    res = await self.execute_query(query, (gear_id,))
-    if not res:
-        return None
-    row = res[0]
-    
-    # Для эпического снаряжения ищем мобов через свиток
-    if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
-        mobs_data = await self.execute_query(
-            "SELECT m.id, m.name, m.emoji FROM mob_drops md "
-            "JOIN mobs m ON md.mob_id = m.id WHERE md.resource_id = ? ORDER BY m.id",
-            (row['scroll_resource_id'],)
-        )
-        row["mobs"] = mobs_data
-    else:
-        # Для common и rare берём прямые дропы из gear_drops (если есть)
-        mobs_str = row['gear_drops_mobs']
-        row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
-    
-    row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
-    row["owners"] = row["owners"].split(",") if row["owners"] else []
-    
-    # Чистим временные поля
-    if 'gear_drops_mobs' in row:
-        del row['gear_drops_mobs']
-    if 'scroll_resource_id' in row:
-        del row['scroll_resource_id']
-    
-    return row
+    async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
+        query = """
+            SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji, g.scroll_resource_id,
+                   (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
+                    FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id
+                    WHERE gd.gear_id = g.id) as gear_drops_mobs,
+                   (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
+                    FROM recipes rc
+                    JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
+                    JOIN resources r ON ri.resource_id = r.id
+                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
+                   (SELECT GROUP_CONCAT(player_username) FROM recipe_owners ro
+                    WHERE ro.recipe_id = (SELECT id FROM recipes WHERE result_type='gear' AND result_id=g.id)) as owners
+            FROM gear g
+            WHERE g.id = ?
+        """
+        res = await self.execute_query(query, (gear_id,))
+        if not res:
+            return None
+        row = res[0]
+
+        # Для эпического снаряжения ищем мобов через свиток
+        if row['rarity'] == 'epic' and row.get('scroll_resource_id'):
+            mobs_data = await self.execute_query(
+                "SELECT m.id, m.name, m.emoji FROM mob_drops md "
+                "JOIN mobs m ON md.mob_id = m.id WHERE md.resource_id = ? ORDER BY m.id",
+                (row['scroll_resource_id'],)
+            )
+            row["mobs"] = mobs_data
+        else:
+            mobs_str = row['gear_drops_mobs']
+            row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
+
+        row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
+        row["owners"] = row["owners"].split(",") if row["owners"] else []
+
+        # Удаляем временные поля
+        if 'gear_drops_mobs' in row:
+            del row['gear_drops_mobs']
+        if 'scroll_resource_id' in row:
+            del row['scroll_resource_id']
+
+        return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
@@ -199,7 +193,7 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
             (rarity, limit, offset)
         )
 
-    # ---------- Поиск (с LOWER_UNICODE) ----------
+    # ---------- Поиск ----------
     async def search(self, query: str) -> Dict[str, List[Dict]]:
         search_pattern = f"%{query}%"
         mobs = await self.execute_query(
@@ -221,7 +215,7 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         )
         return {"mobs": mobs, "resources": resources, "gear": gear}
 
-    # ---------- Вспомогательные парсеры ----------
+    # ---------- Парсеры ----------
     @staticmethod
     def _parse_drop_item(s: str, gear: bool = False) -> Dict:
         parts = s.split("|")
@@ -235,7 +229,7 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         parts = s.split("|")
         return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "quantity": int(parts[3])}
 
-    # ---------- Админка: пагинация на стороне SQL ----------
+    # ---------- Пагинация для админки ----------
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji FROM resources ORDER BY id LIMIT ? OFFSET ?",
@@ -323,7 +317,7 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
                 (mob_id, item_id)
             )
 
-    # ---------- Остальные методы для совместимости ----------
+    # ---------- Совместимость со старым кодом ----------
     async def get_all_resources(self):
         return await self.execute_query("SELECT id, name, emoji FROM resources")
 
