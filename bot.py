@@ -416,8 +416,8 @@ async def view_resource(callback: types.CallbackQuery):
     prev_res = await db.execute_query(
         """
         SELECT r.id FROM resources r
-        JOIN mob_drops md ON r.id = md.resource_id
-        JOIN mobs m ON md.mob_id = m.id
+        JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
+        JOIN mobs m ON d.mob_id = m.id
         WHERE m.location_id = ? AND r.id < ?
         GROUP BY r.id
         ORDER BY r.id DESC LIMIT 1
@@ -427,8 +427,8 @@ async def view_resource(callback: types.CallbackQuery):
     next_res = await db.execute_query(
         """
         SELECT r.id FROM resources r
-        JOIN mob_drops md ON r.id = md.resource_id
-        JOIN mobs m ON md.mob_id = m.id
+        JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
+        JOIN mobs m ON d.mob_id = m.id
         WHERE m.location_id = ? AND r.id > ?
         GROUP BY r.id
         ORDER BY r.id LIMIT 1
