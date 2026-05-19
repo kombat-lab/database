@@ -18,7 +18,7 @@ if not TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
 ITEMS_PER_PAGE = 10
-FETCH_EXTRA = 1  # для определения наличия следующей страницы
+FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 
 logging.basicConfig(level=logging.INFO)
@@ -29,17 +29,15 @@ dp = Dispatcher()
 
 # ---------- Экранирование Markdown ----------
 def escape_markdown(text: str) -> str:
-    """Экранирует специальные символы для Telegram parse_mode='Markdown'.
-    Дефис не экранируем, т.к. он не является спецсимволом в обычном Markdown.
-    """
-    escape_chars = r'_*[]()~`>#+=|{}.!'   # убран дефис
+    """Экранирует специальные символы для Telegram parse_mode='Markdown'."""
+    escape_chars = r'_*[]()~`>#+=|{}.!'   # дефис не экранируем
     return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
 
 def clean_username(username: str) -> str:
     """Убирает ведущий '@' если есть, чтобы затем добавить его при выводе."""
     return username.lstrip('@') if username else ''
 
-# ---------------------- Формирование карточек (без дублирования) ----------------------
+# ---------------------- Формирование карточек ----------------------
 async def format_mob_card(mob: dict) -> str:
     loc = await db.get_location_by_id(mob["location_id"])
     loc_str = f"{loc['emoji']} {escape_markdown(loc['name'])}" if loc else "Неизвестно"
@@ -105,20 +103,18 @@ async def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     locations = await db.get_locations()
     keyboard = [[InlineKeyboardButton(text=f"{loc['emoji']} {loc['name']}",
                                       callback_data=f"list_{category}_{loc['id']}_1")] for loc in locations]
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")])
+    # Кнопка "Назад в меню" удалена
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
         [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")],
-        [InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu")]
+        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")]
     ])
 
 async def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ITEMS_PER_PAGE
-    # Запрашиваем на 1 элемент больше, чтобы узнать о наличии следующей страницы
     if category == "mobs":
         items = await db.get_mobs_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     elif category == "resources":
@@ -168,7 +164,7 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
         keyboard.append(nav)
 
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
-    keyboard.append([InlineKeyboardButton(text="🔙 В главное меню", callback_data="main_menu")])
+    # Кнопка "🔙 В главное меню" удалена
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -288,12 +284,6 @@ async def inline_search_handler(inline_query: InlineQuery):
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
 # ---------------------- Callback-обработчики ----------------------
-@dp.callback_query(F.data == "main_menu")
-async def main_menu_callback(callback_query: types.CallbackQuery):
-    await callback_query.message.delete()
-    await callback_query.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
-    await callback_query.answer()
-
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
@@ -311,13 +301,11 @@ async def back_to_locations(callback_query: types.CallbackQuery):
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
 async def list_or_page_callback(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
-    # Формат: [префикс, category, location_id, page]
-    # префикс может быть "list" или "page"
     if parts[0] in ("list", "page"):
-        category = parts[1]  # "mobs" или "resources"
+        category = parts[1]
         loc_id = int(parts[2])
         page = int(parts[3])
-    else:  # "list_mobs_1_2" -> parts = ["list", "mobs", "1", "2"]
+    else:
         category = parts[1]
         loc_id = int(parts[2])
         page = int(parts[3])
@@ -332,7 +320,6 @@ async def list_or_page_callback(callback_query: types.CallbackQuery):
 @dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
 async def gear_list_or_page_callback(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
-    # Пример: list_gear_common_1  или page_gear_common_2
     rarity = parts[2]
     page = int(parts[3])
     rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
