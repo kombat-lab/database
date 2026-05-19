@@ -23,7 +23,9 @@ from database import (
     search,
     get_location_by_id,
     get_resource_info,
-    execute_query
+    execute_query,
+    get_recipe_for_gear,
+    get_recipe_owners
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -136,7 +138,8 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
 # ---------------------- Обработчики команд ----------------------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
-    await message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
+    # Отправляем только клавиатуру, без лишнего текста
+    await message.answer("", reply_markup=get_main_menu_reply_keyboard())
 
 @dp.message(Command("search"))
 async def search_command(message: types.Message):
@@ -261,27 +264,49 @@ async def inline_search_handler(inline_query: InlineQuery):
         ))
 
     # ----- Снаряжение (полная карточка с информацией о крафте и мобах) -----
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
+    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+    
     for gear in results.get("gear", [])[:50]:
         gear_id = gear['id']
-        full_gear = get_gear_info(gear_id)  # получаем полные данные (craftable, craft_dust)
+        full_gear = get_gear_info(gear_id)
         if not full_gear:
             continue
         mobs = get_gear_mobs(gear_id) if full_gear["rarity"] == "common" else []
-        rarity_emoji = {"common":"⚪", "rare":"🟢", "epic":"🔵"}.get(full_gear["rarity"], "")
+        
+        rarity_text = f"{rarity_emoji[full_gear['rarity']]} {rarity_names[full_gear['rarity']]}"
         
         message_text = (
-            f"{full_gear['emoji']} *{full_gear['name']}* {rarity_emoji}\n"
-            f"Редкость: {full_gear['rarity']}\n"
+            f"{full_gear['emoji']} *{full_gear['name']}*\n"
+            f"Редкость: {rarity_text}\n"
             f"Слот: {full_gear['slot']}\n"
         )
         if full_gear.get("craftable"):
-            message_text += f"Крафт: да, пыль: {full_gear['craft_dust']}\n"
+            message_text += f"Крафт: да\n"
+            message_text += "\n*Требуемые ресурсы:*\n"
+            message_text += f"✨ Пыль — {full_gear['craft_dust']}\n"
+            ingredients = get_recipe_for_gear(gear_id)
+            if ingredients:
+                for ing in ingredients:
+                    message_text += f"{ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+            else:
+                message_text += "_Рецепт не найден._\n"
+            
+            # Владельцы рецепта (только для эпического, но можно и для всех)
+            owners = get_recipe_owners(gear_id)
+            if owners:
+                message_text += "\n👥 *Владельцы рецепта:*\n"
+                for username in owners:
+                    # Убираем @ если есть, чтобы не дублировать
+                    clean_username = username.lstrip('@')
+                    message_text += f"@{clean_username}\n"
         else:
-            message_text += "Крафт: нет (выпадает)\n"
+            message_text += "Крафт: нет\n"
+        
         if mobs:
             message_text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
         
-        description = f"{full_gear['slot']} | Редкость: {full_gear['rarity']}"
+        description = f"{full_gear['slot']} | {rarity_names[full_gear['rarity']]}"
         inline_results.append(InlineQueryResultArticle(
             id=f"gear_{gear_id}",
             title=full_gear['name'],
@@ -295,7 +320,8 @@ async def inline_search_handler(inline_query: InlineQuery):
 @dp.callback_query(F.data == "main_menu")
 async def main_menu_callback(callback_query: types.CallbackQuery):
     await callback_query.message.delete()
-    await callback_query.message.answer("Выбери категорию:", reply_markup=get_main_menu_reply_keyboard())
+    # Отправляем только клавиатуру
+    await callback_query.message.answer("", reply_markup=get_main_menu_reply_keyboard())
     await callback_query.answer()
 
 @dp.callback_query(F.data == "gear_rarities")
@@ -316,7 +342,8 @@ async def list_gear_by_rarity(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
     rarity = parts[2]
     page = int(parts[3])
-    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
+    rarity_name = rarity_names.get(rarity, rarity)
     keyboard = get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -327,7 +354,8 @@ async def page_gear_rarity(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
     rarity = parts[2]
     page = int(parts[3])
-    rarity_name = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}.get(rarity, rarity)
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
+    rarity_name = rarity_names.get(rarity, rarity)
     keyboard = get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ *Снаряжение — {rarity_name}*\nСтраница {page}"
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -435,12 +463,36 @@ async def view_gear(callback_query: types.CallbackQuery):
         await callback_query.message.edit_text("Предмет не найден.")
         await callback_query.answer()
         return
+    
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
+    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+    rarity_text = f"{rarity_emoji[gear['rarity']]} {rarity_names[gear['rarity']]}"
+    
     mobs = get_gear_mobs(gear_id) if gear["rarity"] == "common" else []
-    text = f"{gear['emoji']} *{gear['name']}*\nРедкость: {gear['rarity']}\nСлот: {gear['slot']}\n"
+    text = f"{gear['emoji']} *{gear['name']}*\n"
+    text += f"Редкость: {rarity_text}\n"
+    text += f"Слот: {gear['slot']}\n"
+    
     if gear.get("craftable"):
-        text += f"Крафт: да, пыль: {gear['craft_dust']}\n"
+        text += f"Крафт: да\n"
+        text += "\n*Требуемые ресурсы:*\n"
+        text += f"✨ Пыль — {gear['craft_dust']}\n"
+        ingredients = get_recipe_for_gear(gear_id)
+        if ingredients:
+            for ing in ingredients:
+                text += f"{ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+        else:
+            text += "_Рецепт не найден._\n"
+        
+        owners = get_recipe_owners(gear_id)
+        if owners:
+            text += "\n👥 *Владельцы рецепта:*\n"
+            for username in owners:
+                clean_username = username.lstrip('@')
+                text += f"@{clean_username}\n"
     else:
-        text += "Крафт: нет (выпадает)\n"
+        text += "Крафт: нет\n"
+    
     if mobs:
         text += "\n*Выпадает с мобов:*\n" + "\n".join(f"{m['emoji']} {m['name']}" for m in mobs) + "\n"
 
