@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Путь к БД читается из переменной окружения DATABASE_PATH,
+# значение по умолчанию — "game.db"
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
 # --------------------------------------------------------------
@@ -25,11 +27,12 @@ class Database:
         self._lock = asyncio.Lock()
 
     async def connect(self):
+        """Инициализирует соединение, устанавливает row_factory и регистрирует SQL-функцию."""
         self._conn = await aiosqlite.connect(DB_PATH)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
         await self._conn.execute("PRAGMA foreign_keys = ON")
-        logger.info("Database connected")
+        logger.info(f"Database connected: {DB_PATH}")
 
     async def close(self):
         if self._conn:
@@ -42,19 +45,27 @@ class Database:
         return {key: row[key] for key in row.keys()}
 
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """
+        Выполняет SQL-запрос.
+        Для запросов, отличных от SELECT, автоматически выполняет commit.
+        Возвращает список словарей.
+        """
         async with self._lock:
             async with self._conn.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
+                # Если запрос не SELECT — фиксируем транзакцию
+                if not query.strip().upper().startswith("SELECT"):
+                    await self._conn.commit()
                 if not rows:
                     return []
-                # Если вдруг row_factory не сработал (кортежи), используем описание курсора
+                # Если row_factory не сработал (кортежи) — используем описание курсора
                 if not hasattr(rows[0], 'keys'):
                     col_names = [desc[0] for desc in cursor.description]
                     return [dict(zip(col_names, row)) for row in rows]
                 return [self._row_to_dict(row) for row in rows]
 
     # --------------------------------------------------------------
-    # Поиск и все остальные методы (они такие же, как в предыдущей версии)
+    # ПОИСК (регистронезависимый)
     # --------------------------------------------------------------
     async def search(self, query: str) -> Dict[str, List[Dict]]:
         search_pattern = f"%{query}%"
@@ -73,10 +84,19 @@ class Database:
         )
         return {"mobs": mobs, "resources": resources, "gear": gear}
 
+    # --------------------------------------------------------------
+    # Локации
+    # --------------------------------------------------------------
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         res = await self.execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
         return res[0] if res else None
 
+    async def get_locations(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
+
+    # --------------------------------------------------------------
+    # Мобы
+    # --------------------------------------------------------------
     async def get_mobs_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs "
@@ -98,6 +118,9 @@ class Database:
             (mob_id,)
         )
 
+    # --------------------------------------------------------------
+    # Ресурсы
+    # --------------------------------------------------------------
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         query = """
             SELECT DISTINCT r.id, r.name, r.emoji
@@ -120,6 +143,9 @@ class Database:
             (resource_id,)
         )
 
+    # --------------------------------------------------------------
+    # Снаряжение
+    # --------------------------------------------------------------
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, rarity, slot, emoji, craftable, craft_dust "
@@ -141,9 +167,9 @@ class Database:
             (gear_id,)
         )
 
-    async def get_locations(self) -> List[Dict]:
-        return await self.execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
-
+    # --------------------------------------------------------------
+    # Рецепты (крафт)
+    # --------------------------------------------------------------
     async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
         query = """
             SELECT ri.resource_id, r.name, r.emoji, ri.quantity
