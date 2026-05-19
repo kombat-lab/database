@@ -13,6 +13,8 @@ from aiogram.filters import Command
 
 from database import db
 
+from admin_handlers import admin_router
+
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("BOT_TOKEN not set")
