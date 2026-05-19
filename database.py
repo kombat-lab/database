@@ -206,7 +206,21 @@ async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         del row['scroll_resource_id']
     return row
 
-# Добавьте вспомогательный метод для парсинга ингредиентов из строки
+async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
+    """
+    Возвращает список предметов снаряжения указанной редкости с пагинацией.
+    
+    :param rarity: редкость ('common', 'rare', 'epic')
+    :param offset: сдвиг (сколько записей пропустить)
+    :param limit: максимальное количество записей
+    :return: список словарей с полями id, name, rarity, slot, emoji, craftable, craft_dust
+    """
+    return await self.execute_query(
+        "SELECT id, name, rarity, slot, emoji, craftable, craft_dust "
+        "FROM gear WHERE rarity = ? ORDER BY id LIMIT ? OFFSET ?",
+        (rarity, limit, offset)
+    )
+
 @staticmethod
 def _parse_ingredients_from_row(ingredients_str: str) -> List[Dict]:
     if not ingredients_str:
