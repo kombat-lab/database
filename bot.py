@@ -29,8 +29,10 @@ dp = Dispatcher()
 
 # ---------- Экранирование Markdown ----------
 def escape_markdown(text: str) -> str:
-    """Экранирует спецсимволы для Telegram parse_mode='Markdown'."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    """Экранирует специальные символы для Telegram parse_mode='Markdown'.
+    Дефис не экранируем, т.к. он не является спецсимволом в обычном Markdown.
+    """
+    escape_chars = r'_*[]()~`>#+=|{}.!'   # убран дефис
     return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
 
 def clean_username(username: str) -> str:
