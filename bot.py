@@ -81,8 +81,14 @@ async def format_gear_card(gear_id: int) -> str:
                 text += f"@{escape_html(clean)}\n"
     else:
         text += "Крафт: нет\n"
-    if data['mobs'] and data['rarity'] == 'common':
-        text += "\n<b>Выпадает с мобов:</b>\n" + "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
+    
+    # Показываем мобов для всех редкостей
+    if data['mobs']:
+        if data['rarity'] == 'epic':
+            text += "\n<b>📜 Свиток падает с мобов:</b>\n"
+        else:
+            text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
+        text += "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
     return text
 
 # ---------- Клавиатуры ----------
@@ -398,6 +404,7 @@ async def view_gear(callback: types.CallbackQuery):
 
     text = await format_gear_card(gear_id)
 
+    # Кнопки навигации между предметами
     prev_gear = await db.execute_query(
         "SELECT id FROM gear WHERE rarity = ? AND id < ? ORDER BY id DESC LIMIT 1",
         (rarity, gear_id)
@@ -423,16 +430,11 @@ async def view_gear(callback: types.CallbackQuery):
         text="🔙 Назад к списку",
         callback_data=f"list_gear_{rarity}_{page}"
     )
-    other_rarity_button = InlineKeyboardButton(
-        text="🔄 Выбрать другую редкость",
-        callback_data="gear_rarities"
-    )
 
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    keyboard.append([other_rarity_button])
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
