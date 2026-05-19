@@ -8,7 +8,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
-from aiogram.filters import Command, StateFilter   # <-- добавлен StateFilter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 
 from database import db
@@ -34,7 +34,7 @@ def escape_html(text: str) -> str:
 def clean_username(username: str) -> str:
     return username.lstrip('@') if username else ''
 
-# ---------- Формирование карточек (те же, что были) ----------
+# ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
     data = await db.get_mob_full_card(mob_id)
     if not data:
@@ -81,8 +81,7 @@ async def format_gear_card(gear_id: int) -> str:
                 text += f"@{escape_html(clean)}\n"
     else:
         text += "Крафт: нет\n"
-    
-    # Показываем мобов для всех редкостей
+
     if data['mobs']:
         if data['rarity'] == 'epic':
             text += "\n<b>📜 Свиток падает с мобов:</b>\n"
@@ -112,6 +111,11 @@ def get_rarities_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
         [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
         [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")]
+    ])
+
+def get_inline_search_button() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Искать через @fog_database_bot", switch_inline_query_current_chat="")]
     ])
 
 async def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
@@ -190,7 +194,6 @@ async def search_button(message: types.Message):
         parse_mode="HTML"
     )
 
-# ГЛАВНОЕ ИСПРАВЛЕНИЕ: добавлен StateFilter(None)
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
 async def handle_search(message: types.Message, state: FSMContext):
     query_text = message.text.strip()
@@ -246,7 +249,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         ))
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------- Callback-обработчики (без изменений) ----------
+# ---------- Callback-обработчики ----------
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
@@ -291,25 +294,20 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback: types.CallbackQuery):
-    # Формат: view_mobs_{mob_id}_{location_id}_{page}
     parts = callback.data.split("_")
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-
     text = await format_mob_card(mob_id)
 
-    # Предыдущий моб (max id < текущего в той же локации)
     prev_mob = await db.execute_query(
         "SELECT id FROM mobs WHERE location_id = ? AND id < ? ORDER BY id DESC LIMIT 1",
         (location_id, mob_id)
     )
-    # Следующий моб (min id > текущего)
     next_mob = await db.execute_query(
         "SELECT id FROM mobs WHERE location_id = ? AND id > ? ORDER BY id LIMIT 1",
         (location_id, mob_id)
     )
-
     nav_buttons = []
     if prev_mob:
         nav_buttons.append(InlineKeyboardButton(
@@ -321,31 +319,25 @@ async def view_mob(callback: types.CallbackQuery):
             text="Следующий ▶",
             callback_data=f"view_mobs_{next_mob[0]['id']}_{location_id}_{page}"
         ))
-
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
         callback_data=f"list_mobs_{location_id}_{page}"
     )
-
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback: types.CallbackQuery):
-    # Формат: view_resources_{res_id}_{location_id}_{page}
     parts = callback.data.split("_")
     res_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-
     text = await format_resource_card(res_id)
 
-    # Ищем соседей среди ресурсов, доступных в этой локации (используем тот же JOIN, что и в списке)
     prev_res = await db.execute_query(
         """
         SELECT r.id FROM resources r
@@ -368,7 +360,6 @@ async def view_resource(callback: types.CallbackQuery):
         """,
         (location_id, res_id)
     )
-
     nav_buttons = []
     if prev_res:
         nav_buttons.append(InlineKeyboardButton(
@@ -380,31 +371,25 @@ async def view_resource(callback: types.CallbackQuery):
             text="Следующий ▶",
             callback_data=f"view_resources_{next_res[0]['id']}_{location_id}_{page}"
         ))
-
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
         callback_data=f"list_resources_{location_id}_{page}"
     )
-
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback: types.CallbackQuery):
-    # Формат: view_gear_{gear_id}_{rarity}_{page}
     parts = callback.data.split("_")
     gear_id = int(parts[2])
     rarity = parts[3]
     page = int(parts[4])
-
     text = await format_gear_card(gear_id)
 
-    # Кнопки навигации между предметами
     prev_gear = await db.execute_query(
         "SELECT id FROM gear WHERE rarity = ? AND id < ? ORDER BY id DESC LIMIT 1",
         (rarity, gear_id)
@@ -413,7 +398,6 @@ async def view_gear(callback: types.CallbackQuery):
         "SELECT id FROM gear WHERE rarity = ? AND id > ? ORDER BY id LIMIT 1",
         (rarity, gear_id)
     )
-
     nav_buttons = []
     if prev_gear:
         nav_buttons.append(InlineKeyboardButton(
@@ -425,17 +409,14 @@ async def view_gear(callback: types.CallbackQuery):
             text="Следующий ▶",
             callback_data=f"view_gear_{next_gear[0]['id']}_{rarity}_{page}"
         ))
-
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
         callback_data=f"list_gear_{rarity}_{page}"
     )
-
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
