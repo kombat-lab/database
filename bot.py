@@ -10,9 +10,9 @@ from aiogram.types import (
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext   # <-- ДОБАВЛЕНО
 
 from database import db
-
 from admin_handlers import admin_router
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -105,7 +105,6 @@ async def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     locations = await db.get_locations()
     keyboard = [[InlineKeyboardButton(text=f"{loc['emoji']} {loc['name']}",
                                       callback_data=f"list_{category}_{loc['id']}_1")] for loc in locations]
-    # Кнопка "Назад в меню" удалена
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
@@ -166,7 +165,6 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
         keyboard.append(nav)
 
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
-    # Кнопка "🔙 В главное меню" удалена
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -208,9 +206,14 @@ async def search_button(message: types.Message):
         parse_mode="Markdown"
     )
 
-# ---------------------- Текстовый поиск ----------------------
+# ---------------------- Текстовый поиск (исправлен: добавлена проверка FSM) ----------------------
 @dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
-async def handle_search(message: types.Message):
+async def handle_search(message: types.Message, state: FSMContext):
+    # Если пользователь находится в любом FSM-состоянии, не мешаем ему
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
