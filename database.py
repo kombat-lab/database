@@ -194,7 +194,6 @@ class Database:
                    (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
                     FROM drops d JOIN mobs m ON d.mob_id = m.id
                     WHERE d.item_type = 'gear' AND d.item_id = g.id) as mobs,
-                   (SELECT craft_dust FROM recipes WHERE result_type = 'gear' AND result_id = g.id) as craft_dust,
                    (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
                     FROM recipes rc
                     JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
@@ -213,8 +212,8 @@ class Database:
         row["mobs"] = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
-        row["craftable"] = bool(row["craft_dust"])
-        row.pop("craft_dust", None)
+        # craftable = есть хотя бы один ингредиент
+        row["craftable"] = bool(row["ingredients"])
         return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
@@ -254,12 +253,12 @@ class Database:
     # === РЕЦЕПТЫ И КРАФТ РЕСУРСОВ ===
     async def get_recipe_for_resource(self, resource_id: int) -> Optional[Dict]:
         recipe_info = await self.execute_query(
-            "SELECT id, craft_dust FROM recipes WHERE result_type = 'resource' AND result_id = ?",
+            "SELECT id FROM recipes WHERE result_type = 'resource' AND result_id = ?",
             (resource_id,)
         )
         if not recipe_info:
             return None
-        recipe = recipe_info[0]
+        recipe_id = recipe_info[0]['id']
         ingredients = await self.execute_query(
             """
             SELECT ri.resource_id, r.name, r.emoji, ri.quantity
@@ -268,12 +267,9 @@ class Database:
             WHERE ri.recipe_id = ?
             ORDER BY ri.resource_id
             """,
-            (recipe['id'],)
+            (recipe_id,)
         )
-        return {
-            'craft_dust': recipe['craft_dust'],
-            'ingredients': ingredients
-        }
+        return {'ingredients': ingredients}
 
     async def get_craftable_resources(self) -> List[Dict]:
         query = """
