@@ -292,7 +292,7 @@ class Database:
 
     async def get_recipes_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, emoji FROM recipes ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, name FROM recipes ORDER BY id LIMIT ? OFFSET ?",
             (limit, offset)
         )
 
@@ -301,7 +301,11 @@ class Database:
         return res[0]["cnt"]
 
     # ---------- Управление мобами ----------
+    ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
+    
     async def update_mob_field(self, mob_id: int, field: str, value):
+        if field not in self.ALLOWED_MOB_FIELDS:
+            raise ValueError(f"Недопустимое поле: {field}")
         query = f"UPDATE mobs SET {field} = ? WHERE id = ?"
         await self.execute_query(query, (value, mob_id))
 
