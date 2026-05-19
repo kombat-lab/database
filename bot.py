@@ -29,15 +29,18 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ---------- Экранирование ----------
+# ---------- Экранирование Markdown (исправлено: убираем лишние \ перед -) ----------
 def escape_markdown(text: str) -> str:
     escape_chars = r'_*[]()~`>#+=|{}.!'
-    return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
+    text = re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
+    # Убираем обратные слеши перед дефисами (если вдруг появились)
+    text = re.sub(r'\\(-)', r'\1', text)
+    return text
 
 def clean_username(username: str) -> str:
     return username.lstrip('@') if username else ''
 
-# ---------- Формирование карточек (как ранее) ----------
+# ---------- Формирование карточек ----------
 async def format_mob_card(mob: dict) -> str:
     loc = await db.get_location_by_id(mob["location_id"])
     loc_str = f"{loc['emoji']} {escape_markdown(loc['name'])}" if loc else "Неизвестно"
@@ -255,7 +258,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         ))
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------- Callback-обработчики (основные) ----------
+# ---------- Callback-обработчики ----------
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
