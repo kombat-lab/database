@@ -3,14 +3,14 @@ import logging
 import asyncio
 import re
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent
 )
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext   # <-- ДОБАВЛЕНО
+from aiogram.fsm.context import FSMContext
 
 from database import db
 from admin_handlers import admin_router
@@ -31,12 +31,10 @@ dp = Dispatcher()
 
 # ---------- Экранирование Markdown ----------
 def escape_markdown(text: str) -> str:
-    """Экранирует специальные символы для Telegram parse_mode='Markdown'."""
-    escape_chars = r'_*[]()~`>#+=|{}.!'   # дефис не экранируем
+    escape_chars = r'_*[]()~`>#+=|{}.!'
     return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
 
 def clean_username(username: str) -> str:
-    """Убирает ведущий '@' если есть, чтобы затем добавить его при выводе."""
     return username.lstrip('@') if username else ''
 
 # ---------------------- Формирование карточек ----------------------
@@ -172,7 +170,7 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔍 Искать через @fog_database_bot", switch_inline_query_current_chat="")]
     ])
 
-# ---------------------- Обработчики команд ----------------------
+# ---------------------- Обработчики команд и reply-кнопок ----------------------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
@@ -181,7 +179,6 @@ async def send_menu(message: types.Message):
 async def search_command(message: types.Message):
     await message.answer("🔎 Просто напишите название моба, ресурса или предмета снаряжения в чат.")
 
-# ---------------------- Reply-кнопки ----------------------
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     await message.delete()
@@ -206,14 +203,11 @@ async def search_button(message: types.Message):
         parse_mode="Markdown"
     )
 
-# ---------------------- Текстовый поиск (исправлен: добавлена проверка FSM) ----------------------
-@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
-async def handle_search(message: types.Message, state: FSMContext):
-    # Если пользователь находится в любом FSM-состоянии, не мешаем ему
-    current_state = await state.get_state()
-    if current_state is not None:
-        return
+# ---------------------- Поисковый роутер (низкий приоритет) ----------------------
+search_router = Router()
 
+@search_router.message(F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
+async def handle_search(message: types.Message, state: FSMContext):
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
@@ -252,7 +246,6 @@ async def inline_search_handler(inline_query: InlineQuery):
     results = await db.search(query)
     inline_results = []
 
-    # Мобы
     for mob in results.get("mobs", [])[:50]:
         text = await format_mob_card(mob)
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
@@ -263,7 +256,6 @@ async def inline_search_handler(inline_query: InlineQuery):
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown")
         ))
 
-    # Ресурсы
     for res in results.get("resources", [])[:50]:
         text = await format_resource_card(res)
         inline_results.append(InlineQueryResultArticle(
@@ -273,7 +265,6 @@ async def inline_search_handler(inline_query: InlineQuery):
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown")
         ))
 
-    # Снаряжение
     for gear in results.get("gear", [])[:50]:
         full_gear = await db.get_gear_info(gear["id"])
         if not full_gear:
@@ -302,7 +293,6 @@ async def back_to_locations(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(text, reply_markup=keyboard)
     await callback_query.answer()
 
-# Объединённый обработчик для списков (мобы/ресурсы) и их страниц
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
 async def list_or_page_callback(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
@@ -321,7 +311,6 @@ async def list_or_page_callback(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(title, reply_markup=keyboard)
     await callback_query.answer()
 
-# Снаряжение по редкости (и страницы)
 @dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
 async def gear_list_or_page_callback(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
@@ -334,7 +323,6 @@ async def gear_list_or_page_callback(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
     await callback_query.answer()
 
-# Просмотр моба
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
@@ -359,7 +347,6 @@ async def view_mob(callback_query: types.CallbackQuery):
     )
     await callback_query.answer()
 
-# Просмотр ресурса
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
@@ -383,7 +370,6 @@ async def view_resource(callback_query: types.CallbackQuery):
     )
     await callback_query.answer()
 
-# Просмотр снаряжения
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback_query: types.CallbackQuery):
     parts = callback_query.data.split("_")
@@ -409,7 +395,10 @@ async def view_gear(callback_query: types.CallbackQuery):
 # ---------------------- Запуск ----------------------
 async def main():
     await db.connect()
+    # Важно: сначала подключаем админ-роутер (он обрабатывает сообщения при активных состояниях)
     dp.include_router(admin_router)
+    # Затем поисковый роутер (только если админ-роутер не сработал)
+    dp.include_router(search_router)
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
