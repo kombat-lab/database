@@ -18,13 +18,13 @@ def is_admin(user_id: int) -> bool:
 admin_router = Router()
 ADMIN_ITEMS_PER_PAGE = 10
 
-# ---------- Главное меню ----------
+# ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="➕ Добавить моба", callback_data="admin_add_mob")],
         [InlineKeyboardButton(text="✏️ Редактировать моба", callback_data="admin_edit_mob")],
         [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
-        [InlineKeyboardButton(text="📦 Ресурсы (позже)", callback_data="admin_resources_soon")],
+        [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
         [InlineKeyboardButton(text="⚔️ Снаряжение (позже)", callback_data="admin_gear_soon")],
         [InlineKeyboardButton(text="📜 Рецепты (позже)", callback_data="admin_recipes_soon")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
@@ -44,9 +44,6 @@ async def admin_close(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.answer()
 
-@admin_router.callback_query(F.data == "admin_resources_soon")
-async def soon(callback: types.CallbackQuery):
-    await callback.answer("Раздел в разработке", show_alert=True)
 @admin_router.callback_query(F.data == "admin_gear_soon")
 async def soon(callback: types.CallbackQuery):
     await callback.answer("Раздел в разработке", show_alert=True)
@@ -54,7 +51,219 @@ async def soon(callback: types.CallbackQuery):
 async def soon(callback: types.CallbackQuery):
     await callback.answer("Раздел в разработке", show_alert=True)
 
-# ---------- Добавление моба ----------
+# ==================== УПРАВЛЕНИЕ РЕСУРСАМИ ====================
+class ResourceStates(StatesGroup):
+    list_page = State()
+    add_name = State()
+    add_emoji = State()
+    edit_select = State()
+    edit_name = State()
+    edit_emoji = State()
+    delete_confirm = State()
+
+async def get_resources_list_keyboard(page: int) -> InlineKeyboardMarkup:
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    resources = await db.execute_query(
+        "SELECT id, name, emoji FROM resources ORDER BY id LIMIT ? OFFSET ?",
+        (ADMIN_ITEMS_PER_PAGE + 1, offset)
+    )
+    has_next = len(resources) > ADMIN_ITEMS_PER_PAGE
+    resources = resources[:ADMIN_ITEMS_PER_PAGE]
+
+    keyboard = []
+    for res in resources:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{res['emoji']} {res['name']} (ID {res['id']})",
+            callback_data=f"resource_edit_{res['id']}"
+        )])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"resource_page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"resource_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить ресурс", callback_data="resource_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@admin_router.callback_query(F.data == "admin_manage_resources")
+async def manage_resources(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    keyboard = await get_resources_list_keyboard(1)
+    await callback.message.edit_text("📦 Управление ресурсами:\nВыберите ресурс для редактирования или добавьте новый:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.list_page, F.data.startswith("resource_page_"))
+async def resource_page(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[2])
+    keyboard = await get_resources_list_keyboard(page)
+    await callback.message.edit_text("📦 Управление ресурсами:\nВыберите ресурс для редактирования или добавьте новый:", reply_markup=keyboard)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.list_page, F.data == "resource_add")
+async def resource_add_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите название нового ресурса:")
+    await state.set_state(ResourceStates.add_name)
+    await callback.answer()
+
+@admin_router.message(ResourceStates.add_name)
+async def resource_add_emoji(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("Название не может быть пустым. Попробуйте снова:")
+        return
+    await state.update_data(res_name=name)
+    await message.answer("Теперь введите эмодзи для ресурса (один символ, например 🍎):")
+    await state.set_state(ResourceStates.add_emoji)
+
+@admin_router.message(ResourceStates.add_emoji)
+async def resource_save(message: types.Message, state: FSMContext):
+    emoji = message.text.strip()
+    if not emoji:
+        await message.answer("Эмодзи не может быть пустым. Попробуйте снова:")
+        return
+    data = await state.get_data()
+    name = data['res_name']
+    try:
+        await db.add_resource(name, emoji)
+        await message.answer(f"✅ Ресурс *{name}* добавлен.", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    await state.clear()
+    keyboard = await get_resources_list_keyboard(1)
+    await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.list_page)
+
+@admin_router.callback_query(ResourceStates.list_page, F.data.startswith("resource_edit_"))
+async def resource_edit_menu(callback: types.CallbackQuery, state: FSMContext):
+    resource_id = int(callback.data.split("_")[2])
+    res = await db.get_resource_by_id(resource_id)
+    if not res:
+        await callback.message.edit_text("Ресурс не найден.")
+        await callback.answer()
+        return
+    await state.update_data(res_id=resource_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")]
+    ])
+    await callback.message.edit_text(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_back_to_list")
+async def resource_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = await get_resources_list_keyboard(1)
+    await callback.message.edit_text("📦 Управление ресурсами:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_name")
+async def resource_edit_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите новое название ресурса:")
+    await state.set_state(ResourceStates.edit_name)
+    await callback.answer()
+
+@admin_router.message(ResourceStates.edit_name)
+async def resource_update_name(message: types.Message, state: FSMContext):
+    new_name = message.text.strip()
+    if not new_name:
+        await message.answer("Название не может быть пустым. Попробуйте снова:")
+        return
+    data = await state.get_data()
+    res_id = data['res_id']
+    res = await db.get_resource_by_id(res_id)
+    if not res:
+        await message.answer("Ресурс не найден.")
+        await state.clear()
+        return
+    try:
+        await db.update_resource(res_id, new_name, res['emoji'])
+        await message.answer(f"✅ Название ресурса обновлено на *{new_name}*.", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    res = await db.get_resource_by_id(res_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")]
+    ])
+    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_emoji")
+async def resource_edit_emoji(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите новый эмодзи для ресурса (один символ):")
+    await state.set_state(ResourceStates.edit_emoji)
+    await callback.answer()
+
+@admin_router.message(ResourceStates.edit_emoji)
+async def resource_update_emoji(message: types.Message, state: FSMContext):
+    new_emoji = message.text.strip()
+    if not new_emoji:
+        await message.answer("Эмодзи не может быть пустым. Попробуйте снова:")
+        return
+    data = await state.get_data()
+    res_id = data['res_id']
+    res = await db.get_resource_by_id(res_id)
+    if not res:
+        await message.answer("Ресурс не найден.")
+        await state.clear()
+        return
+    try:
+        await db.update_resource(res_id, res['name'], new_emoji)
+        await message.answer(f"✅ Эмодзи ресурса обновлён на {new_emoji}.", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    res = await db.get_resource_by_id(res_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")]
+    ])
+    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_delete")
+async def resource_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    res_id = data['res_id']
+    res = await db.get_resource_by_id(res_id)
+    if not res:
+        await callback.message.edit_text("Ресурс не найден.")
+        await callback.answer()
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="resource_delete_yes")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="resource_back_to_list")]
+    ])
+    await callback.message.edit_text(f"⚠️ Вы уверены, что хотите удалить ресурс *{res['name']}* (ID {res_id})?\nЭто также удалит его из дропов всех мобов.", parse_mode="Markdown", reply_markup=keyboard)
+    await state.set_state(ResourceStates.delete_confirm)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.delete_confirm, F.data == "resource_delete_yes")
+async def resource_delete_execute(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    res_id = data['res_id']
+    try:
+        await db.delete_resource(res_id)
+        await callback.message.edit_text("✅ Ресурс успешно удалён.")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+    await state.clear()
+    keyboard = await get_resources_list_keyboard(1)
+    await callback.message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.list_page)
+    await callback.answer()
+
+# ==================== ДОБАВЛЕНИЕ МОБА ====================
 class AddMobStates(StatesGroup):
     name = State()
     emoji = State()
@@ -172,7 +381,7 @@ async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
-# ---------- Редактирование моба ----------
+# ==================== РЕДАКТИРОВАНИЕ МОБА ====================
 class EditMobStates(StatesGroup):
     select_mob = State()
     select_field = State()
@@ -337,11 +546,9 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
     elif category == 'gear':
         items = await db.get_all_common_gear()
     elif category == 'recipe':
-        items = await db.get_all_recipes()   # только ресурсы с id >= 59
-    elif category == 'map':
-        items = await db.get_all_maps()
+        items = await db.get_all_recipes()
     else:
-        return InlineKeyboardMarkup(inline_keyboard=[])
+        items = []
 
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     total = len(items)
@@ -415,7 +622,7 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
 async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
     await drop_category_menu(callback, state)
 
-# ---------- Удаление моба ----------
+# ==================== УДАЛЕНИЕ МОБА ====================
 class DeleteMobStates(StatesGroup):
     select_mob = State()
     confirm = State()
