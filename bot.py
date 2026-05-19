@@ -114,13 +114,22 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         items = await db.get_mobs_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     else:
         items = await db.get_resources_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+
     has_next = len(items) > ITEMS_PER_PAGE
-    items = items[:ITEMS_PER_PAGE]
+    items = items[:ITEMS_PER_PAGE]          # отображаемая страница
     keyboard = []
-    for item in items:
+
+    # Формируем кнопки с информацией о соседях
+    for idx, item in enumerate(items):
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback_data = f"view_{category}_{item['id']}_{location_id}_{page}"
+        item_id = item['id']
+        prev_id = items[idx - 1]['id'] if idx > 0 else 0
+        next_id = items[idx + 1]['id'] if idx < len(items) - 1 else 0
+        # В callback_data кладём: category, item_id, location_id, page, prev_id, next_id
+        callback_data = f"view_{category}_{item_id}_{location_id}_{page}_{prev_id}_{next_id}"
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
+
+    # Навигация по страницам
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
@@ -128,6 +137,7 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{category}_{location_id}_{page+1}"))
     if nav:
         keyboard.append(nav)
+
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к локациям", callback_data=f"back_to_locations_{category}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -137,10 +147,16 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
     keyboard = []
-    for item in items:
+
+    for idx, item in enumerate(items):
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback_data = f"view_gear_{item['id']}_{rarity}_{page}"
+        item_id = item['id']
+        prev_id = items[idx - 1]['id'] if idx > 0 else 0
+        next_id = items[idx + 1]['id'] if idx < len(items) - 1 else 0
+        # Формат: view_gear_{item_id}_{rarity}_{page}_{prev_id}_{next_id}
+        callback_data = f"view_gear_{item_id}_{rarity}_{page}_{prev_id}_{next_id}"
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
+
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
@@ -148,13 +164,9 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
     if nav:
         keyboard.append(nav)
+
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def get_inline_search_button() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Искать через @fog_database_bot", switch_inline_query_current_chat="")]
-    ])
 
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
@@ -291,35 +303,102 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback: types.CallbackQuery):
     parts = callback.data.split("_")
+    # формат: view_mobs_{mob_id}_{location_id}_{page}_{prev_id}_{next_id}
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
+    prev_id = int(parts[5])
+    next_id = int(parts[6])
+
     text = await format_mob_card(mob_id)
-    back_button = InlineKeyboardButton(text="🔙 Назад к списку мобов", callback_data=f"list_mobs_{location_id}_{page}")
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+    nav_buttons = []
+    if prev_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="◀ Предыдущий",
+            callback_data=f"view_mobs_{prev_id}_{location_id}_{page}_{0}_{next_id}"
+        ))
+    if next_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Следующий ▶",
+            callback_data=f"view_mobs_{next_id}_{location_id}_{page}_{prev_id}_{0}"
+        ))
+    # Кнопка возврата к списку
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"list_mobs_{location_id}_{page}"
+    )
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=[nav_buttons, [back_button]] if nav_buttons else [[back_button]])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=inline_kb)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    resource_id = int(parts[2])
+    # формат: view_resources_{res_id}_{location_id}_{page}_{prev_id}_{next_id}
+    res_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-    text = await format_resource_card(resource_id)
-    back_button = InlineKeyboardButton(text="🔙 Назад к списку ресурсов", callback_data=f"list_resources_{location_id}_{page}")
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button]]))
+    prev_id = int(parts[5])
+    next_id = int(parts[6])
+
+    text = await format_resource_card(res_id)
+    nav_buttons = []
+    if prev_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="◀ Предыдущий",
+            callback_data=f"view_resources_{prev_id}_{location_id}_{page}_{0}_{next_id}"
+        ))
+    if next_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Следующий ▶",
+            callback_data=f"view_resources_{next_id}_{location_id}_{page}_{prev_id}_{0}"
+        ))
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"list_resources_{location_id}_{page}"
+    )
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=[nav_buttons, [back_button]] if nav_buttons else [[back_button]])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=inline_kb)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback: types.CallbackQuery):
     parts = callback.data.split("_")
+    # формат: view_gear_{gear_id}_{rarity}_{page}_{prev_id}_{next_id}
     gear_id = int(parts[2])
     rarity = parts[3]
     page = int(parts[4])
+    prev_id = int(parts[5])
+    next_id = int(parts[6])
+
     text = await format_gear_card(gear_id)
-    back_button = InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"list_gear_{rarity}_{page}")
-    other_rarity_button = InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[back_button], [other_rarity_button]]))
+    nav_buttons = []
+    if prev_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="◀ Предыдущий",
+            callback_data=f"view_gear_{prev_id}_{rarity}_{page}_{0}_{next_id}"
+        ))
+    if next_id != 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Следующий ▶",
+            callback_data=f"view_gear_{next_id}_{rarity}_{page}_{prev_id}_{0}"
+        ))
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"list_gear_{rarity}_{page}"
+    )
+    other_rarity_button = InlineKeyboardButton(
+        text="🔄 Выбрать другую редкость",
+        callback_data="gear_rarities"
+    )
+    # Собираем клавиатуру: сначала навигация (если есть), затем основные кнопки
+    rows = []
+    if nav_buttons:
+        rows.append(nav_buttons)
+    rows.append([back_button])
+    rows.append([other_rarity_button])
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=inline_kb)
     await callback.answer()
 
 # ---------- Запуск ----------
