@@ -105,7 +105,6 @@ def get_gear_by_location(location_id: int, offset: int, limit: int) -> List[Dict
     """
     return execute_query(query, (location_id, limit, offset))
 
-# ---------- НОВАЯ ФУНКЦИЯ: получение снаряжения по редкости (без локации) ----------
 def get_gear_by_rarity(rarity: str, offset: int, limit: int) -> List[Dict]:
     """Возвращает список снаряжения указанной редкости с пагинацией."""
     return execute_query(
@@ -121,7 +120,6 @@ def get_gear_info(gear_id: int) -> Optional[Dict]:
     return res[0] if res else None
 
 def get_gear_mobs(gear_id: int) -> List[Dict]:
-    # Исправлено: правильный JOIN (было m.id = ?)
     return execute_query(
         "SELECT m.id, m.name, m.emoji FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id WHERE gd.gear_id = ?",
         (gear_id,)
@@ -129,3 +127,45 @@ def get_gear_mobs(gear_id: int) -> List[Dict]:
 
 def get_locations() -> List[Dict]:
     return execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
+
+def get_recipe_for_gear(gear_id: int) -> List[Dict]:
+    """
+    Возвращает список ингредиентов для крафта снаряжения.
+    Каждый элемент: {'resource_id': int, 'name': str, 'emoji': str, 'quantity': int}
+    Если рецепт не найден, возвращает пустой список.
+    """
+    recipe = execute_query(
+        "SELECT id FROM recipes WHERE result_type = 'gear' AND result_id = ?",
+        (gear_id,)
+    )
+    if not recipe:
+        return []
+    recipe_id = recipe[0]['id']
+    ingredients = execute_query(
+        """
+        SELECT ri.resource_id, r.name, r.emoji, ri.quantity
+        FROM recipe_ingredients ri
+        JOIN resources r ON ri.resource_id = r.id
+        WHERE ri.recipe_id = ?
+        ORDER BY ri.resource_id
+        """,
+        (recipe_id,)
+    )
+    return ingredients
+
+def get_recipe_owners(gear_id: int) -> List[str]:
+    """
+    Возвращает список Telegram username владельцев рецепта для данного снаряжения.
+    """
+    recipe = execute_query(
+        "SELECT id FROM recipes WHERE result_type = 'gear' AND result_id = ?",
+        (gear_id,)
+    )
+    if not recipe:
+        return []
+    recipe_id = recipe[0]['id']
+    owners = execute_query(
+        "SELECT player_username FROM recipe_owners WHERE recipe_id = ?",
+        (recipe_id,)
+    )
+    return [owner['player_username'] for owner in owners]
