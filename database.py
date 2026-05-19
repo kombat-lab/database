@@ -147,30 +147,48 @@ class Database:
         return await self.execute_query(query, (location_id, limit, offset))
 
     # ---------- Снаряжение ----------
-    async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
-        query = """
-            SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji,
-                   (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
-                    FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id
-                    WHERE gd.gear_id = g.id) as mobs,
-                   (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
-                    FROM recipes rc
-                    JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
-                    JOIN resources r ON ri.resource_id = r.id
-                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
-                   (SELECT GROUP_CONCAT(player_username) FROM recipe_owners ro
-                    WHERE ro.recipe_id = (SELECT id FROM recipes WHERE result_type='gear' AND result_id=g.id)) as owners
-            FROM gear g
-            WHERE g.id = ?
-        """
-        res = await self.execute_query(query, (gear_id,))
-        if not res:
-            return None
-        row = res[0]
-        row["mobs"] = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
-        row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
-        row["owners"] = row["owners"].split(",") if row["owners"] else []
-        return row
+async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
+    query = """
+        SELECT g.id, g.name, g.rarity, g.slot, g.craftable, g.craft_dust, g.emoji,
+               -- Для common и rare: мобы через gear_drops
+               (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
+                FROM gear_drops gd JOIN mobs m ON gd.mob_id = m.id
+                WHERE gd.gear_id = g.id) as gear_drops_mobs,
+               -- Для epic: мобы через mob_drops на ресурсы-ингредиенты (свитки)
+               (SELECT GROUP_CONCAT(DISTINCT m.id || '|' || m.name || '|' || m.emoji)
+                FROM recipe_ingredients ri
+                JOIN recipes rc ON ri.recipe_id = rc.id
+                JOIN mob_drops md ON ri.resource_id = md.resource_id
+                JOIN mobs m ON md.mob_id = m.id
+                WHERE rc.result_type = 'gear' AND rc.result_id = g.id
+               ) as recipe_mobs,
+               -- Ингредиенты и владельцы (без изменений)
+               (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
+                FROM recipes rc
+                JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
+                JOIN resources r ON ri.resource_id = r.id
+                WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
+               (SELECT GROUP_CONCAT(player_username) FROM recipe_owners ro
+                WHERE ro.recipe_id = (SELECT id FROM recipes WHERE result_type='gear' AND result_id=g.id)) as owners
+        FROM gear g
+        WHERE g.id = ?
+    """
+    res = await self.execute_query(query, (gear_id,))
+    if not res:
+        return None
+    row = res[0]
+    # Выбираем нужный список мобов в зависимости от редкости
+    if row['rarity'] == 'epic':
+        mobs_str = row['recipe_mobs']
+    else:
+        mobs_str = row['gear_drops_mobs']
+    row["mobs"] = [self._parse_drop_item(s) for s in (mobs_str.split(",") if mobs_str else [])]
+    row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
+    row["owners"] = row["owners"].split(",") if row["owners"] else []
+    # Удаляем временные поля
+    del row['gear_drops_mobs']
+    del row['recipe_mobs']
+    return row
 
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
