@@ -6,28 +6,19 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Путь к БД читается из переменной окружения DATABASE_PATH,
-# значение по умолчанию — "game.db"
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
-# --------------------------------------------------------------
-# Функция для приведения строки к нижнему регистру (Юникод)
-# --------------------------------------------------------------
 def _lower_unicode(s: str) -> str:
     if s is None:
         return None
     return s.lower()
 
-# --------------------------------------------------------------
-# Класс для управления подключением к БД
-# --------------------------------------------------------------
 class Database:
     def __init__(self):
         self._conn: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
 
     async def connect(self):
-        """Инициализирует соединение, устанавливает row_factory и регистрирует SQL-функцию."""
         self._conn = await aiosqlite.connect(DB_PATH)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
@@ -41,32 +32,22 @@ class Database:
 
     @staticmethod
     def _row_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
-        """Безопасно преобразует aiosqlite.Row в dict."""
         return {key: row[key] for key in row.keys()}
 
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """
-        Выполняет SQL-запрос.
-        Для запросов, отличных от SELECT, автоматически выполняет commit.
-        Возвращает список словарей.
-        """
         async with self._lock:
             async with self._conn.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                # Если запрос не SELECT — фиксируем транзакцию
                 if not query.strip().upper().startswith("SELECT"):
                     await self._conn.commit()
                 if not rows:
                     return []
-                # Если row_factory не сработал (кортежи) — используем описание курсора
                 if not hasattr(rows[0], 'keys'):
                     col_names = [desc[0] for desc in cursor.description]
                     return [dict(zip(col_names, row)) for row in rows]
                 return [self._row_to_dict(row) for row in rows]
 
-    # --------------------------------------------------------------
-    # ПОИСК (регистронезависимый)
-    # --------------------------------------------------------------
+    # ---------- Поиск ----------
     async def search(self, query: str) -> Dict[str, List[Dict]]:
         search_pattern = f"%{query}%"
         mobs = await self.execute_query(
@@ -84,9 +65,7 @@ class Database:
         )
         return {"mobs": mobs, "resources": resources, "gear": gear}
 
-    # --------------------------------------------------------------
-    # Локации
-    # --------------------------------------------------------------
+    # ---------- Локации ----------
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         res = await self.execute_query("SELECT id, name, emoji FROM locations WHERE id = ?", (location_id,))
         return res[0] if res else None
@@ -94,9 +73,7 @@ class Database:
     async def get_locations(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM locations ORDER BY id")
 
-    # --------------------------------------------------------------
-    # Мобы
-    # --------------------------------------------------------------
+    # ---------- Мобы ----------
     async def get_mobs_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs "
@@ -118,9 +95,10 @@ class Database:
             (mob_id,)
         )
 
-    # --------------------------------------------------------------
-    # Ресурсы
-    # --------------------------------------------------------------
+    # ---------- Ресурсы (все, включая рецепты) ----------
+    async def get_all_resources(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY name")
+
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         query = """
             SELECT DISTINCT r.id, r.name, r.emoji
@@ -143,9 +121,12 @@ class Database:
             (resource_id,)
         )
 
-    # --------------------------------------------------------------
-    # Снаряжение
-    # --------------------------------------------------------------
+    # ---------- Снаряжение ----------
+    async def get_all_common_gear(self) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common' ORDER BY name"
+        )
+
     async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, rarity, slot, emoji, craftable, craft_dust "
@@ -167,9 +148,14 @@ class Database:
             (gear_id,)
         )
 
-    # --------------------------------------------------------------
-    # Рецепты (крафт)
-    # --------------------------------------------------------------
+    # ---------- Рецепты (как ресурсы) – дополнительные методы для удобства ----------
+    async def get_all_recipes(self) -> List[Dict]:
+        """Возвращает все ресурсы с id >= 59 (рецепты) для отображения в отдельной категории."""
+        return await self.execute_query(
+            "SELECT id, name, emoji FROM resources WHERE id >= 59 ORDER BY name"
+        )
+
+    # ---------- Крафт снаряжения (рецепты крафта) ----------
     async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
         query = """
             SELECT ri.resource_id, r.name, r.emoji, ri.quantity
@@ -191,5 +177,70 @@ class Database:
         owners = await self.execute_query(query, (gear_id,))
         return [owner['player_username'] for owner in owners]
 
-# Глобальный экземпляр БД
+    # ---------- Управление дропами (общие методы) ----------
+    async def get_mob_drop_status(self, mob_id: int, category: str, item_id: int) -> bool:
+        if category == 'resource':
+            res = await self.execute_query(
+                "SELECT 1 FROM mob_drops WHERE mob_id = ? AND resource_id = ? LIMIT 1",
+                (mob_id, item_id)
+            )
+        elif category == 'gear':
+            res = await self.execute_query(
+                "SELECT 1 FROM gear_drops WHERE mob_id = ? AND gear_id = ? LIMIT 1",
+                (mob_id, item_id)
+            )
+        elif category == 'recipe':
+            # Для рецептов используем ту же таблицу mob_drops, так как рецепты — это ресурсы с id >= 59
+            res = await self.execute_query(
+                "SELECT 1 FROM mob_drops WHERE mob_id = ? AND resource_id = ? LIMIT 1",
+                (mob_id, item_id)
+            )
+        elif category == 'map':
+            return False
+        else:
+            return False
+        return len(res) > 0
+
+    async def add_drop(self, mob_id: int, category: str, item_id: int) -> None:
+        if category == 'resource':
+            await self.execute_query(
+                "INSERT OR IGNORE INTO mob_drops (mob_id, resource_id) VALUES (?, ?)",
+                (mob_id, item_id)
+            )
+        elif category == 'gear':
+            await self.execute_query(
+                "INSERT OR IGNORE INTO gear_drops (mob_id, gear_id) VALUES (?, ?)",
+                (mob_id, item_id)
+            )
+        elif category == 'recipe':
+            await self.execute_query(
+                "INSERT OR IGNORE INTO mob_drops (mob_id, resource_id) VALUES (?, ?)",
+                (mob_id, item_id)
+            )
+        elif category == 'map':
+            pass
+
+    async def remove_drop(self, mob_id: int, category: str, item_id: int) -> None:
+        if category == 'resource':
+            await self.execute_query(
+                "DELETE FROM mob_drops WHERE mob_id = ? AND resource_id = ?",
+                (mob_id, item_id)
+            )
+        elif category == 'gear':
+            await self.execute_query(
+                "DELETE FROM gear_drops WHERE mob_id = ? AND gear_id = ?",
+                (mob_id, item_id)
+            )
+        elif category == 'recipe':
+            await self.execute_query(
+                "DELETE FROM mob_drops WHERE mob_id = ? AND resource_id = ?",
+                (mob_id, item_id)
+            )
+        elif category == 'map':
+            pass
+
+    # ---------- Карты (заглушка) ----------
+    async def get_all_maps(self) -> List[Dict]:
+        return []  # TODO: когда появится таблица maps, заменить
+
 db = Database()
