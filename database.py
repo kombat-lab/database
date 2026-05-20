@@ -148,7 +148,7 @@ class Database:
                 (SELECT GROUP_CONCAT(item_id || '|' || r.name || '|' || r.emoji)
                  FROM drops d JOIN resources r ON d.item_id = r.id
                  WHERE d.mob_id = m.id AND d.item_type = 'resource') as resource_drops,
-                (SELECT GROUP_CONCAT(item_id || '|' || g.name || '|' || g.emoji || '|' || g.slot)
+                (SELECT GROUP_CONCAT(item_id || '|' || g.name || '|' || g.emoji || '|' || g.slot || '|' || g.rarity)
                  FROM drops d JOIN gear g ON d.item_id = g.id
                  WHERE d.mob_id = m.id AND d.item_type = 'gear') as gear_drops
             FROM mobs m
@@ -489,7 +489,18 @@ class Database:
     def _parse_drop_item(s: str, gear: bool = False) -> Dict:
         parts = s.split("|")
         if gear:
-            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3]}
+            # теперь ожидаем 5 частей: id, name, emoji, slot, rarity
+            if len(parts) >= 5:
+                return {
+                    "id": int(parts[0]),
+                    "name": parts[1],
+                    "emoji": parts[2],
+                    "slot": parts[3],
+                    "rarity": parts[4]
+                }
+            else:
+                # старый формат на случай ошибки
+                return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3], "rarity": "common"}
         else:
             return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
 
