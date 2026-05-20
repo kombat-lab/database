@@ -407,7 +407,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
     field = data.get('edit_field')
     
     if not mob_id or not field:
-        await message.answer("❌ Ошибка состояния. Возврат в админку.")
+        await message.answer("❌ Ошибка данных. Возврат в админку.")
         await state.clear()
         await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
         return
@@ -431,10 +431,9 @@ async def mob_update_field(message: types.Message, state: FSMContext):
         return
 
     try:
-        # Обновляем поле в БД
         await db.update_mob_field(mob_id, field, new_value)
         
-        # Получаем актуальные данные моба
+        # Получаем свежие данные моба
         mob_result = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
         if not mob_result:
             await message.answer("❌ Моб не найден. Возврат в админку.")
@@ -443,7 +442,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             return
         mob = mob_result[0]
 
-        # Формируем клавиатуру меню редактирования
+        # Формируем клавиатуру
         fields_list = [
             ('name', f"Имя: {mob['name']}"),
             ('emoji', f"Эмодзи: {mob['emoji']}"),
@@ -461,42 +460,34 @@ async def mob_update_field(message: types.Message, state: FSMContext):
         keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_mob_list")])
         keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
 
-        # Отправляем новое сообщение с меню (подтверждение тоже отправим, но короткое)
-        await message.answer(f"✅ Поле {field} обновлено на «{new_value}».")
+        await message.answer(f"✅ Поле {field} обновлено.")
         await message.answer(
             f"Редактирование моба ID {mob_id}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
 
-        # Очищаем временное поле, но оставляем mob_id
+        # Очищаем временное поле, оставляем mob_id
         await state.update_data(edit_field=None)
         await state.set_state(MobStates.edit_field)
 
-        # Пытаемся удалить сообщение с запросом (по желанию)
+        # Удаляем сообщение пользователя (чтобы не захламлять)
         try:
             await message.delete()
         except:
             pass
 
     except Exception as e:
-        await message.answer(f"❌ Ошибка при обновлении: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
-    """
-    Возврат к списку мобов из меню редактирования.
-    Очищает состояние и показывает пагинированный список мобов.
-    """
-    # Очищаем состояние, чтобы убрать сохранённый mob_id и другие данные
+    """Возврат к списку мобов из меню редактирования."""
     await state.clear()
-    
-    # Показываем первую страницу списка мобов для редактирования
     keyboard = await get_mob_list_keyboard(1)
     await callback.message.edit_text(
         "Выберите моба для редактирования:",
         reply_markup=keyboard
     )
-    # Устанавливаем состояние, в котором обрабатываются нажатия на мобов и пагинацию
     await state.set_state(MobStates.edit_select)
     await callback.answer()
 
@@ -1159,9 +1150,10 @@ register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
 # Основная команда для админ-панели
 # ============================================================
 @admin_router.message(Command("kombat"))
-async def admin_panel(message: types.Message):
+async def admin_panel(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа.")
         return
+    await state.clear()  # <-- добавить эту строку
     await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
                          reply_markup=get_admin_main_keyboard())
