@@ -175,7 +175,7 @@ class Database:
     # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
-            SELECT r.id, r.name, r.emoji, r.type,
+            SELECT r.id, r.name, r.emoji, r.type, r.note,
                    GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji) as mobs
             FROM resources r
             LEFT JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
@@ -205,22 +205,32 @@ class Database:
         return await self.execute_query(query, (location_id, limit, offset))
 
     async def get_resource_by_id(self, resource_id: int) -> Optional[Dict]:
-        res = await self.execute_query("SELECT id, name, emoji, type FROM resources WHERE id = ?", (resource_id,))
+        res = await self.execute_query(
+            "SELECT id, name, emoji, type, note FROM resources WHERE id = ?",
+            (resource_id,)
+        )
         return res[0] if res else None
 
-    async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft') -> int:
+    async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft', note: str = '') -> int:
         await self.execute_query(
-            "INSERT INTO resources (name, emoji, type) VALUES (?, ?, ?)",
-            (name, emoji, resource_type)
+            "INSERT INTO resources (name, emoji, type, note) VALUES (?, ?, ?, ?)",
+            (name, emoji, resource_type, note)
         )
         res = await self.execute_query("SELECT last_insert_rowid() as id")
         return res[0]['id']
 
-    async def update_resource(self, resource_id: int, name: str, emoji: str, resource_type: str = None):
-        if resource_type is None:
-            await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
-        else:
-            await self.execute_query("UPDATE resources SET name = ?, emoji = ?, type = ? WHERE id = ?", (name, emoji, resource_type, resource_id))
+    async def update_resource(self, resource_id: int, name: str = None, emoji: str = None, resource_type: str = None, note: str = None):
+        current = await self.get_resource_by_id(resource_id)
+        if not current:
+            raise ValueError("Resource not found")
+        new_name = name if name is not None else current['name']
+        new_emoji = emoji if emoji is not None else current['emoji']
+        new_type = resource_type if resource_type is not None else current['type']
+        new_note = note if note is not None else current['note']
+        await self.execute_query(
+            "UPDATE resources SET name=?, emoji=?, type=?, note=? WHERE id=?",
+            (new_name, new_emoji, new_type, new_note, resource_id)
+        )
 
     async def delete_resource(self, resource_id: int):
         await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
