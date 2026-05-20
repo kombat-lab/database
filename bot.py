@@ -250,6 +250,43 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+async def show_resources_by_type(target, resource_type: str, page: int):
+    """Показывает список ресурсов определённого типа с пагинацией"""
+    offset = (page - 1) * ITEMS_PER_PAGE
+    items = await db.get_resources_by_type(resource_type, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+    has_next = len(items) > ITEMS_PER_PAGE
+    items = items[:ITEMS_PER_PAGE]
+
+    type_names = {
+        'craft': 'Крафтовые',
+        'consumable': 'Расходуемые',
+        'scroll_recipe': 'Рецепты экипировки',
+        'currency': 'Валюта'
+    }
+    type_display = type_names.get(resource_type, resource_type)
+
+    keyboard = []
+    for res in items:
+        text = f"{res['emoji']} {res['name']}"
+        callback_data = f"view_resource_{res['id']}_{resource_type}_{page}"
+        keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"res_page_{resource_type}_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"res_page_{resource_type}_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")])
+
+    if isinstance(target, types.Message):
+        await target.answer(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    else:
+        await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
