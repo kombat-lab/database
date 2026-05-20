@@ -61,6 +61,7 @@ async def format_resource_card(resource_id: int) -> str:
         'craft': '📦 Крафтовый',
         'consumable': '✨ Расходуемый',
         'scroll_recipe': '📜 Рецепт экипировки',
+        'scroll': '📜 Рецепт экипировки',   # добавляем эту строку
         'currency': '💰 Валюта'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
