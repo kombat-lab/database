@@ -405,16 +405,24 @@ async def mob_update_field(message: types.Message, state: FSMContext):
     data = await state.get_data()
     mob_id = data.get('mob_id')
     field = data.get('edit_field')
-    
+
+    # ---- НАДЁЖНАЯ ПРОВЕРКА СОСТОЯНИЯ ----
     if not mob_id or not field:
-        await message.answer("❌ Ошибка данных. Возврат в админку.")
+        # Пытаемся восстановить: возможно, FSM сброшен, но у нас есть сообщение
+        logger.warning(f"Ошибка состояния: mob_id={mob_id}, field={field}. Данные состояния: {data}")
+        await message.answer(
+            "❌ Ошибка состояния. Пожалуйста, начните редактирование моба заново.\n"
+            "Выберите моба из списка:"
+        )
         await state.clear()
-        await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+        keyboard = await get_mob_list_keyboard(1)
+        await message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
+        await state.set_state(MobStates.edit_select)
         return
 
     new_value = message.text.strip()
 
-    # Валидация
+    # ---- ВАЛИДАЦИЯ ПОЛЯ ----
     if field in ('hp', 'dust_min', 'dust_max', 'exp', 'location_id'):
         try:
             new_value = int(new_value)
@@ -423,16 +431,19 @@ async def mob_update_field(message: types.Message, state: FSMContext):
         except ValueError:
             await message.answer("❌ Введите положительное целое число.")
             return
+
     if field == 'emoji' and not is_valid_emoji(new_value):
         await message.answer("❌ Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
+
     if field == 'name' and not new_value:
         await message.answer("❌ Имя не может быть пустым.")
         return
 
+    # ---- ОБНОВЛЕНИЕ ----
     try:
         await db.update_mob_field(mob_id, field, new_value)
-        
+
         # Получаем свежие данные моба
         mob_result = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
         if not mob_result:
@@ -442,7 +453,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             return
         mob = mob_result[0]
 
-        # Формируем клавиатуру
+        # Строим клавиатуру редактирования
         fields_list = [
             ('name', f"Имя: {mob['name']}"),
             ('emoji', f"Эмодзи: {mob['emoji']}"),
@@ -478,6 +489,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+        logger.exception("Ошибка при обновлении поля моба")
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
