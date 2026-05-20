@@ -174,10 +174,10 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await state.set_state(ResourceAddStates.emoji)
 
 @admin_router.message(ResourceAddStates.emoji, F.text)
-async def resource_add_type(message: types.Message, state: FSMContext):
+async def resource_add_emoji(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
-        await message.answer("Эмодзи должен быть ровно один символ.")
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     await state.update_data(res_emoji=emoji)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -276,7 +276,7 @@ async def gear_add_emoji(callback: types.CallbackQuery, state: FSMContext):
 async def gear_save(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
-        await message.answer("Эмодзи должен быть ровно один символ.")
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     data = await state.get_data()
     try:
@@ -381,7 +381,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             await message.answer("Введите положительное целое число.")
             return
     if field == 'emoji' and not is_valid_emoji(new_value):
-        await message.answer("Эмодзи должен быть один символ.")
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     if field == 'name' and not new_value:
         await message.answer("Имя не может быть пустым.")
@@ -621,7 +621,7 @@ async def add_mob_name(message: types.Message, state: FSMContext):
 async def add_mob_emoji(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
-        await message.answer("Эмодзи должен быть один символ.")
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     await state.update_data(emoji=emoji)
     await message.answer("Введите HP:")
