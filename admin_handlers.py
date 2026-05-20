@@ -662,7 +662,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
 
-# ---------- Управление дропом (осталось без изменений, но использует общие функции) ----------
+# ==================== УПРАВЛЕНИЕ ДРОПОМ ====================
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     if category == 'resource':
@@ -670,7 +670,11 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         has_next = len(items) > ADMIN_ITEMS_PER_PAGE
         items = items[:ADMIN_ITEMS_PER_PAGE]
     elif category == 'gear':
-        items = await db.get_common_gear_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
+        # Изменено: теперь получаем и common, и rare экипировку
+        items = await db.execute_query(
+            "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
+            (ADMIN_ITEMS_PER_PAGE + 1, offset)
+        )
         has_next = len(items) > ADMIN_ITEMS_PER_PAGE
         items = items[:ADMIN_ITEMS_PER_PAGE]
     else:
@@ -699,7 +703,7 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
 async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
-        [InlineKeyboardButton(text="⚔️ Экипировка (common)", callback_data="drop_category_gear")],
+        [InlineKeyboardButton(text="⚔️ Экипировка (common/rare)", callback_data="drop_category_gear")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_mob_list")]
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
