@@ -126,6 +126,10 @@ ENTITY_CONFIGS['gear'] = {
         ('emoji', '😀 Эмодзи')
     ],
     'integer_fields': [],
+    'select_options': {
+        'rarity': ['common', 'rare', 'epic'],
+        'slot': ['оружие', 'щит', 'голова', 'торс', 'руки', 'ноги', 'спина', 'аксессуар', 'плечи']
+    },
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{d.get('rarity','')}]"
 }
 
