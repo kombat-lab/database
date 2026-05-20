@@ -244,8 +244,8 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✨ Расходуемые", callback_data="resource_cat_consumable")],
         [InlineKeyboardButton(text="📜 Рецепты экипировки", callback_data="resource_cat_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="resource_cat_currency")],
-        [InlineKeyboardButton(text="⚗️ Алхимия (крафт ресурсов)", callback_data="resource_cat_alchemy")],
-        [InlineKeyboardButton(text="🗺️ Карты", callback_data="resource_cat_maps")],
+        [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="resource_cat_alchemy")],
+        [InlineKeyboardButton(text="Карты", callback_data="resource_cat_maps")],
         [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -297,7 +297,7 @@ async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext)
 async def resource_cat_maps(callback: types.CallbackQuery):
     """Заглушка для категории Карты"""
     await callback.message.edit_text(
-        "🗺️ Раздел «Карты» находится в разработке.\nСкоро здесь появятся карты локаций и маршруты.",
+        "Раздел в разработке.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")]
         ])
