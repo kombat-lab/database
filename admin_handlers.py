@@ -420,7 +420,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             new_value = int(new_value)
             if new_value < 0:
                 raise ValueError
-        except:
+        except ValueError:
             await message.answer("❌ Введите положительное целое число.")
             return
     if field == 'emoji' and not is_valid_emoji(new_value):
@@ -431,17 +431,55 @@ async def mob_update_field(message: types.Message, state: FSMContext):
         return
 
     try:
+        # Обновляем поле в БД
         await db.update_mob_field(mob_id, field, new_value)
-        # Подтверждение и возврат к списку мобов (чтобы не застревать)
-        await message.answer(f"✅ Поле {field} обновлено. Возврат к списку мобов.")
-        await state.clear()
-        keyboard = await get_mob_list_keyboard(1)
-        await message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
-        await state.set_state(MobStates.edit_select)
+        
+        # Получаем актуальные данные моба
+        mob_result = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
+        if not mob_result:
+            await message.answer("❌ Моб не найден. Возврат в админку.")
+            await state.clear()
+            await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+            return
+        mob = mob_result[0]
+
+        # Формируем клавиатуру меню редактирования
+        fields_list = [
+            ('name', f"Имя: {mob['name']}"),
+            ('emoji', f"Эмодзи: {mob['emoji']}"),
+            ('hp', f"HP: {mob['hp']}"),
+            ('dust_min', f"Пыль мин: {mob['dust_min']}"),
+            ('dust_max', f"Пыль макс: {mob['dust_max']}"),
+            ('exp', f"Опыт: {mob['exp']}"),
+            ('location_id', f"ID локации: {mob['location_id']}")
+        ]
+        keyboard = []
+        for field_name, label in fields_list:
+            keyboard.append([InlineKeyboardButton(text=label, callback_data=f"mob_edit_field_{field_name}")])
+        keyboard.append([InlineKeyboardButton(text="📦 Управление дропом", callback_data="mob_drop_menu")])
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить моба", callback_data="mob_delete")])
+        keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_mob_list")])
+        keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+
+        # Отправляем новое сообщение с меню (подтверждение тоже отправим, но короткое)
+        await message.answer(f"✅ Поле {field} обновлено на «{new_value}».")
+        await message.answer(
+            f"Редактирование моба ID {mob_id}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+
+        # Очищаем временное поле, но оставляем mob_id
+        await state.update_data(edit_field=None)
+        await state.set_state(MobStates.edit_field)
+
+        # Пытаемся удалить сообщение с запросом (по желанию)
+        try:
+            await message.delete()
+        except:
+            pass
+
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-        # Не очищаем состояние, можно попробовать снова
-        return
+        await message.answer(f"❌ Ошибка при обновлении: {e}")
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
