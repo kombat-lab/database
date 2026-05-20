@@ -170,7 +170,7 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
         await message.answer("Название не может быть пустым.")
         return
     await state.update_data(res_name=name)
-    await message.answer("Введите эмодзи (один символ):")
+    await message.answer("Введите эмодзи:")
     await state.set_state(ResourceAddStates.emoji)
 
 @admin_router.message(ResourceAddStates.emoji, F.text)
@@ -269,7 +269,7 @@ async def gear_add_slot(callback: types.CallbackQuery, state: FSMContext):
 async def gear_add_emoji(callback: types.CallbackQuery, state: FSMContext):
     slot = callback.data.split("_")[1]
     await state.update_data(gear_slot=slot)
-    await callback.message.edit_text("Введите эмодзи (один символ):")
+    await callback.message.edit_text("Введите эмодзи:")
     await state.set_state(GearAddStates.emoji)
 
 @admin_router.message(GearAddStates.emoji, F.text)
@@ -614,7 +614,7 @@ async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
 @admin_router.message(MobStates.add_name, F.text)
 async def add_mob_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
-    await message.answer("Введите эмодзи моба (один символ):")
+    await message.answer("Введите эмодзи моба:")
     await state.set_state(MobStates.add_emoji)
 
 @admin_router.message(MobStates.add_emoji, F.text)
