@@ -268,16 +268,19 @@ async def search_button(message: types.Message):
         parse_mode="HTML"
     )
 
+# ========== ОБРАБОТЧИК ТЕКСТОВОГО ПОИСКА ==========
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
 async def handle_search(message: types.Message, state: FSMContext):
     query_text = message.text.strip()
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
         return
+
     results = await db.search(query_text)
     if not any(results.values()):
         await message.answer("Ничего не найдено.")
         return
+
     reply = "🔎 <b>Результаты поиска:</b>\n\n"
     if results["mobs"]:
         reply += "<b>Мобы:</b>\n"
@@ -286,7 +289,10 @@ async def handle_search(message: types.Message, state: FSMContext):
             reply += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
         reply += "\n"
     if results["resources"]:
-        reply += "<b>Ресурсы:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in results["resources"]) + "\n\n"
+        reply += "<b>Ресурсы:</b>\n"
+        for r in results["resources"]:
+            reply += f"{r['emoji']} {escape_html(r['name'])}\n"
+        reply += "\n"
     if results["gear"]:
         reply += "<b>Снаряжение:</b>\n"
         rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
@@ -294,33 +300,48 @@ async def handle_search(message: types.Message, state: FSMContext):
             reply += f"{g['emoji']} {escape_html(g['name'])} {rarity_emoji.get(g['rarity'], '')}\n"
     await message.answer(reply, parse_mode="HTML")
 
+# ========== ИНЛАЙН-ПОИСК ==========
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
         return
+
     results = await db.search(query)
     inline_results = []
+
+    # Мобы
     for mob in results.get("mobs", [])[:50]:
         text = await format_mob_card(mob["id"])
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
-            id=f"mob_{mob['id']}", title=mob['name'], description=desc,
+            id=f"mob_{mob['id']}",
+            title=mob['name'],
+            description=desc,
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
+
+    # Ресурсы
     for res in results.get("resources", [])[:50]:
         text = await format_resource_card(res["id"])
         inline_results.append(InlineQueryResultArticle(
-            id=f"res_{res['id']}", title=res['name'], description="Ресурс",
+            id=f"res_{res['id']}",
+            title=res['name'],
+            description="Ресурс",
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
+
+    # Снаряжение
     for gear in results.get("gear", [])[:50]:
         text = await format_gear_card(gear["id"])
         inline_results.append(InlineQueryResultArticle(
-            id=f"gear_{gear['id']}", title=gear['name'], description=f"{gear['slot']} | {gear['rarity']}",
+            id=f"gear_{gear['id']}",
+            title=gear['name'],
+            description=f"{gear['slot']} | {gear['rarity']}",
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
+
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
 # ---------- Callback-обработчики ----------
