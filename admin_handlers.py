@@ -7,265 +7,42 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database import db
+from utils import is_valid_emoji, clean_username
+from admin_utils import (
+    ADMIN_ITEMS_PER_PAGE,
+    get_admin_main_keyboard,
+    admin_close,
+    admin_cancel_edit,
+    render_entity_list,
+    show_edit_menu,
+    register_generic_handlers,
+)
 
 logger = logging.getLogger(__name__)
 
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_ID", "").split(",") if x.strip().isdigit()]
-ADMIN_ITEMS_PER_PAGE = 10
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 admin_router = Router()
 
-def is_valid_emoji(s: str) -> bool:
-    if not s or len(s) > 2:
-        return False
-    return all(not ch.isalnum() for ch in s)
-
-def clean_username(username: str) -> str:
-    return username.lstrip('@') if username else ''
+# Регистрируем обработчики закрытия/отмены на роутере
+admin_router.callback_query(F.data == "admin_close")(admin_close)
+admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
 
 # ============================================================
-# ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CRUD
+# КОНФИГУРАЦИИ СУЩНОСТЕЙ (ресурсы, снаряжение) – для универсального CRUD
 # ============================================================
 
-async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="➕ Добавить моба", callback_data="admin_add_mob")],
-        [InlineKeyboardButton(text="✏️ Редактировать моба", callback_data="admin_edit_mob")],
-        [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
-        [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
-        [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
-        [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
-        [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-@admin_router.message(Command("kombat"))
-async def admin_panel(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
-        return
-    await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
-                         reply_markup=await get_admin_main_keyboard())
-
-@admin_router.callback_query(F.data == "admin_close")
-async def admin_close(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await callback.answer()
-
-@admin_router.callback_query(F.data == "admin_cancel_edit")
-async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
-    await callback.answer()
-
-# -----------------------------------------------------------------
-# Универсальные строители клавиатур и обработчики списков
-# -----------------------------------------------------------------
-
-def build_paginated_keyboard(items, page, has_next, item_callback_prefix, extra_buttons=None):
-    """Строит клавиатуру со списком кнопок + навигация + доп. кнопки"""
-    keyboard = []
-    for item in items:
-        text = f"{item.get('emoji', '')} {item['name']}" + (f" (ID {item['id']})" if 'id' in item else "")
-        if 'rarity' in item:
-            text += f" [{item['rarity']}]"
-        if 'slot' in item:
-            text += f" ({item['slot']})"
-        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"{item_callback_prefix}_{item['id']}")])
-    
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{page-1}"))
-    if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{page+1}"))
-    if nav:
-        keyboard.append(nav)
-    
-    if extra_buttons:
-        for btn_row in extra_buttons:
-            keyboard.append(btn_row)
-    
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-async def render_entity_list(callback, state, entity_config, page=1):
-    """Универсальный рендер списка сущностей"""
-    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
-    items = await entity_config['get_page_func'](offset, ADMIN_ITEMS_PER_PAGE + 1)
-    has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-    items = items[:ADMIN_ITEMS_PER_PAGE]
-    
-    extra = []
-    if entity_config.get('add_button'):
-        extra.append([InlineKeyboardButton(text=entity_config['add_button_text'], callback_data=entity_config['add_callback'])])
-    
-    keyboard = build_paginated_keyboard(
-        items, page, has_next,
-        entity_config['item_callback_prefix'],
-        extra_buttons=extra
-    )
-    await callback.message.edit_text(entity_config['list_title'], reply_markup=keyboard)
-    await state.update_data(entity_type=entity_config['name'], current_page=page)
-    await state.set_state(entity_config['list_state'])
-    await callback.answer()
-
-# -----------------------------------------------------------------
-# Универсальные обработчики для редактирования полей
-# -----------------------------------------------------------------
-
-class GenericEditStates(StatesGroup):
-    select_item = State()
-    select_field = State()
-    new_value = State()
-    confirm_delete = State()
-
-async def start_edit_entity(callback, state, entity_config):
-    """Запуск процесса редактирования: показать список элементов"""
-    await state.clear()
-    await state.update_data(entity_config=entity_config['name'])
-    await render_entity_list(callback, state, entity_config, 1)
-
-async def show_edit_menu(callback, state, entity_id, entity_config, entity_data):
-    """Показывает меню редактирования для конкретного элемента"""
-    fields = entity_config['edit_fields']
-    keyboard = []
-    for field_name, field_label in fields:
-        current_value = entity_data.get(field_name, '?')
-        keyboard.append([InlineKeyboardButton(
-            text=f"{field_label}: {current_value}",
-            callback_data=f"edit_field_{field_name}"
-        )])
-    if entity_config.get('extra_edit_buttons'):
-        for btn in entity_config['extra_edit_buttons'](entity_id):
-            keyboard.append(btn)
-    keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="delete_entity")])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
-    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
-    
-    await callback.message.edit_text(
-        f"Редактирование {entity_config['name_ru']} ID {entity_id}:\n{entity_config['display_format'](entity_data)}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
-    await state.update_data(entity_id=entity_id, editing_entity=entity_config['name'])
-    await state.set_state(GenericEditStates.select_field)
-
-# -----------------------------------------------------------------
-# УНИВЕРСАЛЬНЫЕ ОБРАБОТЧИКИ (Callback'и)
-# -----------------------------------------------------------------
-
-@admin_router.callback_query(GenericEditStates.select_field, F.data.startswith("edit_field_"))
-async def generic_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
-    field = callback.data.split("_")[2]
-    await state.update_data(edit_field=field)
-    await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
-    await state.set_state(GenericEditStates.new_value)
-    await callback.answer()
-
-@admin_router.message(GenericEditStates.new_value, F.text)
-async def generic_update_field(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    entity_type = data['editing_entity']
-    entity_id = data['entity_id']
-    field = data['edit_field']
-    new_value = message.text.strip()
-    
-    # Валидация в зависимости от поля и типа сущности
-    config = ENTITY_CONFIGS[entity_type]
-    if field in config.get('integer_fields', []):
-        try:
-            new_value = int(new_value)
-            if new_value < 0:
-                raise ValueError
-        except:
-            await message.answer("Ошибка: введите положительное целое число.")
-            return
-    if field == 'emoji' and not is_valid_emoji(new_value):
-        await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра).")
-        return
-    if field == 'name' and not new_value:
-        await message.answer("Название не может быть пустым.")
-        return
-    if field == 'rarity' and new_value not in ('common','rare','epic'):
-        await message.answer("Редкость должна быть common, rare или epic.")
-        return
-    if field == 'type' and new_value not in ('craft','consumable','scroll_recipe','currency'):
-        await message.answer("Неверный тип ресурса.")
-        return
-    
-    # Выполняем обновление через конфигурационную функцию
-    try:
-        await config['update_field_func'](entity_id, field, new_value)
-        await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-        return
-    
-    # Показать обновлённое меню
-    entity_data = await config['get_by_id_func'](entity_id)
-    if not entity_data:
-        await message.answer("Сущность не найдена. Возврат в список.")
-        await render_entity_list(message, state, config, 1)
-        return
-    await show_edit_menu(message, state, entity_id, config, entity_data)
-
-@admin_router.callback_query(GenericEditStates.select_field, F.data == "delete_entity")
-async def generic_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    entity_type = data['editing_entity']
-    entity_id = data['entity_id']
-    config = ENTITY_CONFIGS[entity_type]
-    entity = await config['get_by_id_func'](entity_id)
-    if not entity:
-        await callback.message.edit_text("Сущность не найдена.")
-        await callback.answer()
-        return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="confirm_delete_yes")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_list")]
-    ])
-    await callback.message.edit_text(
-        f"⚠️ Удалить {config['name_ru']} <b>{entity['name']}</b> (ID {entity_id})?\nЭто действие необратимо.",
-        parse_mode="HTML", reply_markup=keyboard
-    )
-    await state.set_state(GenericEditStates.confirm_delete)
-    await callback.answer()
-
-@admin_router.callback_query(GenericEditStates.confirm_delete, F.data == "confirm_delete_yes")
-async def generic_delete_execute(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    entity_type = data['editing_entity']
-    entity_id = data['entity_id']
-    config = ENTITY_CONFIGS[entity_type]
-    try:
-        await config['delete_func'](entity_id)
-        await callback.message.edit_text("✅ Успешно удалено.")
-    except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка: {e}")
-    await render_entity_list(callback, state, config, 1)
-
-@admin_router.callback_query(GenericEditStates.select_field, F.data == "back_to_list")
-async def generic_back_to_list(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    entity_type = data.get('editing_entity')
-    if entity_type in ENTITY_CONFIGS:
-        await render_entity_list(callback, state, ENTITY_CONFIGS[entity_type], 1)
-    else:
-        await callback.message.edit_text("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
-    await callback.answer()
-
-# -----------------------------------------------------------------
-# КОНФИГУРАЦИИ СУЩНОСТЕЙ
-# -----------------------------------------------------------------
-
-ENTITY_CONFIGS = {}
-
-# ------ Ресурсы ------
+# Состояния для списков ресурсов и снаряжения
 class ResourceListStates(StatesGroup):
     list_page = State()
 
+class GearListStates(StatesGroup):
+    list_page = State()
+
+# --- Ресурсы ---
 async def resource_get_page(offset, limit):
     return await db.get_resources_page(offset, limit)
 
@@ -284,6 +61,8 @@ async def resource_get_by_id(res_id):
 
 async def resource_delete(res_id):
     await db.delete_resource(res_id)
+
+ENTITY_CONFIGS = {}
 
 ENTITY_CONFIGS['resource'] = {
     'name': 'resource',
@@ -307,10 +86,7 @@ ENTITY_CONFIGS['resource'] = {
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {d.get('type','craft')})"
 }
 
-# ------ Снаряжение ------
-class GearListStates(StatesGroup):
-    list_page = State()
-
+# --- Снаряжение ---
 async def gear_get_page(offset, limit):
     return await db.get_all_gear(offset, limit)
 
@@ -353,9 +129,9 @@ ENTITY_CONFIGS['gear'] = {
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{d.get('rarity','')}]"
 }
 
-# -----------------------------------------------------------------
-# ОБРАБОТЧИКИ ДЛЯ РЕСУРСОВ (ДОБАВЛЕНИЕ, РЕДАКТИРОВАНИЕ)
-# -----------------------------------------------------------------
+# ============================================================
+# ОБРАБОТЧИКИ ДЛЯ РЕСУРСОВ
+# ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_resources")
 async def manage_resources(callback: types.CallbackQuery, state: FSMContext):
@@ -426,9 +202,9 @@ async def resource_save(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await render_entity_list(callback, state, ENTITY_CONFIGS['resource'], 1)
 
-# -----------------------------------------------------------------
-# ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ (ДОБАВЛЕНИЕ)
-# -----------------------------------------------------------------
+# ============================================================
+# ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ
+# ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_gear")
 async def manage_gear(callback: types.CallbackQuery, state: FSMContext):
@@ -511,9 +287,10 @@ async def gear_save(message: types.Message, state: FSMContext):
     await state.clear()
     await render_entity_list(message, state, ENTITY_CONFIGS['gear'], 1)
 
-# -----------------------------------------------------------------
-# УПРАВЛЕНИЕ МОБАМИ (оставлено почти как было, но с использованием общих утилит для пагинации)
-# -----------------------------------------------------------------
+# ============================================================
+# УПРАВЛЕНИЕ МОБАМИ
+# ============================================================
+
 class MobStates(StatesGroup):
     add_name = State()
     add_emoji = State()
@@ -529,6 +306,7 @@ class MobStates(StatesGroup):
     drop_list_page = State()
 
 async def get_mob_list_keyboard(page):
+    from admin_utils import build_paginated_keyboard
     offset = (page-1)*ADMIN_ITEMS_PER_PAGE
     mobs = await db.execute_query("SELECT id, name, emoji FROM mobs ORDER BY id LIMIT ? OFFSET ?",
                                   (ADMIN_ITEMS_PER_PAGE+1, offset))
@@ -632,24 +410,20 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def universal_back_to_mob_list(callback: types.CallbackQuery, state: FSMContext):
-    """Универсальный обработчик кнопки 'Назад' из любого состояния, где есть mob_id"""
     data = await state.get_data()
     mob_id = data.get('mob_id')
     if not mob_id:
-        # Если нет mob_id, просто закрываем панель
-        await callback.message.edit_text("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
+        await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
         await state.clear()
         await callback.answer()
         return
-    
     mob = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
     if not mob:
         await callback.message.edit_text("Моб не найден. Возврат в админку.")
         await state.clear()
-        await callback.message.answer("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
+        await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
         await callback.answer()
         return
-    
     mob = mob[0]
     fields = [
         ('name', f"Имя: {mob['name']}"),
@@ -667,7 +441,6 @@ async def universal_back_to_mob_list(callback: types.CallbackQuery, state: FSMCo
     keyboard.append([InlineKeyboardButton(text="🗑 Удалить моба", callback_data="mob_delete")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_mob_list")])
     keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
-    
     await callback.message.edit_text(
         f"Редактирование моба ID {mob_id}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -689,7 +462,7 @@ async def mob_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_mob_list")]
     ])
     await callback.message.edit_text(f"Удалить моба <b>{mob[0]['name']}</b>?", parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(MobStates.edit_field)  # переиспользуем состояние, дальше обработаем
+    await state.set_state(MobStates.edit_field)
 
 @admin_router.callback_query(F.data == "confirm_mob_delete")
 async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
@@ -701,15 +474,15 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
 
-# ==================== УПРАВЛЕНИЕ ДРОПОМ ====================
+# ------------------- Управление дропом -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
+    from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     if category == 'resource':
         items = await db.get_resources_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
         has_next = len(items) > ADMIN_ITEMS_PER_PAGE
         items = items[:ADMIN_ITEMS_PER_PAGE]
     elif category == 'gear':
-        # Изменено: теперь получаем и common, и rare экипировку
         items = await db.execute_query(
             "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
             (ADMIN_ITEMS_PER_PAGE + 1, offset)
@@ -927,7 +700,7 @@ async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка: {e}")
     await state.clear()
-    await callback.message.answer("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
+    await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
     await callback.answer()
 
 # ---------- Удаление моба (через отдельный пункт меню) ----------
@@ -936,6 +709,7 @@ class DeleteMobStates(StatesGroup):
     confirm = State()
 
 async def get_delete_mob_keyboard(page):
+    from admin_utils import build_paginated_keyboard
     offset = (page-1)*ADMIN_ITEMS_PER_PAGE
     mobs = await db.execute_query("SELECT id, name FROM mobs ORDER BY id LIMIT ? OFFSET ?",
                                   (ADMIN_ITEMS_PER_PAGE+1, offset))
@@ -982,10 +756,13 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await db.delete_mob(mob_id)
     await callback.message.edit_text("✅ Моб удалён.")
     await state.clear()
-    await callback.message.answer("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
+    await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
     await callback.answer()
 
-# ==================== УПРАВЛЕНИЕ РЕЦЕПТАМИ (оставлено почти без изменений, чтобы не сломать) ====================
+# ============================================================
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ (оставлено без изменений)
+# ============================================================
+
 class RecipeStates(StatesGroup):
     list_type = State()
     list_page = State()
@@ -1148,6 +925,7 @@ async def recipe_add_ingredient_select(callback: types.CallbackQuery, state: FSM
     await show_ingredient_page(callback, resources, 1, state)
 
 async def show_ingredient_page(target, resources, page, state):
+    from admin_utils import ADMIN_ITEMS_PER_PAGE
     per_page = ADMIN_ITEMS_PER_PAGE
     start = (page-1)*per_page
     end = start+per_page
@@ -1319,3 +1097,19 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     keyboard = await get_recipe_list_keyboard(result_type, 1)
     await callback.message.answer(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
+
+# ============================================================
+# Регистрация универсальных обработчиков (CRUD для ресурсов и снаряжения)
+# ============================================================
+register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
+
+# ============================================================
+# Основная команда для админ-панели
+# ============================================================
+@admin_router.message(Command("kombat"))
+async def admin_panel(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return
+    await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
+                         reply_markup=get_admin_main_keyboard())
