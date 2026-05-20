@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ---------- Формирование карточек (без изменений) ----------
+# ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
     data = await db.get_mob_full_card(mob_id)
     if not data:
@@ -68,8 +68,10 @@ async def format_resource_card(resource_id: int) -> str:
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"🏷 Тип: {type_str}\n\n"
     if data['mobs']:
-        text += "<b>Падает с мобов:</b>\n" + "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
-    # Вместо старого else – выводим примечание, если оно есть
+        text += "<b>Падает с мобов:</b>\n"
+        for m in data['mobs']:
+            loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
+            text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>"
     return text
@@ -614,7 +616,7 @@ async def craft_back_to_list(callback: types.CallbackQuery):
     await show_craft_resources_list(callback, craftable_resources, page)
     await callback.answer()
 
-# ---------- НОВЫЕ CALLBACK ДЛЯ РЕСУРСОВ ПО ТИПАМ ----------
+# ---------- НОВЫЕ CALLBACK ДЛЯ РЕСУРСОВ ПО ТИПАМ (с навигацией prev/next) ----------
 @dp.callback_query(F.data.startswith("resource_cat_"))
 async def resource_category_callback(callback: types.CallbackQuery):
     resource_type = callback.data.split("_")[2]  # craft, consumable, scroll_recipe, currency
@@ -638,16 +640,46 @@ async def back_to_resource_categories(callback: types.CallbackQuery):
 async def view_resource_by_type(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     resource_id = int(parts[2])
-    resource_type = parts[3]   # может не использоваться, но полезно для навигации
+    resource_type = parts[3]   # craft, consumable, scroll_recipe, currency
     page = int(parts[4])
-    
+
     text = await format_resource_card(resource_id)
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"res_page_{resource_type}_{page}")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")]
-    ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+    # Получаем соседние ресурсы того же типа
+    neighbours = await db.get_prev_next_resource_by_type(resource_id, resource_type)
+
+    nav_buttons = []
+    if neighbours['prev_id']:
+        nav_buttons.append(InlineKeyboardButton(
+            text="◀ Предыдущий",
+            callback_data=f"view_resource_{neighbours['prev_id']}_{resource_type}_{page}"
+        ))
+    if neighbours['next_id']:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Следующий ▶",
+            callback_data=f"view_resource_{neighbours['next_id']}_{resource_type}_{page}"
+        ))
+
+    back_button = InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=f"res_page_{resource_type}_{page}"
+    )
+    home_button = InlineKeyboardButton(
+        text="🏠 Главное меню",
+        callback_data="back_to_main_menu"
+    )
+
+    keyboard = []
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    keyboard.append([back_button])
+    keyboard.append([home_button])
+
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_main_menu")
