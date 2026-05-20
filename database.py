@@ -96,6 +96,49 @@ class Database:
     async def invalidate_location_cache(self):
         await self._load_locations_cache()
 
+    # ========== ПОИСК (ДОБАВЛЕННЫЙ МЕТОД) ==========
+    async def search(self, query: str) -> Dict[str, List[Dict]]:
+        """
+        Поиск по мобам, ресурсам и снаряжению.
+        Возвращает словарь с ключами 'mobs', 'resources', 'gear'.
+        """
+        like_pattern = f"%{query}%"
+        results = {"mobs": [], "resources": [], "gear": []}
+
+        # Поиск мобов
+        mobs = await self.execute_query("""
+            SELECT m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp,
+                   l.name AS location_name, l.emoji AS location_emoji
+            FROM mobs m
+            JOIN locations l ON m.location_id = l.id
+            WHERE LOWER_UNICODE(m.name) LIKE LOWER_UNICODE(?)
+            ORDER BY m.id
+            LIMIT 50
+        """, (like_pattern,))
+        results["mobs"] = mobs
+
+        # Поиск ресурсов
+        resources = await self.execute_query("""
+            SELECT id, name, emoji, type
+            FROM resources
+            WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)
+            ORDER BY id
+            LIMIT 50
+        """, (like_pattern,))
+        results["resources"] = resources
+
+        # Поиск снаряжения
+        gear = await self.execute_query("""
+            SELECT id, name, emoji, rarity, slot
+            FROM gear
+            WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)
+            ORDER BY id
+            LIMIT 50
+        """, (like_pattern,))
+        results["gear"] = gear
+
+        return results
+
     # ========== МОБЫ ==========
     async def get_mob_full_card(self, mob_id: int) -> Optional[Dict]:
         query = """
@@ -187,7 +230,6 @@ class Database:
             await self.execute_query("UPDATE resources SET name = ?, emoji = ?, type = ? WHERE id = ?", (name, emoji, resource_type, resource_id))
 
     async def delete_resource(self, resource_id: int):
-        # Удаляем из дропов и recipe_ingredients
         await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
         await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
@@ -231,9 +273,7 @@ class Database:
         )
 
     async def delete_gear(self, gear_id: int):
-        # Удаляем из drops
         await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (gear_id,))
-        # Находим связанный рецепт
         recipe = await self.execute_query(
             "SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear_id,)
         )
