@@ -25,6 +25,10 @@ def is_valid_emoji(s: str) -> bool:
         return False
     return all(not ch.isalnum() for ch in s)
 
+def clean_username(username: str) -> str:
+    """Убирает @ в начале, если есть."""
+    return username.lstrip('@') if username else ''
+
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
@@ -32,8 +36,8 @@ async def get_admin_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="✏️ Редактировать моба", callback_data="admin_edit_mob")],
         [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
         [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
-        [InlineKeyboardButton(text="⚔️ Снаряжение (позже)", callback_data="admin_gear_soon")],
-        [InlineKeyboardButton(text="📜 Рецепты (позже)", callback_data="admin_recipes_soon")],
+        [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
+        [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -50,14 +54,6 @@ async def admin_panel(message: types.Message):
 async def admin_close(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.answer()
-
-@admin_router.callback_query(F.data == "admin_gear_soon")
-async def soon_gear(callback: types.CallbackQuery):
-    await callback.answer("Раздел в разработке", show_alert=True)
-
-@admin_router.callback_query(F.data == "admin_recipes_soon")
-async def soon_recipes(callback: types.CallbackQuery):
-    await callback.answer("Раздел в разработке", show_alert=True)
 
 @admin_router.callback_query(F.data == "admin_cancel_edit")
 async def cancel_edit(callback: types.CallbackQuery, state: FSMContext):
@@ -83,15 +79,16 @@ async def get_resources_list_keyboard(page: int) -> InlineKeyboardMarkup:
     has_next = len(resources) > ADMIN_ITEMS_PER_PAGE
     resources = resources[:ADMIN_ITEMS_PER_PAGE]
     keyboard = []
+    type_emoji_map = {
+        'craft': '📦',
+        'consumable': '✨',
+        'scroll_recipe': '📜',
+        'currency': '💰'
+    }
     for res in resources:
-        type_emoji = {
-            'craft': '📦',
-            'consumable': '✨',
-            'scroll_recipe': '📜',
-            'currency': '💰'
-        }.get(res.get('type', 'craft'), '📦')
+        t_emoji = type_emoji_map.get(res.get('type', 'craft'), '📦')
         keyboard.append([InlineKeyboardButton(
-            text=f"{type_emoji} {res['emoji']} {res['name']} (ID {res['id']})",
+            text=f"{t_emoji} {res['emoji']} {res['name']} (ID {res['id']})",
             callback_data=f"resource_edit_{res['id']}"
         )])
     nav = []
@@ -128,7 +125,6 @@ async def resource_add_name(callback: types.CallbackQuery, state: FSMContext):
 
 @admin_router.message(ResourceStates.add_name, F.text)
 async def resource_add_emoji(message: types.Message, state: FSMContext):
-    logger.info(f"resource_add_emoji получил текст: {message.text}")
     name = message.text.strip()
     if not name:
         await message.answer("Название не может быть пустым. Попробуйте снова:")
@@ -138,8 +134,7 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await state.set_state(ResourceStates.add_emoji)
 
 @admin_router.message(ResourceStates.add_emoji, F.text)
-async def resource_add_emoji(message: types.Message, state: FSMContext):
-    logger.info(f"resource_add_emoji получил эмодзи: {message.text}")
+async def resource_add_emoji_save(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
@@ -198,6 +193,93 @@ async def resource_edit_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ResourceStates.edit_select)
     await callback.answer()
 
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_back_to_list")
+async def resource_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = await get_resources_list_keyboard(1)
+    await callback.message.edit_text("📦 Управление ресурсами:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_name")
+async def resource_edit_name_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите новое название ресурса:")
+    await state.set_state(ResourceStates.edit_name)
+    await callback.answer()
+
+@admin_router.message(ResourceStates.edit_name, F.text)
+async def resource_update_name(message: types.Message, state: FSMContext):
+    new_name = message.text.strip()
+    if not new_name:
+        await message.answer("Название не может быть пустым. Попробуйте снова:")
+        return
+    data = await state.get_data()
+    res_id = data['res_id']
+    current_emoji = data['res_emoji']
+    try:
+        await db.update_resource(res_id, new_name, current_emoji, None)
+        await message.answer(f"✅ Название ресурса обновлено на <b>{new_name}</b>.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+    res = await db.get_resource_by_id(res_id)
+    if not res:
+        await message.answer("Ресурс пропал. Возврат в список.")
+        keyboard = await get_resources_list_keyboard(1)
+        await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
+        await state.set_state(ResourceStates.list_page)
+        return
+    await state.update_data(res_name=res['name'], res_emoji=res['emoji'], res_type=res['type'])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🏷 Изменить тип", callback_data="resource_edit_type")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']}, тип: {res['type']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_emoji")
+async def resource_edit_emoji_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите новый эмодзи для ресурса (один символ):")
+    await state.set_state(ResourceStates.edit_emoji)
+    await callback.answer()
+
+@admin_router.message(ResourceStates.edit_emoji, F.text)
+async def resource_update_emoji(message: types.Message, state: FSMContext):
+    new_emoji = message.text.strip()
+    if not is_valid_emoji(new_emoji):
+        await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
+        return
+    data = await state.get_data()
+    res_id = data['res_id']
+    current_name = data['res_name']
+    try:
+        await db.update_resource(res_id, current_name, new_emoji, None)
+        await message.answer(f"✅ Эмодзи ресурса обновлён на {new_emoji}.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+    res = await db.get_resource_by_id(res_id)
+    if not res:
+        await message.answer("Ресурс пропал. Возврат в список.")
+        keyboard = await get_resources_list_keyboard(1)
+        await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
+        await state.set_state(ResourceStates.list_page)
+        return
+    await state.update_data(res_name=res['name'], res_emoji=res['emoji'], res_type=res['type'])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🏷 Изменить тип", callback_data="resource_edit_type")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']}, тип: {res['type']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
+
 @admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_type")
 async def resource_edit_type_prompt(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -209,13 +291,6 @@ async def resource_edit_type_prompt(callback: types.CallbackQuery, state: FSMCon
     ])
     await callback.message.edit_text("Выберите новый тип ресурса:", reply_markup=keyboard)
     await state.set_state(ResourceStates.edit_type)
-    await callback.answer()
-
-@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_back_to_list")
-async def resource_back_to_list(callback: types.CallbackQuery, state: FSMContext):
-    keyboard = await get_resources_list_keyboard(1)
-    await callback.message.edit_text("📦 Управление ресурсами:", reply_markup=keyboard)
-    await state.set_state(ResourceStates.list_page)
     await callback.answer()
 
 @admin_router.callback_query(ResourceStates.edit_type, F.data.startswith("res_update_type_"))
@@ -238,6 +313,11 @@ async def resource_update_type(callback: types.CallbackQuery, state: FSMContext)
         await callback.message.edit_text(f"❌ Ошибка: {e}")
         return
     res = await db.get_resource_by_id(res_id)
+    if not res:
+        await callback.message.edit_text("Ресурс пропал.")
+        await state.clear()
+        await callback.answer()
+        return
     await state.update_data(res_type=res['type'])
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
@@ -251,86 +331,6 @@ async def resource_update_type(callback: types.CallbackQuery, state: FSMContext)
     await state.set_state(ResourceStates.edit_select)
     await callback.answer()
 
-@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_name")
-async def resource_edit_name_prompt(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введите новое название ресурса:")
-    await state.set_state(ResourceStates.edit_name)
-    await callback.answer()
-
-@admin_router.message(ResourceStates.edit_name, F.text)
-async def resource_update_name(message: types.Message, state: FSMContext):
-    logger.info(f"resource_update_name получил текст: {message.text}")
-    new_name = message.text.strip()
-    if not new_name:
-        await message.answer("Название не может быть пустым. Попробуйте снова:")
-        return
-    data = await state.get_data()
-    res_id = data['res_id']
-    current_emoji = data['res_emoji']
-    try:
-        await db.update_resource(res_id, new_name, current_emoji, None)
-        await message.answer(f"✅ Название ресурса обновлено на <b>{new_name}</b>.", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-        return
-    res = await db.get_resource_by_id(res_id)
-    if not res:
-        await message.answer("Ресурс пропал. Возврат в список.")
-        keyboard = await get_resources_list_keyboard(1)
-        await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
-        await state.set_state(ResourceStates.list_page)
-        return
-    await state.update_data(res_name=res['name'], res_emoji=res['emoji'])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
-        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
-        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
-        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
-    ])
-    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
-    await state.set_state(ResourceStates.edit_select)
-
-@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_emoji")
-async def resource_edit_emoji_prompt(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введите новый эмодзи для ресурса (один символ):")
-    await state.set_state(ResourceStates.edit_emoji)
-    await callback.answer()
-
-@admin_router.message(ResourceStates.edit_emoji, F.text)
-async def resource_update_emoji(message: types.Message, state: FSMContext):
-    logger.info(f"resource_update_emoji получил эмодзи: {message.text}")
-    new_emoji = message.text.strip()
-    if not is_valid_emoji(new_emoji):
-        await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
-        return
-    data = await state.get_data()
-    res_id = data['res_id']
-    current_name = data['res_name']
-    try:
-        await db.update_resource(res_id, current_name, new_emoji, None)
-        await message.answer(f"✅ Эмодзи ресурса обновлён на {new_emoji}.", parse_mode="HTML")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-        return
-    res = await db.get_resource_by_id(res_id)
-    if not res:
-        await message.answer("Ресурс пропал. Возврат в список.")
-        keyboard = await get_resources_list_keyboard(1)
-        await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
-        await state.set_state(ResourceStates.list_page)
-        return
-    await state.update_data(res_name=res['name'], res_emoji=res['emoji'])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
-        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
-        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
-        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
-    ])
-    await message.answer(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
-    await state.set_state(ResourceStates.edit_select)
-
 @admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_delete")
 async def resource_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -340,7 +340,7 @@ async def resource_delete_confirm(callback: types.CallbackQuery, state: FSMConte
         [InlineKeyboardButton(text="✅ Да, удалить", callback_data="resource_delete_yes")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="resource_back_to_list")]
     ])
-    await callback.message.edit_text(f"⚠️ Вы уверены, что хотите удалить ресурс <b>{res_name}</b> (ID {res_id})?\nЭто также удалит его из дропов всех мобов.", parse_mode="HTML", reply_markup=keyboard)
+    await callback.message.edit_text(f"⚠️ Вы уверены, что хотите удалить ресурс <b>{res_name}</b> (ID {res_id})?\nЭто также удалит его из дропов и рецептов.", parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(ResourceStates.delete_confirm)
     await callback.answer()
 
@@ -380,7 +380,6 @@ async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
 
 @admin_router.message(AddMobStates.name, F.text)
 async def add_mob_name(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_name получил текст: {message.text}")
     name = message.text.strip()
     if not name:
         await message.answer("Название не может быть пустым. Попробуйте снова:")
@@ -391,7 +390,6 @@ async def add_mob_name(message: types.Message, state: FSMContext):
 
 @admin_router.message(AddMobStates.emoji, F.text)
 async def add_mob_emoji(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_emoji получил эмодзи: {message.text}")
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
@@ -402,7 +400,6 @@ async def add_mob_emoji(message: types.Message, state: FSMContext):
 
 @admin_router.message(AddMobStates.hp, F.text)
 async def add_mob_hp(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_hp получил текст: {message.text}")
     try:
         hp = int(message.text.strip())
         if hp < 0:
@@ -416,7 +413,6 @@ async def add_mob_hp(message: types.Message, state: FSMContext):
 
 @admin_router.message(AddMobStates.dust_min, F.text)
 async def add_mob_dust_min(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_dust_min получил текст: {message.text}")
     try:
         dust_min = int(message.text.strip())
         if dust_min < 0:
@@ -430,7 +426,6 @@ async def add_mob_dust_min(message: types.Message, state: FSMContext):
 
 @admin_router.message(AddMobStates.dust_max, F.text)
 async def add_mob_dust_max(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_dust_max получил текст: {message.text}")
     try:
         dust_max = int(message.text.strip())
         if dust_max < 0:
@@ -448,7 +443,6 @@ async def add_mob_dust_max(message: types.Message, state: FSMContext):
 
 @admin_router.message(AddMobStates.exp, F.text)
 async def add_mob_exp(message: types.Message, state: FSMContext):
-    logger.info(f"add_mob_exp получил текст: {message.text}")
     try:
         exp = int(message.text.strip())
         if exp < 0:
@@ -586,7 +580,6 @@ async def select_field_to_edit(callback: types.CallbackQuery, state: FSMContext)
 
 @admin_router.message(EditMobStates.new_value, F.text)
 async def set_new_value(message: types.Message, state: FSMContext):
-    logger.info(f"set_new_value получил текст: {message.text}")
     new_value = message.text.strip()
     data = await state.get_data()
     mob_id = data['mob_id']
@@ -836,4 +829,554 @@ async def delete_mob(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"❌ Ошибка: {e}")
     await state.clear()
     await callback.message.answer("🔧 Админ-панель", reply_markup=await get_admin_main_keyboard())
+    await callback.answer()
+
+# ==================== УПРАВЛЕНИЕ СНАРЯЖЕНИЕМ ====================
+class GearStates(StatesGroup):
+    list_page = State()
+    add_name = State()
+    add_rarity = State()
+    add_slot = State()
+    add_emoji = State()
+    edit_select = State()
+    edit_field = State()
+    new_value = State()
+    delete_confirm = State()
+
+async def get_gear_list_keyboard(page: int) -> InlineKeyboardMarkup:
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    items = await db.get_all_gear(offset, ADMIN_ITEMS_PER_PAGE + 1)
+    has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+    items = items[:ADMIN_ITEMS_PER_PAGE]
+    keyboard = []
+    for gear in items:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{gear['emoji']} {gear['name']} (ID {gear['id']}) [{gear['rarity']}]",
+            callback_data=f"gear_edit_{gear['id']}"
+        )])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"gear_page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"gear_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить снаряжение", callback_data="gear_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@admin_router.callback_query(F.data == "admin_manage_gear")
+async def manage_gear(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    keyboard = await get_gear_list_keyboard(1)
+    await callback.message.edit_text("⚔️ Управление снаряжением:\nВыберите предмет для редактирования или добавьте новый:", reply_markup=keyboard)
+    await state.set_state(GearStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(GearStates.list_page, F.data.startswith("gear_page_"))
+async def gear_page(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[2])
+    keyboard = await get_gear_list_keyboard(page)
+    await callback.message.edit_text("⚔️ Управление снаряжением:", reply_markup=keyboard)
+    await callback.answer()
+
+@admin_router.callback_query(GearStates.list_page, F.data == "gear_add")
+async def gear_add_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите название снаряжения:")
+    await state.set_state(GearStates.add_name)
+    await callback.answer()
+
+@admin_router.message(GearStates.add_name, F.text)
+async def gear_add_rarity(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("Название не может быть пустым.")
+        return
+    await state.update_data(gear_name=name)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚪ Обычное (common)", callback_data="rarity_common")],
+        [InlineKeyboardButton(text="🟢 Редкое (rare)", callback_data="rarity_rare")],
+        [InlineKeyboardButton(text="🔵 Сверхредкое (epic)", callback_data="rarity_epic")]
+    ])
+    await message.answer("Выберите редкость:", reply_markup=keyboard)
+    await state.set_state(GearStates.add_rarity)
+
+@admin_router.callback_query(GearStates.add_rarity, F.data.startswith("rarity_"))
+async def gear_add_slot(callback: types.CallbackQuery, state: FSMContext):
+    rarity = callback.data.split("_")[1]
+    await state.update_data(gear_rarity=rarity)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗡 Оружие (оружие)", callback_data="slot_оружие")],
+        [InlineKeyboardButton(text="🛡 Щит (щит)", callback_data="slot_щит")],
+        [InlineKeyboardButton(text="🪖 Голова (голова)", callback_data="slot_голова")],
+        [InlineKeyboardButton(text="🦺 Торс (торс)", callback_data="slot_торс")],
+        [InlineKeyboardButton(text="🧤 Руки (руки)", callback_data="slot_руки")],
+        [InlineKeyboardButton(text="🩳 Ноги (ноги)", callback_data="slot_ноги")],
+        [InlineKeyboardButton(text="🧣 Спина (спина)", callback_data="slot_спина")],
+        [InlineKeyboardButton(text="📖 Аксессуар (аксессуар)", callback_data="slot_аксессуар")],
+        [InlineKeyboardButton(text="🪹 Плечи (плечи)", callback_data="slot_плечи")]
+    ])
+    await callback.message.edit_text("Выберите слот:", reply_markup=keyboard)
+    await state.set_state(GearStates.add_slot)
+
+@admin_router.callback_query(GearStates.add_slot, F.data.startswith("slot_"))
+async def gear_add_emoji(callback: types.CallbackQuery, state: FSMContext):
+    slot = callback.data.split("_")[1]
+    await state.update_data(gear_slot=slot)
+    await callback.message.edit_text("Введите эмодзи для снаряжения (один символ):")
+    await state.set_state(GearStates.add_emoji)
+    await callback.answer()
+
+@admin_router.message(GearStates.add_emoji, F.text)
+async def gear_save(message: types.Message, state: FSMContext):
+    emoji = message.text.strip()
+    if not is_valid_emoji(emoji):
+        await message.answer("Эмодзи должен быть ровно один символ.")
+        return
+    data = await state.get_data()
+    try:
+        await db.add_gear(data['gear_name'], data['gear_rarity'], data['gear_slot'], emoji)
+        await message.answer(f"✅ Снаряжение <b>{data['gear_name']}</b> добавлено.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    await state.clear()
+    keyboard = await get_gear_list_keyboard(1)
+    await message.answer("⚔️ Управление снаряжением:", reply_markup=keyboard)
+    await state.set_state(GearStates.list_page)
+
+@admin_router.callback_query(GearStates.list_page, F.data.startswith("gear_edit_"))
+async def gear_edit_menu(callback: types.CallbackQuery, state: FSMContext):
+    gear_id = int(callback.data.split("_")[2])
+    gear = await db.get_gear_by_id(gear_id)
+    if not gear:
+        await callback.message.edit_text("Предмет не найден.")
+        await callback.answer()
+        return
+    await state.update_data(gear_id=gear_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✏️ Название: {gear['name']}", callback_data="gear_edit_name")],
+        [InlineKeyboardButton(text=f"⭐ Редкость: {gear['rarity']}", callback_data="gear_edit_rarity")],
+        [InlineKeyboardButton(text=f"🔧 Слот: {gear['slot']}", callback_data="gear_edit_slot")],
+        [InlineKeyboardButton(text=f"😀 Эмодзи: {gear['emoji']}", callback_data="gear_edit_emoji")],
+        [InlineKeyboardButton(text="🗑 Удалить предмет", callback_data="gear_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="gear_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    await callback.message.edit_text(f"Редактирование: {gear['emoji']} {gear['name']}\nВыберите поле:", reply_markup=keyboard)
+    await state.set_state(GearStates.edit_select)
+    await callback.answer()
+
+@admin_router.callback_query(GearStates.edit_select, F.data == "gear_back_to_list")
+async def gear_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = await get_gear_list_keyboard(1)
+    await callback.message.edit_text("⚔️ Управление снаряжением:", reply_markup=keyboard)
+    await state.set_state(GearStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(GearStates.edit_select, F.data.startswith("gear_edit_"))
+async def gear_edit_field(callback: types.CallbackQuery, state: FSMContext):
+    field = callback.data.split("_")[2]  # name, rarity, slot, emoji
+    await state.update_data(gear_edit_field=field)
+    await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
+    await state.set_state(GearStates.new_value)
+    await callback.answer()
+
+@admin_router.message(GearStates.new_value, F.text)
+async def gear_update_field(message: types.Message, state: FSMContext):
+    new_value = message.text.strip()
+    data = await state.get_data()
+    gear_id = data['gear_id']
+    field = data['gear_edit_field']
+    if field == 'emoji' and not is_valid_emoji(new_value):
+        await message.answer("Эмодзи должен быть ровно один символ.")
+        return
+    if field == 'name' and not new_value:
+        await message.answer("Название не может быть пустым.")
+        return
+    try:
+        if field == 'name':
+            await db.update_gear(gear_id, name=new_value)
+        elif field == 'rarity':
+            if new_value not in ('common', 'rare', 'epic'):
+                await message.answer("Редкость должна быть common, rare или epic.")
+                return
+            await db.update_gear(gear_id, rarity=new_value)
+        elif field == 'slot':
+            await db.update_gear(gear_id, slot=new_value)
+        elif field == 'emoji':
+            await db.update_gear(gear_id, emoji=new_value)
+        await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+    gear = await db.get_gear_by_id(gear_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✏️ Название: {gear['name']}", callback_data="gear_edit_name")],
+        [InlineKeyboardButton(text=f"⭐ Редкость: {gear['rarity']}", callback_data="gear_edit_rarity")],
+        [InlineKeyboardButton(text=f"🔧 Слот: {gear['slot']}", callback_data="gear_edit_slot")],
+        [InlineKeyboardButton(text=f"😀 Эмодзи: {gear['emoji']}", callback_data="gear_edit_emoji")],
+        [InlineKeyboardButton(text="🗑 Удалить предмет", callback_data="gear_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="gear_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    await message.answer(f"Редактирование: {gear['emoji']} {gear['name']}\nВыберите поле:", reply_markup=keyboard)
+    await state.set_state(GearStates.edit_select)
+
+@admin_router.callback_query(GearStates.edit_select, F.data == "gear_delete")
+async def gear_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    gear_id = data['gear_id']
+    gear = await db.get_gear_by_id(gear_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="gear_delete_yes")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="gear_back_to_list")]
+    ])
+    await callback.message.edit_text(f"⚠️ Удалить <b>{gear['name']}</b> (ID {gear_id})? Это удалит его из дропов и рецептов.", parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(GearStates.delete_confirm)
+    await callback.answer()
+
+@admin_router.callback_query(GearStates.delete_confirm, F.data == "gear_delete_yes")
+async def gear_delete_execute(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    gear_id = data['gear_id']
+    try:
+        await db.delete_gear(gear_id)
+        await callback.message.edit_text("✅ Снаряжение удалено.")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+    await state.clear()
+    keyboard = await get_gear_list_keyboard(1)
+    await callback.message.answer("⚔️ Управление снаряжением:", reply_markup=keyboard)
+    await state.set_state(GearStates.list_page)
+    await callback.answer()
+
+# ==================== УПРАВЛЕНИЕ РЕЦЕПТАМИ ====================
+class RecipeStates(StatesGroup):
+    list_type = State()
+    list_page = State()
+    view_recipe = State()
+    add_confirm = State()
+    add_ingredient = State()
+    add_owner = State()
+    edit_ingredient = State()
+    edit_ingredient_quantity = State()
+    delete_confirm = State()
+
+async def get_recipe_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚔️ Снаряжение (gear)", callback_data="recipe_type_gear")],
+        [InlineKeyboardButton(text="📦 Ресурсы (resource)", callback_data="recipe_type_resource")],
+        [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
+    ])
+
+@admin_router.callback_query(F.data == "admin_manage_recipes")
+async def manage_recipes_type(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("Выберите тип результата рецепта:", reply_markup=await get_recipe_type_keyboard())
+    await state.set_state(RecipeStates.list_type)
+    await callback.answer()
+
+async def get_recipe_list_keyboard(result_type: str, page: int) -> InlineKeyboardMarkup:
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    recipes = await db.get_all_recipes(result_type, offset, ADMIN_ITEMS_PER_PAGE + 1)
+    has_next = len(recipes) > ADMIN_ITEMS_PER_PAGE
+    recipes = recipes[:ADMIN_ITEMS_PER_PAGE]
+    keyboard = []
+    for r in recipes:
+        text = f"{r['result_emoji']} {r['result_name']} (ID рец.{r['id']}) | ингр:{r['ingredient_count']} влад:{r['owner_count']}"
+        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"recipe_view_{r['id']}")])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"recipe_page_{result_type}_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"recipe_page_{result_type}_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить рецепт", callback_data=f"recipe_add_{result_type}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Выбрать другой тип", callback_data="recipe_back_to_type")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+@admin_router.callback_query(RecipeStates.list_type, F.data.startswith("recipe_type_"))
+async def recipe_list(callback: types.CallbackQuery, state: FSMContext):
+    result_type = callback.data.split("_")[2]
+    await state.update_data(recipe_result_type=result_type, recipe_page=1)
+    keyboard = await get_recipe_list_keyboard(result_type, 1)
+    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:\nВыберите рецепт для просмотра/редактирования:", reply_markup=keyboard)
+    await state.set_state(RecipeStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_page_"))
+async def recipe_list_page(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    result_type = parts[2]
+    page = int(parts[3])
+    await state.update_data(recipe_result_type=result_type, recipe_page=page)
+    keyboard = await get_recipe_list_keyboard(result_type, page)
+    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await callback.answer()
+
+@admin_router.callback_query(RecipeStates.list_page, F.data == "recipe_back_to_type")
+async def recipe_back_to_type(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Выберите тип результата рецепта:", reply_markup=await get_recipe_type_keyboard())
+    await state.set_state(RecipeStates.list_type)
+    await callback.answer()
+
+async def show_recipe(target, recipe: dict, state: FSMContext):
+    """Универсальный показ карточки рецепта"""
+    if recipe['result_type'] == 'gear':
+        gear = await db.get_gear_by_id(recipe['result_id'])
+        result_info = f"{gear['emoji']} {gear['name']}" if gear else f"ID {recipe['result_id']}"
+    else:
+        res = await db.get_resource_by_id(recipe['result_id'])
+        result_info = f"{res['emoji']} {res['name']}" if res else f"ID {recipe['result_id']}"
+    text = f"📜 Рецепт ID {recipe['id']}\n🎁 Результат: {result_info} (количество: {recipe['quantity']})\n\n"
+    text += "<b>Ингредиенты:</b>\n"
+    if recipe['ingredients']:
+        for ing in recipe['ingredients']:
+            text += f"  {ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+    else:
+        text += "<i>Нет ингредиентов</i>\n"
+    text += "\n👥 <b>Владельцы рецепта:</b>\n"
+    if recipe['owners']:
+        text += "\n".join(f"  @{clean_username(owner)}" for owner in recipe['owners'])
+    else:
+        text += "<i>Нет владельцев</i>\n"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить ингредиент", callback_data="recipe_add_ingredient")],
+        [InlineKeyboardButton(text="👤 Добавить владельца", callback_data="recipe_add_owner")],
+        [InlineKeyboardButton(text="✏️ Редактировать ингредиенты", callback_data="recipe_edit_ingredients")],
+        [InlineKeyboardButton(text="❌ Удалить рецепт", callback_data="recipe_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="recipe_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    if isinstance(target, types.CallbackQuery):
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await state.set_state(RecipeStates.view_recipe)
+
+@admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_view_"))
+async def recipe_view(callback: types.CallbackQuery, state: FSMContext):
+    recipe_id = int(callback.data.split("_")[2])
+    recipe = await db.get_recipe_details(recipe_id)
+    if not recipe:
+        await callback.message.edit_text("Рецепт не найден.")
+        await callback.answer()
+        return
+    await state.update_data(recipe_id=recipe_id, recipe_result_type=recipe['result_type'])
+    await show_recipe(callback, recipe, state)
+
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_back_to_list")
+async def recipe_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    result_type = data.get('recipe_result_type', 'gear')
+    page = data.get('recipe_page', 1)
+    keyboard = await get_recipe_list_keyboard(result_type, page)
+    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await state.set_state(RecipeStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_add_"))
+async def recipe_add_choose_item(callback: types.CallbackQuery, state: FSMContext):
+    result_type = callback.data.split("_")[2]
+    await state.update_data(new_recipe_type=result_type)
+    if result_type == 'gear':
+        all_gear = await db.get_all_gear_simple()
+        existing = await db.execute_query("SELECT result_id FROM recipes WHERE result_type='gear'")
+        existing_ids = {e['result_id'] for e in existing}
+        available = [g for g in all_gear if g['id'] not in existing_ids]
+        if not available:
+            await callback.message.edit_text("Для всего снаряжения уже есть рецепты.")
+            await callback.answer()
+            return
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{g['emoji']} {g['name']}", callback_data=f"recipe_new_target_{g['id']}")] for g in available
+        ])
+        await callback.message.edit_text("Выберите снаряжение, для которого создать рецепт:", reply_markup=keyboard)
+    else:
+        all_res = await db.get_all_resources_simple()
+        existing = await db.execute_query("SELECT result_id FROM recipes WHERE result_type='resource'")
+        existing_ids = {e['result_id'] for e in existing}
+        available = [r for r in all_res if r['id'] not in existing_ids]
+        if not available:
+            await callback.message.edit_text("Для всех ресурсов уже есть рецепты.")
+            await callback.answer()
+            return
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"recipe_new_target_{r['id']}")] for r in available
+        ])
+        await callback.message.edit_text("Выберите ресурс, для которого создать рецепт:", reply_markup=keyboard)
+    await state.set_state(RecipeStates.add_confirm)
+
+@admin_router.callback_query(RecipeStates.add_confirm, F.data.startswith("recipe_new_target_"))
+async def recipe_create(callback: types.CallbackQuery, state: FSMContext):
+    result_id = int(callback.data.split("_")[3])
+    data = await state.get_data()
+    result_type = data['new_recipe_type']
+    try:
+        recipe_id = await db.create_recipe(result_type, result_id, 1)
+        await callback.message.edit_text(f"✅ Рецепт создан (ID {recipe_id}). Теперь добавьте ингредиенты и владельцев через кнопки.")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+        await callback.answer()
+        return
+    recipe = await db.get_recipe_details(recipe_id)
+    await state.update_data(recipe_id=recipe_id, recipe_result_type=result_type, recipe_page=1)
+    await show_recipe(callback, recipe, state)
+
+# Добавление ингредиента
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_ingredient")
+async def recipe_add_ingredient_select(callback: types.CallbackQuery, state: FSMContext):
+    resources = await db.get_all_resources_simple()
+    if not resources:
+        await callback.answer("Нет ресурсов в БД", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"recipe_ing_select_{r['id']}")] for r in resources[:20]
+    ])
+    keyboard.inline_keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="recipe_back_to_view")])
+    await callback.message.edit_text("Выберите ресурс для добавления в ингредиенты:", reply_markup=keyboard)
+    await state.set_state(RecipeStates.add_ingredient)
+
+@admin_router.callback_query(RecipeStates.add_ingredient, F.data.startswith("recipe_ing_select_"))
+async def recipe_ingredient_quantity(callback: types.CallbackQuery, state: FSMContext):
+    resource_id = int(callback.data.split("_")[3])
+    await state.update_data(temp_resource_id=resource_id)
+    await callback.message.edit_text("Введите количество (целое число):")
+    await state.set_state(RecipeStates.edit_ingredient_quantity)
+    await state.update_data(edit_action='add')
+
+@admin_router.message(RecipeStates.edit_ingredient_quantity, F.text)
+async def recipe_ingredient_save(message: types.Message, state: FSMContext):
+    try:
+        qty = int(message.text.strip())
+        if qty <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите положительное целое число.")
+        return
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    action = data.get('edit_action')
+    if action == 'add':
+        resource_id = data['temp_resource_id']
+        await db.add_ingredient(recipe_id, resource_id, qty)
+        await message.answer("✅ Ингредиент добавлен.")
+    elif action == 'change':
+        resource_id = data['edit_resource_id']
+        await db.update_ingredient(recipe_id, resource_id, qty)
+        await message.answer("✅ Количество обновлено.")
+    else:
+        await message.answer("Ошибка: неизвестное действие.")
+        return
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(message, recipe, state)
+
+# Добавление владельца
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_owner")
+async def recipe_add_owner_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите username владельца (без @):")
+    await state.set_state(RecipeStates.add_owner)
+    await callback.answer()
+
+@admin_router.message(RecipeStates.add_owner, F.text)
+async def recipe_add_owner_save(message: types.Message, state: FSMContext):
+    username = message.text.strip().lstrip('@')
+    if not username:
+        await message.answer("Имя не может быть пустым.")
+        return
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    try:
+        await db.add_recipe_owner(recipe_id, username)
+        await message.answer(f"✅ Владелец @{username} добавлен.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(message, recipe, state)
+
+# Редактирование ингредиентов
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_edit_ingredients")
+async def recipe_edit_ingredients_list(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    recipe = await db.get_recipe_details(recipe_id)
+    if not recipe['ingredients']:
+        await callback.answer("Нет ингредиентов для редактирования", show_alert=True)
+        return
+    keyboard = []
+    for ing in recipe['ingredients']:
+        keyboard.append([InlineKeyboardButton(
+            text=f"{ing['emoji']} {ing['name']} — {ing['quantity']} шт.",
+            callback_data=f"recipe_edit_ing_{ing['resource_id']}"
+        )])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к рецепту", callback_data="recipe_back_to_view")])
+    await callback.message.edit_text("Выберите ингредиент для изменения количества или удаления:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await state.set_state(RecipeStates.edit_ingredient)
+
+@admin_router.callback_query(RecipeStates.edit_ingredient, F.data.startswith("recipe_edit_ing_"))
+async def recipe_edit_ingredient_options(callback: types.CallbackQuery, state: FSMContext):
+    resource_id = int(callback.data.split("_")[3])
+    await state.update_data(edit_resource_id=resource_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить количество", callback_data="recipe_ing_change")],
+        [InlineKeyboardButton(text="❌ Удалить ингредиент", callback_data="recipe_ing_delete")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="recipe_back_to_edit_list")]
+    ])
+    await callback.message.edit_text("Что сделать с этим ингредиентом?", reply_markup=keyboard)
+    await state.set_state(RecipeStates.edit_ingredient_quantity)
+    await state.update_data(edit_action='change')  # для изменения
+
+@admin_router.callback_query(RecipeStates.edit_ingredient_quantity, F.data == "recipe_ing_change")
+async def recipe_ing_change_prompt(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите новое количество:")
+    await state.update_data(edit_action='change')
+    await state.set_state(RecipeStates.edit_ingredient_quantity)  # остаёмся в том же состоянии, но следующий message обработает
+
+@admin_router.callback_query(RecipeStates.edit_ingredient_quantity, F.data == "recipe_ing_delete")
+async def recipe_ing_delete(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    resource_id = data['edit_resource_id']
+    await db.remove_ingredient(recipe_id, resource_id)
+    await callback.answer("Ингредиент удалён", show_alert=True)
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(callback, recipe, state)
+
+@admin_router.callback_query(RecipeStates.edit_ingredient_quantity, F.data == "recipe_back_to_edit_list")
+async def recipe_back_to_edit_list(callback: types.CallbackQuery, state: FSMContext):
+    await recipe_edit_ingredients_list(callback, state)
+
+# Обработчик для ввода количества при изменении ингредиента (уже есть общий message handler выше)
+# Но чтобы не конфликтовать, оставим как есть – он обработает и добавление, и изменение.
+
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_back_to_view")
+async def recipe_back_to_view(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(callback, recipe, state)
+
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_delete")
+async def recipe_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="recipe_delete_yes")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="recipe_back_to_view")]
+    ])
+    await callback.message.edit_text("⚠️ Удалить рецепт? Это действие необратимо.", reply_markup=keyboard)
+    await state.set_state(RecipeStates.delete_confirm)
+
+@admin_router.callback_query(RecipeStates.delete_confirm, F.data == "recipe_delete_yes")
+async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    result_type = data.get('recipe_result_type', 'gear')
+    await db.delete_recipe(recipe_id)
+    await callback.message.edit_text("✅ Рецепт удалён.")
+    await state.update_data(recipe_result_type=result_type, recipe_page=1)
+    keyboard = await get_recipe_list_keyboard(result_type, 1)
+    await callback.message.answer(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await state.set_state(RecipeStates.list_page)
     await callback.answer()
