@@ -61,7 +61,7 @@ async def format_resource_card(resource_id: int) -> str:
         'craft': '📦 Крафтовый',
         'consumable': '✨ Расходуемый',
         'scroll_recipe': '📜 Рецепт экипировки',
-        'scroll': '📜 Рецепт экипировки',   # добавляем эту строку
+        'scroll': '📜 Рецепт экипировки',
         'currency': '💰 Валюта'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
@@ -69,8 +69,9 @@ async def format_resource_card(resource_id: int) -> str:
     text += f"🏷 Тип: {type_str}\n\n"
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n" + "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
-    else:
-        text += "<i>Ни с кого не падает (возможно, крафтовый).</i>"
+    # Вместо старого else – выводим примечание, если оно есть
+    if data.get('note'):
+        text += f"\n📝 <i>{escape_html(data['note'])}</i>"
     return text
 
 async def format_gear_card(gear_id: int) -> str:
