@@ -150,7 +150,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
                 await message.answer("❌ Ошибка: введите положительное целое число.")
                 return
         if field == 'emoji' and not is_valid_emoji(new_value):
-            await message.answer("❌ Эмодзи должен состоять из 1 или 2 символов. Попробуйте ещё раз.")
+            await message.answer("❌ Эмодзи не может быть пустым.")
             return
         if field == 'name' and not new_value:
             await message.answer("❌ Название не может быть пустым.")
@@ -169,16 +169,41 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await message.answer(f"❌ Ошибка: {e}")
             return
 
+        # Получить обновлённые данные
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
             await message.answer("❌ Сущность не найдена. Возврат в список.")
-            from admin_handlers import render_entity_list  # динамический импорт
+            from admin_handlers import render_entity_list
             await render_entity_list(message, state, config, 1)
             return
 
-        # Показать обновлённое меню
-        from admin_handlers import show_edit_menu
-        await show_edit_menu(message, state, entity_id, config, entity_data)
+        # Сформировать клавиатуру редактирования (как в show_edit_menu)
+        fields = config['edit_fields']
+        keyboard = []
+        for field_name, field_label in fields:
+            current_value = entity_data.get(field_name, '?')
+            keyboard.append([InlineKeyboardButton(
+                text=f"{field_label}: {current_value}",
+                callback_data=f"edit_field_{field_name}"
+            )])
+        if config.get('extra_edit_buttons'):
+            for btn in config['extra_edit_buttons'](entity_id):
+                keyboard.append(btn)
+        keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="delete_entity")])
+        keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
+        keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+
+        # Отправить новое сообщение с меню редактирования, а старое удалить
+        await message.answer(
+            f"Редактирование {config['name_ru']} ID {entity_id}:\n{config['display_format'](entity_data)}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        # Удалить предыдущее сообщение с запросом ввода, чтобы не захламлять чат
+        await message.delete()
+
+        # Обновить состояние
+        await state.update_data(entity_id=entity_id, editing_entity=config['name'])
+        await state.set_state(GenericEditStates.select_field)
 
     @router.callback_query(GenericEditStates.select_field, F.data == "delete_entity")
     async def generic_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
