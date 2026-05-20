@@ -403,43 +403,45 @@ async def mob_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext
 @admin_router.message(MobStates.edit_new_value, F.text)
 async def mob_update_field(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    mob_id = data['mob_id']
-    field = data['edit_field']
+    mob_id = data.get('mob_id')
+    field = data.get('edit_field')
+    
+    if not mob_id or not field:
+        await message.answer("❌ Ошибка состояния. Возврат в админку.")
+        await state.clear()
+        await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+        return
+
     new_value = message.text.strip()
+
+    # Валидация
     if field in ('hp', 'dust_min', 'dust_max', 'exp', 'location_id'):
         try:
             new_value = int(new_value)
-            if new_value < 0: raise ValueError
+            if new_value < 0:
+                raise ValueError
         except:
-            await message.answer("Введите положительное целое число.")
+            await message.answer("❌ Введите положительное целое число.")
             return
     if field == 'emoji' and not is_valid_emoji(new_value):
-        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
+        await message.answer("❌ Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     if field == 'name' and not new_value:
-        await message.answer("Имя не может быть пустым.")
+        await message.answer("❌ Имя не может быть пустым.")
         return
+
     try:
         await db.update_mob_field(mob_id, field, new_value)
-        await message.answer(f"✅ Поле {field} обновлено.")
+        # Подтверждение и возврат к списку мобов (чтобы не застревать)
+        await message.answer(f"✅ Поле {field} обновлено. Возврат к списку мобов.")
+        await state.clear()
+        keyboard = await get_mob_list_keyboard(1)
+        await message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
+        await state.set_state(MobStates.edit_select)
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
+        # Не очищаем состояние, можно попробовать снова
         return
-    # Показать меню редактирования заново
-    mob = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
-    if not mob:
-        await message.answer("Моб пропал.")
-        await state.clear()
-        return
-    mob = mob[0]
-    await state.update_data(mob_id=mob_id)
-    fields = [(f, eval(f"mob['{f}']")) for f in ('name','emoji','hp','dust_min','dust_max','exp','location_id')]
-    keyboard = [[InlineKeyboardButton(text=f"{label}: {value}", callback_data=f"mob_edit_field_{field}")] for field, (label, value) in zip(('name','emoji','hp','dust_min','dust_max','exp','location_id'), fields)]
-    keyboard.append([InlineKeyboardButton(text="📦 Управление дропом", callback_data="mob_drop_menu")])
-    keyboard.append([InlineKeyboardButton(text="🗑 Удалить моба", callback_data="mob_delete")])
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_mob_list")])
-    await message.answer(f"Редактирование моба ID {mob_id}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await state.set_state(MobStates.edit_field)
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
