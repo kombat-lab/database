@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import json
 import aiosqlite
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ def _lower_unicode(s: str) -> str:
 
 class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
+    ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}  # NEW
 
     def __init__(self):
         self._conn: Optional[aiosqlite.Connection] = None
@@ -136,13 +138,12 @@ class Database:
         await self.execute_query(query, (value, mob_id))
 
     async def delete_mob(self, mob_id: int):
-        # Внешние ключи с ON DELETE CASCADE удалят записи в drops автоматически
-        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
+        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))  # drops удалятся каскадно
 
-    # === РЕСУРСЫ ===
+    # === РЕСУРСЫ (с учётом type) ===
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
-            SELECT r.id, r.name, r.emoji,
+            SELECT r.id, r.name, r.emoji, r.type,
                    GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji) as mobs
             FROM resources r
             LEFT JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
@@ -162,7 +163,7 @@ class Database:
 
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         query = """
-            SELECT DISTINCT r.id, r.name, r.emoji
+            SELECT DISTINCT r.id, r.name, r.emoji, r.type
             FROM resources r
             JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
             JOIN mobs m ON d.mob_id = m.id
@@ -172,24 +173,39 @@ class Database:
         return await self.execute_query(query, (location_id, limit, offset))
 
     async def get_resource_by_id(self, resource_id: int) -> Optional[Dict]:
-        res = await self.execute_query("SELECT id, name, emoji FROM resources WHERE id = ?", (resource_id,))
+        res = await self.execute_query("SELECT id, name, emoji, type FROM resources WHERE id = ?", (resource_id,))
         return res[0] if res else None
 
-    async def add_resource(self, name: str, emoji: str) -> int:
-        await self.execute_query("INSERT INTO resources (name, emoji) VALUES (?, ?)", (name, emoji))
+    async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft') -> int:   # NEW
+        await self.execute_query(
+            "INSERT INTO resources (name, emoji, type) VALUES (?, ?, ?)",
+            (name, emoji, resource_type)
+        )
         res = await self.execute_query("SELECT last_insert_rowid() as id")
         return res[0]['id']
 
-    async def update_resource(self, resource_id: int, name: str, emoji: str):
-        await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
+    async def update_resource(self, resource_id: int, name: str, emoji: str, resource_type: str = None):  # NEW
+        if resource_type is None:
+            await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
+        else:
+            await self.execute_query("UPDATE resources SET name = ?, emoji = ?, type = ? WHERE id = ?", (name, emoji, resource_type, resource_id))
 
     async def delete_resource(self, resource_id: int):
-        # Внешние ключи с каскадом удалят из drops и recipe_ingredients
+        # Вручную удаляем из drops, так как нет внешнего ключа (item_type='resource')
+        await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
+        # Удаляем из recipe_ingredients (каскад есть, но для надёжности тоже вручную)
+        await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
+
+    # === НОВЫЙ МЕТОД: получить ресурсы по типу ===
+    async def get_resources_by_type(self, resource_type: str) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY id",
+            (resource_type,)
+        )
 
     # === СНАРЯЖЕНИЕ ===
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
-        # Основной запрос
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji,
                    (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
@@ -211,21 +227,16 @@ class Database:
             return None
         row = res[0]
         
-        # Парсим мобов из прямых дропов
         direct_mobs = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
         
-        # Если это epic и прямых дропов нет – ищем мобов через свиток
         if row['rarity'] == 'epic' and not direct_mobs:
-            # Находим resource_id свитка в ингредиентах (обычно это id от 59 до 69)
             ingredients = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
             scroll_resource_id = None
             for ing in ingredients:
-                # Свитки имеют id 59-69 или название содержит "Старинный свиток"
                 if ing['id'] in range(59, 70) or 'свиток' in ing['name'].lower():
                     scroll_resource_id = ing['id']
                     break
             if scroll_resource_id:
-                # Ищем мобов, у которых в дропах есть этот ресурс
                 mobs_data = await self.execute_query(
                     "SELECT m.id, m.name, m.emoji FROM drops d "
                     "JOIN mobs m ON d.mob_id = m.id "
@@ -300,7 +311,7 @@ class Database:
 
     async def get_craftable_resources(self) -> List[Dict]:
         query = """
-            SELECT DISTINCT r.id, r.name, r.emoji
+            SELECT DISTINCT r.id, r.name, r.emoji, r.type
             FROM resources r
             JOIN recipes rc ON rc.result_type = 'resource' AND rc.result_id = r.id
             ORDER BY r.id
@@ -330,7 +341,7 @@ class Database:
     # === ВСПОМОГАТЕЛЬНЫЕ ДЛЯ АДМИНКИ ===
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, emoji FROM resources ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",   # NEW
             (limit, offset)
         )
 
@@ -345,7 +356,7 @@ class Database:
         return res[0]["cnt"]
 
     async def get_all_resources(self):
-        return await self.execute_query("SELECT id, name, emoji FROM resources")
+        return await self.execute_query("SELECT id, name, emoji, type FROM resources")   # NEW
 
     async def get_all_common_gear(self):
         return await self.execute_query(
