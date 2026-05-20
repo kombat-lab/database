@@ -174,12 +174,14 @@ class Database:
 
     # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
+        """Возвращает карточку ресурса с мобами, включая локацию каждого моба."""
         query = """
             SELECT r.id, r.name, r.emoji, r.type, r.note,
-                   GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji) as mobs
+                   GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji || '|' || l.name || '|' || l.emoji) as mobs
             FROM resources r
             LEFT JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
             LEFT JOIN mobs m ON d.mob_id = m.id
+            LEFT JOIN locations l ON m.location_id = l.id
             WHERE r.id = ?
             GROUP BY r.id
         """
@@ -188,7 +190,7 @@ class Database:
             return None
         row = res[0]
         if row["mobs"]:
-            row["mobs"] = [self._parse_drop_item(s) for s in row["mobs"].split(",")]
+            row["mobs"] = [self._parse_mob_with_location(s) for s in row["mobs"].split(",")]
         else:
             row["mobs"] = []
         return row
@@ -239,7 +241,6 @@ class Database:
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
         if resource_type == 'scroll_recipe':
-            # Возвращаем оба варианта: и scroll_recipe, и scroll
             return await self.execute_query(
                 "SELECT id, name, emoji, type FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
                 (limit, offset)
@@ -263,6 +264,47 @@ class Database:
 
     async def get_all_resources_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
+
+    # Новый метод для пагинации ресурсов по типу
+    async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
+        """
+        Возвращает { 'prev_id': int or None, 'next_id': int or None }
+        для ресурса указанного типа (с учётом scroll_recipe -> scroll/scroll_recipe).
+        """
+        if resource_type == 'scroll_recipe':
+            prev_query = """
+                SELECT id FROM resources
+                WHERE id < ? AND type IN ('scroll_recipe', 'scroll')
+                ORDER BY id DESC LIMIT 1
+            """
+            next_query = """
+                SELECT id FROM resources
+                WHERE id > ? AND type IN ('scroll_recipe', 'scroll')
+                ORDER BY id LIMIT 1
+            """
+            prev_params = (resource_id,)
+            next_params = (resource_id,)
+        else:
+            prev_query = """
+                SELECT id FROM resources
+                WHERE id < ? AND type = ?
+                ORDER BY id DESC LIMIT 1
+            """
+            next_query = """
+                SELECT id FROM resources
+                WHERE id > ? AND type = ?
+                ORDER BY id LIMIT 1
+            """
+            prev_params = (resource_id, resource_type)
+            next_params = (resource_id, resource_type)
+
+        prev_res = await self.execute_query(prev_query, prev_params)
+        next_res = await self.execute_query(next_query, next_params)
+
+        return {
+            'prev_id': prev_res[0]['id'] if prev_res else None,
+            'next_id': next_res[0]['id'] if next_res else None
+        }
 
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
@@ -527,5 +569,17 @@ class Database:
     def _parse_ingredient(s: str) -> Dict:
         parts = s.split("|")
         return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "quantity": int(parts[3])}
+
+    @staticmethod
+    def _parse_mob_with_location(s: str) -> Dict:
+        """Парсит строку вида: id|name|emoji|location_name|location_emoji"""
+        parts = s.split("|")
+        return {
+            "id": int(parts[0]),
+            "name": parts[1],
+            "emoji": parts[2],
+            "location_name": parts[3] if len(parts) > 3 else None,
+            "location_emoji": parts[4] if len(parts) > 4 else None
+        }
 
 db = Database()
