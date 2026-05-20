@@ -52,7 +52,15 @@ async def format_resource_card(resource_id: int) -> str:
     data = await db.get_resource_card(resource_id)
     if not data:
         return "Ресурс не найден."
-    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n\n"
+    type_names = {
+        'craft': '📦 Крафтовый',
+        'consumable': '✨ Расходуемый',
+        'scroll_recipe': '📜 Рецепт экипировки',
+        'currency': '💰 Валюта'
+    }
+    type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
+    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
+    text += f"🏷 Тип: {type_str}\n\n"
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n" + "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
     else:
