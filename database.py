@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import json
 import aiosqlite
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -17,7 +16,7 @@ def _lower_unicode(s: str) -> str:
 
 class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
-    ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}  # NEW
+    ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}
 
     def __init__(self):
         self._conn: Optional[aiosqlite.Connection] = None
@@ -58,7 +57,6 @@ class Database:
         if self._conn:
             await self._conn.close()
 
-    # === ОСНОВНОЙ МЕТОД ВЫПОЛНЕНИЯ ЗАПРОСОВ ===
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
         async with self._conn.execute(query, params) as cursor:
             try:
@@ -76,7 +74,6 @@ class Database:
                     await self._conn.rollback()
                 raise e
 
-    # === ТРАНЗАКЦИИ ===
     @asynccontextmanager
     async def transaction(self):
         self._in_transaction = True
@@ -90,7 +87,6 @@ class Database:
         finally:
             self._in_transaction = False
 
-    # === КЭШ ЛОКАЦИЙ ===
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         return self._locations_cache.get(location_id)
 
@@ -100,7 +96,7 @@ class Database:
     async def invalidate_location_cache(self):
         await self._load_locations_cache()
 
-    # === МОБЫ ===
+    # ========== МОБЫ ==========
     async def get_mob_full_card(self, mob_id: int) -> Optional[Dict]:
         query = """
             SELECT
@@ -138,9 +134,9 @@ class Database:
         await self.execute_query(query, (value, mob_id))
 
     async def delete_mob(self, mob_id: int):
-        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))  # drops удалятся каскадно
+        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
 
-    # === РЕСУРСЫ (с учётом type) ===
+    # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
             SELECT r.id, r.name, r.emoji, r.type,
@@ -176,7 +172,7 @@ class Database:
         res = await self.execute_query("SELECT id, name, emoji, type FROM resources WHERE id = ?", (resource_id,))
         return res[0] if res else None
 
-    async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft') -> int:   # NEW
+    async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft') -> int:
         await self.execute_query(
             "INSERT INTO resources (name, emoji, type) VALUES (?, ?, ?)",
             (name, emoji, resource_type)
@@ -184,27 +180,70 @@ class Database:
         res = await self.execute_query("SELECT last_insert_rowid() as id")
         return res[0]['id']
 
-    async def update_resource(self, resource_id: int, name: str, emoji: str, resource_type: str = None):  # NEW
+    async def update_resource(self, resource_id: int, name: str, emoji: str, resource_type: str = None):
         if resource_type is None:
             await self.execute_query("UPDATE resources SET name = ?, emoji = ? WHERE id = ?", (name, emoji, resource_id))
         else:
             await self.execute_query("UPDATE resources SET name = ?, emoji = ?, type = ? WHERE id = ?", (name, emoji, resource_type, resource_id))
 
     async def delete_resource(self, resource_id: int):
-        # Вручную удаляем из drops, так как нет внешнего ключа (item_type='resource')
+        # Удаляем из дропов и recipe_ingredients
         await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
-        # Удаляем из recipe_ingredients (каскад есть, но для надёжности тоже вручную)
         await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
-    # === НОВЫЙ МЕТОД: получить ресурсы по типу ===
     async def get_resources_by_type(self, resource_type: str) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY id",
             (resource_type,)
         )
 
-    # === СНАРЯЖЕНИЕ ===
+    # ========== СНАРЯЖЕНИЕ ==========
+    async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, rarity, slot, emoji FROM gear ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+
+    async def get_gear_by_id(self, gear_id: int) -> Optional[Dict]:
+        res = await self.execute_query("SELECT * FROM gear WHERE id = ?", (gear_id,))
+        return res[0] if res else None
+
+    async def add_gear(self, name: str, rarity: str, slot: str, emoji: str) -> int:
+        await self.execute_query(
+            "INSERT INTO gear (name, rarity, slot, emoji) VALUES (?, ?, ?, ?)",
+            (name, rarity, slot, emoji)
+        )
+        res = await self.execute_query("SELECT last_insert_rowid() as id")
+        return res[0]['id']
+
+    async def update_gear(self, gear_id: int, name: str = None, rarity: str = None, slot: str = None, emoji: str = None):
+        current = await self.get_gear_by_id(gear_id)
+        if not current:
+            raise ValueError("Gear not found")
+        new_name = name if name is not None else current['name']
+        new_rarity = rarity if rarity is not None else current['rarity']
+        new_slot = slot if slot is not None else current['slot']
+        new_emoji = emoji if emoji is not None else current['emoji']
+        await self.execute_query(
+            "UPDATE gear SET name=?, rarity=?, slot=?, emoji=? WHERE id=?",
+            (new_name, new_rarity, new_slot, new_emoji, gear_id)
+        )
+
+    async def delete_gear(self, gear_id: int):
+        # Удаляем из drops
+        await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (gear_id,))
+        # Находим связанный рецепт
+        recipe = await self.execute_query(
+            "SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear_id,)
+        )
+        if recipe:
+            recipe_id = recipe[0]['id']
+            await self.execute_query("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+            await self.execute_query("DELETE FROM recipe_owners WHERE recipe_id=?", (recipe_id,))
+            await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
+        await self.execute_query("DELETE FROM gear WHERE id=?", (gear_id,))
+
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji,
@@ -226,9 +265,7 @@ class Database:
         if not res:
             return None
         row = res[0]
-        
         direct_mobs = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
-        
         if row['rarity'] == 'epic' and not direct_mobs:
             ingredients = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
             scroll_resource_id = None
@@ -248,7 +285,6 @@ class Database:
                 row["mobs"] = []
         else:
             row["mobs"] = direct_mobs
-        
         row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
         row["owners"] = row["owners"].split(",") if row["owners"] else []
         row["craftable"] = bool(row["ingredients"])
@@ -260,35 +296,90 @@ class Database:
             (rarity, limit, offset)
         )
 
-    async def get_gear_info(self, gear_id: int) -> Optional[Dict]:
-        res = await self.execute_query(
-            "SELECT id, name, rarity, slot, emoji FROM gear WHERE id = ?",
-            (gear_id,)
+    async def get_all_gear_simple(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM gear ORDER BY id")
+
+    # ========== РЕЦЕПТЫ ==========
+    async def get_all_recipes(self, result_type: str, offset: int, limit: int) -> List[Dict]:
+        query = f"""
+            SELECT r.id, r.result_type, r.result_id,
+                   CASE WHEN r.result_type='gear' THEN g.name ELSE res.name END as result_name,
+                   CASE WHEN r.result_type='gear' THEN g.emoji ELSE res.emoji END as result_emoji,
+                   (SELECT COUNT(*) FROM recipe_owners WHERE recipe_id=r.id) as owner_count,
+                   (SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=r.id) as ingredient_count
+            FROM recipes r
+            LEFT JOIN gear g ON r.result_type='gear' AND r.result_id=g.id
+            LEFT JOIN resources res ON r.result_type='resource' AND r.result_id=res.id
+            WHERE r.result_type=?
+            ORDER BY r.id LIMIT ? OFFSET ?
+        """
+        return await self.execute_query(query, (result_type, limit, offset))
+
+    async def get_recipe_details(self, recipe_id: int) -> Optional[Dict]:
+        recipe = await self.execute_query("SELECT * FROM recipes WHERE id=?", (recipe_id,))
+        if not recipe:
+            return None
+        recipe = recipe[0]
+        ingredients = await self.execute_query(
+            "SELECT ri.resource_id, r.name, r.emoji, ri.quantity FROM recipe_ingredients ri "
+            "JOIN resources r ON ri.resource_id = r.id WHERE ri.recipe_id=? ORDER BY ri.resource_id",
+            (recipe_id,)
         )
-        return res[0] if res else None
+        owners = await self.execute_query(
+            "SELECT player_username FROM recipe_owners WHERE recipe_id=?",
+            (recipe_id,)
+        )
+        owners = [o['player_username'] for o in owners]
+        return {
+            'id': recipe['id'],
+            'result_type': recipe['result_type'],
+            'result_id': recipe['result_id'],
+            'quantity': recipe['quantity'],
+            'ingredients': ingredients,
+            'owners': owners
+        }
 
-    async def get_recipe_for_gear(self, gear_id: int) -> List[Dict]:
-        query = """
-            SELECT ri.resource_id, r.name, r.emoji, ri.quantity
-            FROM recipes rc
-            JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
-            JOIN resources r ON ri.resource_id = r.id
-            WHERE rc.result_type = 'gear' AND rc.result_id = ?
-            ORDER BY ri.resource_id
-        """
-        return await self.execute_query(query, (gear_id,))
+    async def create_recipe(self, result_type: str, result_id: int, quantity: int = 1) -> int:
+        await self.execute_query(
+            "INSERT INTO recipes (result_type, result_id, quantity) VALUES (?, ?, ?)",
+            (result_type, result_id, quantity)
+        )
+        res = await self.execute_query("SELECT last_insert_rowid() as id")
+        return res[0]['id']
 
-    async def get_recipe_owners(self, gear_id: int) -> List[str]:
-        query = """
-            SELECT player_username
-            FROM recipes rc
-            JOIN recipe_owners ro ON rc.id = ro.recipe_id
-            WHERE rc.result_type = 'gear' AND rc.result_id = ?
-        """
-        owners = await self.execute_query(query, (gear_id,))
-        return [owner['player_username'] for owner in owners]
+    async def delete_recipe(self, recipe_id: int):
+        await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
 
-    # === РЕЦЕПТЫ И КРАФТ РЕСУРСОВ ===
+    async def add_ingredient(self, recipe_id: int, resource_id: int, quantity: int):
+        await self.execute_query(
+            "INSERT INTO recipe_ingredients (recipe_id, resource_id, quantity) VALUES (?, ?, ?)",
+            (recipe_id, resource_id, quantity)
+        )
+
+    async def update_ingredient(self, recipe_id: int, resource_id: int, quantity: int):
+        await self.execute_query(
+            "UPDATE recipe_ingredients SET quantity=? WHERE recipe_id=? AND resource_id=?",
+            (quantity, recipe_id, resource_id)
+        )
+
+    async def remove_ingredient(self, recipe_id: int, resource_id: int):
+        await self.execute_query(
+            "DELETE FROM recipe_ingredients WHERE recipe_id=? AND resource_id=?",
+            (recipe_id, resource_id)
+        )
+
+    async def add_recipe_owner(self, recipe_id: int, player_username: str):
+        await self.execute_query(
+            "INSERT OR IGNORE INTO recipe_owners (recipe_id, player_username) VALUES (?, ?)",
+            (recipe_id, player_username)
+        )
+
+    async def remove_recipe_owner(self, recipe_id: int, player_username: str):
+        await self.execute_query(
+            "DELETE FROM recipe_owners WHERE recipe_id=? AND player_username=?",
+            (recipe_id, player_username)
+        )
+
     async def get_recipe_for_resource(self, resource_id: int) -> Optional[Dict]:
         recipe_info = await self.execute_query(
             "SELECT id FROM recipes WHERE result_type = 'resource' AND result_id = ?",
@@ -298,13 +389,9 @@ class Database:
             return None
         recipe_id = recipe_info[0]['id']
         ingredients = await self.execute_query(
-            """
-            SELECT ri.resource_id, r.name, r.emoji, ri.quantity
-            FROM recipe_ingredients ri
-            JOIN resources r ON ri.resource_id = r.id
-            WHERE ri.recipe_id = ?
-            ORDER BY ri.resource_id
-            """,
+            "SELECT ri.resource_id, r.name, r.emoji, ri.quantity "
+            "FROM recipe_ingredients ri JOIN resources r ON ri.resource_id = r.id "
+            "WHERE ri.recipe_id = ? ORDER BY ri.resource_id",
             (recipe_id,)
         )
         return {'ingredients': ingredients}
@@ -318,7 +405,7 @@ class Database:
         """
         return await self.execute_query(query)
 
-    # === ДРОПЫ (универсальные методы) ===
+    # ========== ДРОПЫ ==========
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
         res = await self.execute_query(
             "SELECT 1 FROM drops WHERE mob_id = ? AND item_type = ? AND item_id = ?",
@@ -338,10 +425,10 @@ class Database:
             (mob_id, item_type, item_id)
         )
 
-    # === ВСПОМОГАТЕЛЬНЫЕ ДЛЯ АДМИНКИ ===
+    # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",   # NEW
+            "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",
             (limit, offset)
         )
 
@@ -351,19 +438,13 @@ class Database:
             (limit, offset)
         )
 
-    async def get_total_resources_count(self) -> int:
-        res = await self.execute_query("SELECT COUNT(*) as cnt FROM resources")
-        return res[0]["cnt"]
-
     async def get_all_resources(self):
-        return await self.execute_query("SELECT id, name, emoji, type FROM resources")   # NEW
+        return await self.execute_query("SELECT id, name, emoji, type FROM resources")
 
-    async def get_all_common_gear(self):
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common'"
-        )
+    async def get_all_resources_simple(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
-    # === ПАРСЕРЫ ===
+    # ========== ПАРСЕРЫ ==========
     @staticmethod
     def _parse_drop_item(s: str, gear: bool = False) -> Dict:
         parts = s.split("|")
