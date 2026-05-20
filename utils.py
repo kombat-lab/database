@@ -10,8 +10,6 @@ def escape_html(text: str) -> str:
 
 def is_valid_emoji(s: str) -> bool:
     """
-    Проверяет, что строка содержит 1 или 2 символа (эмодзи).
+    Проверяет, что строка не пустая (разрешает любые символы, включая составные эмодзи).
     """
-    if not s or len(s) not in (1, 2):
-        return False
-    return True
+    return bool(s and s.strip())
