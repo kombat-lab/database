@@ -96,16 +96,11 @@ class Database:
     async def invalidate_location_cache(self):
         await self._load_locations_cache()
 
-    # ========== ПОИСК (ДОБАВЛЕННЫЙ МЕТОД) ==========
+    # ========== ПОИСК ==========
     async def search(self, query: str) -> Dict[str, List[Dict]]:
-        """
-        Поиск по мобам, ресурсам и снаряжению.
-        Возвращает словарь с ключами 'mobs', 'resources', 'gear'.
-        """
         like_pattern = f"%{query}%"
         results = {"mobs": [], "resources": [], "gear": []}
 
-        # Поиск мобов
         mobs = await self.execute_query("""
             SELECT m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp,
                    l.name AS location_name, l.emoji AS location_emoji
@@ -117,7 +112,6 @@ class Database:
         """, (like_pattern,))
         results["mobs"] = mobs
 
-        # Поиск ресурсов
         resources = await self.execute_query("""
             SELECT id, name, emoji, type
             FROM resources
@@ -127,7 +121,6 @@ class Database:
         """, (like_pattern,))
         results["resources"] = resources
 
-        # Поиск снаряжения
         gear = await self.execute_query("""
             SELECT id, name, emoji, rarity, slot
             FROM gear
@@ -234,11 +227,22 @@ class Database:
         await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
-    async def get_resources_by_type(self, resource_type: str) -> List[Dict]:
+    async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
+        """Возвращает ресурсы заданного типа с пагинацией, сортировка по имени."""
         return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY id",
+            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+            (resource_type, limit, offset)
+        )
+
+    async def get_resources_by_type_all(self, resource_type: str) -> List[Dict]:
+        """Возвращает все ресурсы заданного типа без пагинации (для внутренних нужд)."""
+        return await self.execute_query(
+            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE",
             (resource_type,)
         )
+
+    async def get_all_resources_simple(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
@@ -481,15 +485,11 @@ class Database:
     async def get_all_resources(self):
         return await self.execute_query("SELECT id, name, emoji, type FROM resources")
 
-    async def get_all_resources_simple(self) -> List[Dict]:
-        return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
-
     # ========== ПАРСЕРЫ ==========
     @staticmethod
     def _parse_drop_item(s: str, gear: bool = False) -> Dict:
         parts = s.split("|")
         if gear:
-            # теперь ожидаем 5 частей: id, name, emoji, slot, rarity
             if len(parts) >= 5:
                 return {
                     "id": int(parts[0]),
@@ -499,7 +499,6 @@ class Database:
                     "rarity": parts[4]
                 }
             else:
-                # старый формат на случай ошибки
                 return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3], "rarity": "common"}
         else:
             return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
