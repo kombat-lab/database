@@ -83,7 +83,18 @@ ENTITY_CONFIGS['resource'] = {
         ('type', '🏷 Тип')
     ],
     'integer_fields': [],
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {d.get('type','craft')})"
+    'select_options': {
+        'type': ['craft', 'consumable', 'scroll_recipe', 'currency']
+    },
+    'display_mapping': {
+        'type': {
+            'craft': '📦 Крафтовый',
+            'consumable': '✨ Расходуемый',
+            'scroll_recipe': '📜 Рецепт экипировки',
+            'currency': '💰 Валюта'
+        }
+    },
+    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
 }
 
 # --- Снаряжение ---
@@ -130,7 +141,25 @@ ENTITY_CONFIGS['gear'] = {
         'rarity': ['common', 'rare', 'epic'],
         'slot': ['оружие', 'щит', 'голова', 'торс', 'руки', 'ноги', 'спина', 'аксессуар', 'плечи']
     },
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{d.get('rarity','')}]"
+    'display_mapping': {
+        'rarity': {
+            'common': '⚪ Обычное',
+            'rare': '🟢 Редкое',
+            'epic': '🔵 Сверхредкое'
+        },
+        'slot': {
+            'оружие': '🗡 Оружие',
+            'щит': '🛡 Щит',
+            'голова': '🪖 Голова',
+            'торс': '🦺 Торс',
+            'руки': '🧤 Руки',
+            'ноги': '🩳 Ноги',
+            'спина': '🧣 Спина',
+            'аксессуар': '📖 Аксессуар',
+            'плечи': '🪹 Плечи'
+        }
+    },
+    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{ENTITY_CONFIGS['gear']['display_mapping']['rarity'].get(d.get('rarity','common'), d.get('rarity','common'))}]"
 }
 
 # ============================================================
