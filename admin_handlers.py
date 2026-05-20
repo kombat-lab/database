@@ -708,6 +708,46 @@ async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
     await state.set_state(MobStates.drop_category)
+    await callback.answer()
+
+@admin_router.callback_query(MobStates.drop_category, F.data == "back_to_mob_list")
+async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await callback.message.edit_text("Ошибка: моб не найден.")
+        await state.clear()
+        await callback.answer()
+        return
+    mob = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
+    if not mob:
+        await callback.message.edit_text("Моб не найден.")
+        await state.clear()
+        await callback.answer()
+        return
+    mob = mob[0]
+    fields = [
+        ('name', f"Имя: {mob['name']}"),
+        ('emoji', f"Эмодзи: {mob['emoji']}"),
+        ('hp', f"HP: {mob['hp']}"),
+        ('dust_min', f"Пыль мин: {mob['dust_min']}"),
+        ('dust_max', f"Пыль макс: {mob['dust_max']}"),
+        ('exp', f"Опыт: {mob['exp']}"),
+        ('location_id', f"ID локации: {mob['location_id']}")
+    ]
+    keyboard = []
+    for field, label in fields:
+        keyboard.append([InlineKeyboardButton(text=label, callback_data=f"mob_edit_field_{field}")])
+    keyboard.append([InlineKeyboardButton(text="📦 Управление дропом", callback_data="mob_drop_menu")])
+    keyboard.append([InlineKeyboardButton(text="🗑 Удалить моба", callback_data="mob_delete")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_mob_list")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+    await callback.message.edit_text(
+        f"Редактирование моба ID {mob_id}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await state.set_state(MobStates.edit_field)
+    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_category, F.data.startswith("drop_category_"))
 async def show_drop_list(callback: types.CallbackQuery, state: FSMContext):
