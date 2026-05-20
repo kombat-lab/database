@@ -218,6 +218,14 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     async def generic_update_field(message: types.Message, state: FSMContext):
         """Универсальный обработчик ввода нового значения для поля."""
         data = await state.get_data()
+        
+        # Проверка наличия обязательных ключей
+        if 'edit_field' not in data:
+            await message.answer("❌ Ошибка состояния. Возврат в админку.")
+            await state.clear()
+            await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+            return
+        
         entity_type = data['editing_entity']
         entity_id = data['entity_id']
         field = data['edit_field']
@@ -245,8 +253,6 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         if field == 'name' and not new_value:
             await message.answer("❌ Название не может быть пустым.")
             return
-    
-        # Проверки для rarity и type удалены, так как они теперь выбираются через кнопки
     
         try:
             await config['update_field_func'](entity_id, field, new_value)
