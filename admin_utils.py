@@ -126,16 +126,20 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         await callback.answer()
 
     @router.message(GenericEditStates.new_value, F.text)
-    async def generic_update_field(message: types.Message, state: FSMContext):
+    async def generic_update_field(message: types.Message, state: FSMContext, entity_configs: dict):
+        """
+        Универсальный обработчик ввода нового значения для поля.
+        entity_configs - словарь ENTITY_CONFIGS, передаётся из admin_handlers.
+        """
         data = await state.get_data()
         entity_type = data['editing_entity']
         entity_id = data['entity_id']
         field = data['edit_field']
         new_value = message.text.strip()
         
-        configs = get_entity_configs_func()
-        config = configs[entity_type]
+        config = entity_configs[entity_type]
         
+        # Валидация
         if field in config.get('integer_fields', []):
             try:
                 new_value = int(new_value)
@@ -144,11 +148,9 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             except:
                 await message.answer("Ошибка: введите положительное целое число.")
                 return
-        if field == 'emoji':
-            from utils import is_valid_emoji
-            if not is_valid_emoji(new_value):
-                await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра).")
-                return
+        if field == 'emoji' and not is_valid_emoji(new_value):
+            await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
+            return
         if field == 'name' and not new_value:
             await message.answer("Название не может быть пустым.")
             return
@@ -169,8 +171,13 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
             await message.answer("Сущность не найдена. Возврат в список.")
+            # Здесь нужна функция render_entity_list – она должна быть доступна
+            from admin_handlers import render_entity_list  # или импортировать в начале
             await render_entity_list(message, state, config, 1)
             return
+        
+        # Показать обновлённое меню
+        from admin_handlers import show_edit_menu
         await show_edit_menu(message, state, entity_id, config, entity_data)
 
     @router.callback_query(GenericEditStates.select_field, F.data == "delete_entity")
