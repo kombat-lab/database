@@ -15,6 +15,7 @@ class GenericEditStates(StatesGroup):
     select_field = State()
     new_value = State()
     confirm_delete = State()
+    select_option = State()
 
 def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
@@ -123,10 +124,61 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     @router.callback_query(GenericEditStates.select_field, F.data.startswith("edit_field_"))
     async def generic_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
         field = callback.data.split("_")[2]
-        await state.update_data(edit_field=field)
-        await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
-        await state.set_state(GenericEditStates.new_value)
+        data = await state.get_data()
+        entity_type = data['editing_entity']
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+        
+        # Проверяем, есть ли у поля предопределённые опции
+        select_options = config.get('select_options', {}).get(field)
+        if select_options:
+            # Показываем кнопки с вариантами
+            keyboard = []
+            for option in select_options:
+                keyboard.append([InlineKeyboardButton(text=option, callback_data=f"select_opt_{field}_{option}")])
+            keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_cancel_edit")])
+            await callback.message.edit_text(
+                f"Выберите значение для поля <b>{field}</b>:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            await state.update_data(edit_field=field)
+            await state.set_state(GenericEditStates.select_option)
+        else:
+            # Обычный текстовый ввод
+            await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
+            await state.set_state(GenericEditStates.new_value)
         await callback.answer()
+
+    @router.callback_query(GenericEditStates.select_option, F.data.startswith("select_opt_"))
+    async def generic_select_option(callback: types.CallbackQuery, state: FSMContext):
+        parts = callback.data.split("_")
+        field = parts[2]
+        value = parts[3]
+        
+        data = await state.get_data()
+        entity_type = data['editing_entity']
+        entity_id = data['entity_id']
+        
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+        
+        try:
+            await config['update_field_func'](entity_id, field, value)
+            await callback.message.edit_text(f"✅ Поле <b>{field}</b> обновлено на <code>{value}</code>.", parse_mode="HTML")
+        except Exception as e:
+            await callback.message.edit_text(f"❌ Ошибка: {e}")
+            return
+        
+        # Обновляем отображение меню редактирования
+        entity_data = await config['get_by_id_func'](entity_id)
+        if not entity_data:
+            await callback.message.answer("❌ Сущность не найдена.")
+            await render_entity_list(callback, state, config, 1)
+            return
+        
+        # Показываем меню редактирования заново
+        await show_edit_menu(callback, state, entity_id, config, entity_data)
 
     @router.message(GenericEditStates.new_value, F.text)
     async def generic_update_field(message: types.Message, state: FSMContext):
