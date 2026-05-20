@@ -4,6 +4,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from utils import is_valid_emoji
+
 logger = logging.getLogger(__name__)
 
 ADMIN_ITEMS_PER_PAGE = 10
@@ -117,6 +119,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     Регистрирует универсальные обработчики на роутере.
     get_entity_configs_func должна возвращать словарь ENTITY_CONFIGS.
     """
+
     @router.callback_query(GenericEditStates.select_field, F.data.startswith("edit_field_"))
     async def generic_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
         field = callback.data.split("_")[2]
@@ -126,19 +129,17 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         await callback.answer()
 
     @router.message(GenericEditStates.new_value, F.text)
-    async def generic_update_field(message: types.Message, state: FSMContext, entity_configs: dict):
-        """
-        Универсальный обработчик ввода нового значения для поля.
-        entity_configs - словарь ENTITY_CONFIGS, передаётся из admin_handlers.
-        """
+    async def generic_update_field(message: types.Message, state: FSMContext):
+        """Универсальный обработчик ввода нового значения для поля."""
         data = await state.get_data()
         entity_type = data['editing_entity']
         entity_id = data['entity_id']
         field = data['edit_field']
         new_value = message.text.strip()
-        
-        config = entity_configs[entity_type]
-        
+
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+
         # Валидация
         if field in config.get('integer_fields', []):
             try:
@@ -146,36 +147,35 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
                 if new_value < 0:
                     raise ValueError
             except:
-                await message.answer("Ошибка: введите положительное целое число.")
+                await message.answer("❌ Ошибка: введите положительное целое число.")
                 return
         if field == 'emoji' and not is_valid_emoji(new_value):
-            await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
+            await message.answer("❌ Эмодзи должен состоять из 1 или 2 символов. Попробуйте ещё раз.")
             return
         if field == 'name' and not new_value:
-            await message.answer("Название не может быть пустым.")
+            await message.answer("❌ Название не может быть пустым.")
             return
-        if field == 'rarity' and new_value not in ('common','rare','epic'):
-            await message.answer("Редкость должна быть common, rare или epic.")
+        if field == 'rarity' and new_value not in ('common', 'rare', 'epic'):
+            await message.answer("❌ Редкость должна быть common, rare или epic.")
             return
-        if field == 'type' and new_value not in ('craft','consumable','scroll_recipe','currency'):
-            await message.answer("Неверный тип ресурса.")
+        if field == 'type' and new_value not in ('craft', 'consumable', 'scroll_recipe', 'currency'):
+            await message.answer("❌ Неверный тип ресурса.")
             return
-        
+
         try:
             await config['update_field_func'](entity_id, field, new_value)
             await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
             return
-        
+
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
-            await message.answer("Сущность не найдена. Возврат в список.")
-            # Здесь нужна функция render_entity_list – она должна быть доступна
-            from admin_handlers import render_entity_list  # или импортировать в начале
+            await message.answer("❌ Сущность не найдена. Возврат в список.")
+            from admin_handlers import render_entity_list  # динамический импорт
             await render_entity_list(message, state, config, 1)
             return
-        
+
         # Показать обновлённое меню
         from admin_handlers import show_edit_menu
         await show_edit_menu(message, state, entity_id, config, entity_data)
@@ -189,7 +189,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         config = configs[entity_type]
         entity = await config['get_by_id_func'](entity_id)
         if not entity:
-            await callback.message.edit_text("Сущность не найдена.")
+            await callback.message.edit_text("❌ Сущность не найдена.")
             await callback.answer()
             return
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
