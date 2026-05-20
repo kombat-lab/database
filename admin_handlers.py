@@ -1232,12 +1232,10 @@ async def recipe_add_ingredient_select(callback: types.CallbackQuery, state: FSM
     if not resources:
         await callback.answer("Нет ресурсов в БД", show_alert=True)
         return
-    # Сохраняем весь список в state и текущую страницу
     await state.update_data(ingredient_resources=resources, ingredient_page=1)
-    await show_ingredient_page(callback.message, resources, 1, state)
+    await show_ingredient_page(callback, resources, 1, state)
 
 async def show_ingredient_page(target, resources: list, page: int, state: FSMContext):
-    """Отображает страницу со списком ресурсов для выбора ингредиента"""
     items_per_page = ADMIN_ITEMS_PER_PAGE
     total = len(resources)
     start = (page - 1) * items_per_page
@@ -1258,12 +1256,12 @@ async def show_ingredient_page(target, resources: list, page: int, state: FSMCon
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"recipe_ing_page_{page+1}"))
     if nav:
         keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="recipe_cancel_add")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Готово (вернуться к рецепту)", callback_data="recipe_finish_adding")])
 
     if isinstance(target, types.CallbackQuery):
-        await target.message.edit_text("Выберите ресурс для добавления в ингредиенты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await target.message.edit_text("Выберите ресурс для добавления в ингредиенты (или 'Готово'):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        await target.edit_text("Выберите ресурс для добавления в ингредиенты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await target.answer("Выберите ресурс для добавления в ингредиенты (или 'Готово'):", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(RecipeStates.add_ingredient)
 
 @admin_router.callback_query(RecipeStates.add_ingredient, F.data.startswith("recipe_ing_page_"))
@@ -1312,8 +1310,8 @@ async def recipe_ingredient_save(message: types.Message, state: FSMContext):
     if action == 'add':
         resource_id = data['temp_resource_id']
         await db.add_ingredient(recipe_id, resource_id, qty)
-        await message.answer("✅ Ингредиент добавлен.")
-        # Возвращаемся на ту же страницу списка ресурсов
+        await message.answer("✅ Ингредиент добавлен. Выберите следующий ресурс или нажмите 'Готово'.")
+        # Возвращаемся к списку ресурсов для продолжения
         resources = data.get('ingredient_resources')
         page = data.get('ingredient_return_page', 1)
         if resources:
@@ -1323,12 +1321,31 @@ async def recipe_ingredient_save(message: types.Message, state: FSMContext):
         resource_id = data['edit_resource_id']
         await db.update_ingredient(recipe_id, resource_id, qty)
         await message.answer("✅ Количество обновлено.")
+        recipe = await db.get_recipe_details(recipe_id)
+        await show_recipe(message, recipe, state)
+        return
     else:
         await message.answer("Ошибка: неизвестное действие.")
         return
-    # Если это не добавление, или список потерян – показываем рецепт
+    # fallback
     recipe = await db.get_recipe_details(recipe_id)
     await show_recipe(message, recipe, state)
+
+@admin_router.callback_query(RecipeStates.add_ingredient, F.data == "recipe_finish_adding")
+async def recipe_finish_adding(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(callback, recipe, state)
+    await callback.answer("Возврат к рецепту")
+
+@admin_router.callback_query(RecipeStates.add_ingredient, F.data == "recipe_cancel_add")
+async def recipe_cancel_add(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    recipe = await db.get_recipe_details(recipe_id)
+    await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 # Добавление владельца
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_owner")
