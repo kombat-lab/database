@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import html
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -13,6 +12,7 @@ from aiogram.fsm.context import FSMContext
 
 from database import db
 from admin_handlers import admin_router
+from utils import clean_username, escape_html
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -27,12 +27,6 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-def escape_html(text: str) -> str:
-    return html.escape(text)
-
-def clean_username(username: str) -> str:
-    return username.lstrip('@') if username else ''
 
 # ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
@@ -79,7 +73,6 @@ async def format_gear_card(gear_id: int) -> str:
     
     if data.get('craftable'):
         text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
-        # Отделяем пыль (id=71) от остальных
         dust = None
         other = []
         for ing in data['ingredients']:
@@ -207,8 +200,6 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def show_craft_resources_list(target, resources: list, page: int):
-    """Показывает список крафтовых ресурсов с пагинацией.
-       target может быть message или callback."""
     total = len(resources)
     start = (page - 1) * ITEMS_PER_PAGE
     end = start + ITEMS_PER_PAGE
