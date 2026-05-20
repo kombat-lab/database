@@ -10,8 +10,8 @@ def escape_html(text: str) -> str:
 
 def is_valid_emoji(s: str) -> bool:
     """
-    Проверяет, что строка содержит 1 или 2 символа, и ни один из них не является буквой или цифрой.
+    Проверяет, что строка содержит 1 или 2 символа (эмодзи).
     """
     if not s or len(s) not in (1, 2):
         return False
-    return all(not ch.isalnum() for ch in s)
+    return True
