@@ -48,13 +48,13 @@ async def resource_get_page(offset, limit):
 
 async def resource_update_field(res_id, field, value):
     if field == 'name':
-        await db.update_resource(res_id, value, None, None)
+        await db.update_resource(res_id, name=value)
     elif field == 'emoji':
-        current = await db.get_resource_by_id(res_id)
-        await db.update_resource(res_id, current['name'], value, None)
+        await db.update_resource(res_id, emoji=value)
     elif field == 'type':
-        current = await db.get_resource_by_id(res_id)
-        await db.update_resource(res_id, current['name'], current['emoji'], value)
+        await db.update_resource(res_id, resource_type=value)
+    elif field == 'note':
+        await db.update_resource(res_id, note=value)
 
 async def resource_get_by_id(res_id):
     return await db.get_resource_by_id(res_id)
@@ -80,7 +80,8 @@ ENTITY_CONFIGS['resource'] = {
     'edit_fields': [
         ('name', '✏️ Название'),
         ('emoji', '😀 Эмодзи'),
-        ('type', '🏷 Тип')
+        ('type', '🏷 Тип'),
+        ('note', '📝 Примечание')
     ],
     'integer_fields': [],
     'select_options': {
@@ -94,7 +95,7 @@ ENTITY_CONFIGS['resource'] = {
             'currency': '💰 Валюта'
         }
     },
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
+    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})\n📝 {d.get('note','')}" if d.get('note') else f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
 }
 
 # --- Снаряжение ---
@@ -195,6 +196,7 @@ class ResourceAddStates(StatesGroup):
     name = State()
     emoji = State()
     type = State()
+    note = State()
 
 @admin_router.message(ResourceAddStates.name, F.text)
 async def resource_add_emoji(message: types.Message, state: FSMContext):
@@ -207,7 +209,7 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await state.set_state(ResourceAddStates.emoji)
 
 @admin_router.message(ResourceAddStates.emoji, F.text)
-async def resource_add_emoji(message: types.Message, state: FSMContext):
+async def resource_add_emoji_input(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
@@ -223,17 +225,29 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await state.set_state(ResourceAddStates.type)
 
 @admin_router.callback_query(ResourceAddStates.type, F.data.startswith("res_type_"))
-async def resource_save(callback: types.CallbackQuery, state: FSMContext):
+async def resource_add_note(callback: types.CallbackQuery, state: FSMContext):
     type_map = {"craft": "craft", "consumable": "consumable", "scroll_recipe": "scroll_recipe", "currency": "currency"}
     resource_type = type_map.get(callback.data.split("_")[2], "craft")
+    await state.update_data(res_type=resource_type)
+    await callback.message.edit_text(
+        "Введите примечание для ресурса (например, «Продаётся у торговца в городе»).\n"
+        "Если не нужно, отправьте «-» или оставьте пустым:"
+    )
+    await state.set_state(ResourceAddStates.note)
+
+@admin_router.message(ResourceAddStates.note, F.text)
+async def resource_save(message: types.Message, state: FSMContext):
+    note = message.text.strip()
+    if note == "-":
+        note = ""
     data = await state.get_data()
     try:
-        await db.add_resource(data['res_name'], data['res_emoji'], resource_type)
-        await callback.message.edit_text("✅ Ресурс добавлен.")
+        await db.add_resource(data['res_name'], data['res_emoji'], data['res_type'], note)
+        await message.answer("✅ Ресурс добавлен.")
     except Exception as e:
-        await callback.message.edit_text(f"❌ Ошибка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(callback, state, ENTITY_CONFIGS['resource'], 1)
+    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ
@@ -406,9 +420,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
     mob_id = data.get('mob_id')
     field = data.get('edit_field')
 
-    # ---- НАДЁЖНАЯ ПРОВЕРКА СОСТОЯНИЯ ----
     if not mob_id or not field:
-        # Пытаемся восстановить: возможно, FSM сброшен, но у нас есть сообщение
         logger.warning(f"Ошибка состояния: mob_id={mob_id}, field={field}. Данные состояния: {data}")
         await message.answer(
             "❌ Ошибка состояния. Пожалуйста, начните редактирование моба заново.\n"
@@ -422,7 +434,6 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
     new_value = message.text.strip()
 
-    # ---- ВАЛИДАЦИЯ ПОЛЯ ----
     if field in ('hp', 'dust_min', 'dust_max', 'exp', 'location_id'):
         try:
             new_value = int(new_value)
@@ -440,11 +451,9 @@ async def mob_update_field(message: types.Message, state: FSMContext):
         await message.answer("❌ Имя не может быть пустым.")
         return
 
-    # ---- ОБНОВЛЕНИЕ ----
     try:
         await db.update_mob_field(mob_id, field, new_value)
 
-        # Получаем свежие данные моба
         mob_result = await db.execute_query("SELECT * FROM mobs WHERE id = ?", (mob_id,))
         if not mob_result:
             await message.answer("❌ Моб не найден. Возврат в админку.")
@@ -453,7 +462,6 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             return
         mob = mob_result[0]
 
-        # Строим клавиатуру редактирования
         fields_list = [
             ('name', f"Имя: {mob['name']}"),
             ('emoji', f"Эмодзи: {mob['emoji']}"),
@@ -477,11 +485,9 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
 
-        # Очищаем временное поле, оставляем mob_id
         await state.update_data(edit_field=None)
         await state.set_state(MobStates.edit_field)
 
-        # Удаляем сообщение пользователя (чтобы не захламлять)
         try:
             await message.delete()
         except:
@@ -493,7 +499,6 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
-    """Возврат к списку мобов из меню редактирования."""
     await state.clear()
     keyboard = await get_mob_list_keyboard(1)
     await callback.message.edit_text(
@@ -815,7 +820,7 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# УПРАВЛЕНИЕ РЕЦЕПТАМИ (оставлено без изменений)
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ
 # ============================================================
 
 class RecipeStates(StatesGroup):
@@ -1166,6 +1171,6 @@ async def admin_panel(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа.")
         return
-    await state.clear()  # <-- добавить эту строку
+    await state.clear()
     await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
                          reply_markup=get_admin_main_keyboard())
