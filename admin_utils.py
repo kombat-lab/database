@@ -188,11 +188,11 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         entity_id = data['entity_id']
         field = data['edit_field']
         new_value = message.text.strip()
-
+    
         configs = get_entity_configs_func()
         config = configs[entity_type]
-
-        # Валидация
+    
+        # Валидация для числовых полей
         if field in config.get('integer_fields', []):
             try:
                 new_value = int(new_value)
@@ -201,26 +201,26 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             except:
                 await message.answer("❌ Ошибка: введите положительное целое число.")
                 return
+    
+        # Валидация для эмодзи
         if field == 'emoji' and not is_valid_emoji(new_value):
             await message.answer("❌ Эмодзи не может быть пустым.")
             return
+    
+        # Валидация для названия
         if field == 'name' and not new_value:
             await message.answer("❌ Название не может быть пустым.")
             return
-        if field == 'rarity' and new_value not in ('common', 'rare', 'epic'):
-            await message.answer("❌ Редкость должна быть common, rare или epic.")
-            return
-        if field == 'type' and new_value not in ('craft', 'consumable', 'scroll_recipe', 'currency'):
-            await message.answer("❌ Неверный тип ресурса.")
-            return
-
+    
+        # Проверки для rarity и type удалены, так как они теперь выбираются через кнопки
+    
         try:
             await config['update_field_func'](entity_id, field, new_value)
             await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
             return
-
+    
         # Получить обновлённые данные
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
@@ -228,8 +228,8 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             from admin_handlers import render_entity_list
             await render_entity_list(message, state, config, 1)
             return
-
-        # Сформировать клавиатуру редактирования (как в show_edit_menu)
+    
+        # Сформировать клавиатуру редактирования
         fields = config['edit_fields']
         keyboard = []
         for field_name, field_label in fields:
@@ -244,16 +244,13 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="delete_entity")])
         keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
         keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
-
-        # Отправить новое сообщение с меню редактирования, а старое удалить
+    
         await message.answer(
             f"Редактирование {config['name_ru']} ID {entity_id}:\n{config['display_format'](entity_data)}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
-        # Удалить предыдущее сообщение с запросом ввода, чтобы не захламлять чат
-        await message.delete()
-
-        # Обновить состояние
+        await message.delete()  # удаляем сообщение с запросом ввода
+    
         await state.update_data(entity_id=entity_id, editing_entity=config['name'])
         await state.set_state(GenericEditStates.select_field)
 
