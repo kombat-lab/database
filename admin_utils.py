@@ -1,0 +1,222 @@
+import logging
+from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+logger = logging.getLogger(__name__)
+
+ADMIN_ITEMS_PER_PAGE = 10
+
+class GenericEditStates(StatesGroup):
+    select_item = State()
+    select_field = State()
+    new_value = State()
+    confirm_delete = State()
+
+def get_admin_main_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text="➕ Добавить моба", callback_data="admin_add_mob")],
+        [InlineKeyboardButton(text="✏️ Редактировать моба", callback_data="admin_edit_mob")],
+        [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
+        [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
+        [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
+        [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+async def admin_close(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.answer()
+
+async def admin_cancel_edit(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    await callback.answer()
+
+def build_paginated_keyboard(items, page, has_next, item_callback_prefix, extra_buttons=None):
+    """Строит клавиатуру со списком кнопок + навигация + доп. кнопки"""
+    keyboard = []
+    for item in items:
+        text = f"{item.get('emoji', '')} {item['name']}" + (f" (ID {item['id']})" if 'id' in item else "")
+        if 'rarity' in item:
+            text += f" [{item['rarity']}]"
+        if 'slot' in item:
+            text += f" ({item['slot']})"
+        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"{item_callback_prefix}_{item['id']}")])
+    
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    
+    if extra_buttons:
+        for btn_row in extra_buttons:
+            keyboard.append(btn_row)
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+async def render_entity_list(callback, state, entity_config, page=1):
+    """Универсальный рендер списка сущностей"""
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    items = await entity_config['get_page_func'](offset, ADMIN_ITEMS_PER_PAGE + 1)
+    has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+    items = items[:ADMIN_ITEMS_PER_PAGE]
+    
+    extra = []
+    if entity_config.get('add_button'):
+        extra.append([InlineKeyboardButton(text=entity_config['add_button_text'], callback_data=entity_config['add_callback'])])
+    
+    keyboard = build_paginated_keyboard(
+        items, page, has_next,
+        entity_config['item_callback_prefix'],
+        extra_buttons=extra
+    )
+    await callback.message.edit_text(entity_config['list_title'], reply_markup=keyboard)
+    await state.update_data(entity_type=entity_config['name'], current_page=page)
+    await state.set_state(entity_config['list_state'])
+    await callback.answer()
+
+async def start_edit_entity(callback, state, entity_config):
+    """Запуск процесса редактирования: показать список элементов"""
+    await state.clear()
+    await state.update_data(entity_config=entity_config['name'])
+    await render_entity_list(callback, state, entity_config, 1)
+
+async def show_edit_menu(callback, state, entity_id, entity_config, entity_data):
+    """Показывает меню редактирования для конкретного элемента"""
+    fields = entity_config['edit_fields']
+    keyboard = []
+    for field_name, field_label in fields:
+        current_value = entity_data.get(field_name, '?')
+        keyboard.append([InlineKeyboardButton(
+            text=f"{field_label}: {current_value}",
+            callback_data=f"edit_field_{field_name}"
+        )])
+    if entity_config.get('extra_edit_buttons'):
+        for btn in entity_config['extra_edit_buttons'](entity_id):
+            keyboard.append(btn)
+    keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="delete_entity")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+    
+    await callback.message.edit_text(
+        f"Редактирование {entity_config['name_ru']} ID {entity_id}:\n{entity_config['display_format'](entity_data)}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await state.update_data(entity_id=entity_id, editing_entity=entity_config['name'])
+    await state.set_state(GenericEditStates.select_field)
+
+def register_generic_handlers(router: Router, get_entity_configs_func):
+    """
+    Регистрирует универсальные обработчики на роутере.
+    get_entity_configs_func должна возвращать словарь ENTITY_CONFIGS.
+    """
+    @router.callback_query(GenericEditStates.select_field, F.data.startswith("edit_field_"))
+    async def generic_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
+        field = callback.data.split("_")[2]
+        await state.update_data(edit_field=field)
+        await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
+        await state.set_state(GenericEditStates.new_value)
+        await callback.answer()
+
+    @router.message(GenericEditStates.new_value, F.text)
+    async def generic_update_field(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        entity_type = data['editing_entity']
+        entity_id = data['entity_id']
+        field = data['edit_field']
+        new_value = message.text.strip()
+        
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+        
+        if field in config.get('integer_fields', []):
+            try:
+                new_value = int(new_value)
+                if new_value < 0:
+                    raise ValueError
+            except:
+                await message.answer("Ошибка: введите положительное целое число.")
+                return
+        if field == 'emoji':
+            from utils import is_valid_emoji
+            if not is_valid_emoji(new_value):
+                await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра).")
+                return
+        if field == 'name' and not new_value:
+            await message.answer("Название не может быть пустым.")
+            return
+        if field == 'rarity' and new_value not in ('common','rare','epic'):
+            await message.answer("Редкость должна быть common, rare или epic.")
+            return
+        if field == 'type' and new_value not in ('craft','consumable','scroll_recipe','currency'):
+            await message.answer("Неверный тип ресурса.")
+            return
+        
+        try:
+            await config['update_field_func'](entity_id, field, new_value)
+            await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка: {e}")
+            return
+        
+        entity_data = await config['get_by_id_func'](entity_id)
+        if not entity_data:
+            await message.answer("Сущность не найдена. Возврат в список.")
+            await render_entity_list(message, state, config, 1)
+            return
+        await show_edit_menu(message, state, entity_id, config, entity_data)
+
+    @router.callback_query(GenericEditStates.select_field, F.data == "delete_entity")
+    async def generic_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        entity_type = data['editing_entity']
+        entity_id = data['entity_id']
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+        entity = await config['get_by_id_func'](entity_id)
+        if not entity:
+            await callback.message.edit_text("Сущность не найдена.")
+            await callback.answer()
+            return
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data="confirm_delete_yes")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_list")]
+        ])
+        await callback.message.edit_text(
+            f"⚠️ Удалить {config['name_ru']} <b>{entity['name']}</b> (ID {entity_id})?\nЭто действие необратимо.",
+            parse_mode="HTML", reply_markup=keyboard
+        )
+        await state.set_state(GenericEditStates.confirm_delete)
+        await callback.answer()
+
+    @router.callback_query(GenericEditStates.confirm_delete, F.data == "confirm_delete_yes")
+    async def generic_delete_execute(callback: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        entity_type = data['editing_entity']
+        entity_id = data['entity_id']
+        configs = get_entity_configs_func()
+        config = configs[entity_type]
+        try:
+            await config['delete_func'](entity_id)
+            await callback.message.edit_text("✅ Успешно удалено.")
+        except Exception as e:
+            await callback.message.edit_text(f"❌ Ошибка: {e}")
+        await render_entity_list(callback, state, config, 1)
+
+    @router.callback_query(GenericEditStates.select_field, F.data == "back_to_list")
+    async def generic_back_to_list(callback: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        entity_type = data.get('editing_entity')
+        configs = get_entity_configs_func()
+        if entity_type in configs:
+            await render_entity_list(callback, state, configs[entity_type], 1)
+        else:
+            await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+        await callback.answer()
