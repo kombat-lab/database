@@ -70,9 +70,11 @@ class ResourceStates(StatesGroup):
     list_page = State()
     add_name = State()
     add_emoji = State()
+    add_type = State()
     edit_select = State()
     edit_name = State()
     edit_emoji = State()
+    edit_type = State()
     delete_confirm = State()
 
 async def get_resources_list_keyboard(page: int) -> InlineKeyboardMarkup:
@@ -82,8 +84,14 @@ async def get_resources_list_keyboard(page: int) -> InlineKeyboardMarkup:
     resources = resources[:ADMIN_ITEMS_PER_PAGE]
     keyboard = []
     for res in resources:
+        type_emoji = {
+            'craft': '📦',
+            'consumable': '✨',
+            'scroll_recipe': '📜',
+            'currency': '💰'
+        }.get(res.get('type', 'craft'), '📦')
         keyboard.append([InlineKeyboardButton(
-            text=f"{res['emoji']} {res['name']} (ID {res['id']})",
+            text=f"{type_emoji} {res['emoji']} {res['name']} (ID {res['id']})",
             callback_data=f"resource_edit_{res['id']}"
         )])
     nav = []
@@ -130,23 +138,44 @@ async def resource_add_emoji(message: types.Message, state: FSMContext):
     await state.set_state(ResourceStates.add_emoji)
 
 @admin_router.message(ResourceStates.add_emoji, F.text)
-async def resource_save(message: types.Message, state: FSMContext):
-    logger.info(f"resource_save получил эмодзи: {message.text}")
+async def resource_add_emoji(message: types.Message, state: FSMContext):
+    logger.info(f"resource_add_emoji получил эмодзи: {message.text}")
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен быть ровно один символ (не буква и не цифра). Попробуйте снова:")
         return
+    await state.update_data(res_emoji=emoji)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Для крафта", callback_data="res_type_craft")],
+        [InlineKeyboardButton(text="✨ Расходуемый (свиток усиления)", callback_data="res_type_consumable")],
+        [InlineKeyboardButton(text="📜 Рецепт экипировки (свиток)", callback_data="res_type_scroll_recipe")],
+        [InlineKeyboardButton(text="💰 Валюта", callback_data="res_type_currency")]
+    ])
+    await message.answer("Выберите тип ресурса:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.add_type)
+
+@admin_router.callback_query(ResourceStates.add_type, F.data.startswith("res_type_"))
+async def resource_save_type(callback: types.CallbackQuery, state: FSMContext):
+    type_map = {
+        "res_type_craft": "craft",
+        "res_type_consumable": "consumable",
+        "res_type_scroll_recipe": "scroll_recipe",
+        "res_type_currency": "currency"
+    }
+    resource_type = type_map.get(callback.data, "craft")
     data = await state.get_data()
     name = data['res_name']
+    emoji = data['res_emoji']
     try:
-        await db.add_resource(name, emoji)
-        await message.answer(f"✅ Ресурс <b>{name}</b> добавлен.", parse_mode="HTML")
+        await db.add_resource(name, emoji, resource_type)
+        await callback.message.edit_text(f"✅ Ресурс <b>{name}</b> добавлен (тип: {resource_type}).", parse_mode="HTML")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
     await state.clear()
     keyboard = await get_resources_list_keyboard(1)
-    await message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
+    await callback.message.answer("📦 Управление ресурсами:", reply_markup=keyboard)
     await state.set_state(ResourceStates.list_page)
+    await callback.answer()
 
 @admin_router.callback_query(ResourceStates.list_page, F.data.startswith("resource_edit_"))
 async def resource_edit_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -156,16 +185,30 @@ async def resource_edit_menu(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Ресурс не найден.")
         await callback.answer()
         return
-    await state.update_data(res_id=resource_id, res_name=res['name'], res_emoji=res['emoji'])
+    await state.update_data(res_id=resource_id, res_name=res['name'], res_emoji=res['emoji'], res_type=res.get('type', 'craft'))
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
         [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🏷 Изменить тип", callback_data="resource_edit_type")],
         [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
         [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
     ])
-    await callback.message.edit_text(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await callback.message.edit_text(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']}, тип: {res.get('type', 'craft')})\nЧто хотите сделать?", reply_markup=keyboard)
     await state.set_state(ResourceStates.edit_select)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_type")
+async def resource_edit_type_prompt(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Для крафта", callback_data="res_update_type_craft")],
+        [InlineKeyboardButton(text="✨ Расходуемый", callback_data="res_update_type_consumable")],
+        [InlineKeyboardButton(text="📜 Рецепт экипировки", callback_data="res_update_type_scroll_recipe")],
+        [InlineKeyboardButton(text="💰 Валюта", callback_data="res_update_type_currency")],
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="resource_back_to_list")]
+    ])
+    await callback.message.edit_text("Выберите новый тип ресурса:", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_type)
     await callback.answer()
 
 @admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_back_to_list")
@@ -173,6 +216,39 @@ async def resource_back_to_list(callback: types.CallbackQuery, state: FSMContext
     keyboard = await get_resources_list_keyboard(1)
     await callback.message.edit_text("📦 Управление ресурсами:", reply_markup=keyboard)
     await state.set_state(ResourceStates.list_page)
+    await callback.answer()
+
+@admin_router.callback_query(ResourceStates.edit_type, F.data.startswith("res_update_type_"))
+async def resource_update_type(callback: types.CallbackQuery, state: FSMContext):
+    type_map = {
+        "res_update_type_craft": "craft",
+        "res_update_type_consumable": "consumable",
+        "res_update_type_scroll_recipe": "scroll_recipe",
+        "res_update_type_currency": "currency"
+    }
+    new_type = type_map.get(callback.data, "craft")
+    data = await state.get_data()
+    res_id = data['res_id']
+    current_name = data['res_name']
+    current_emoji = data['res_emoji']
+    try:
+        await db.update_resource(res_id, current_name, current_emoji, new_type)
+        await callback.message.edit_text(f"✅ Тип ресурса обновлён на <b>{new_type}</b>.", parse_mode="HTML")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+        return
+    res = await db.get_resource_by_id(res_id)
+    await state.update_data(res_type=res['type'])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data="resource_edit_name")],
+        [InlineKeyboardButton(text="😀 Изменить эмодзи", callback_data="resource_edit_emoji")],
+        [InlineKeyboardButton(text="🏷 Изменить тип", callback_data="resource_edit_type")],
+        [InlineKeyboardButton(text="🗑 Удалить ресурс", callback_data="resource_delete")],
+        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="resource_back_to_list")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
+    ])
+    await callback.message.edit_text(f"Ресурс: {res['emoji']} {res['name']} (ID {res['id']}, тип: {res['type']})\nЧто хотите сделать?", reply_markup=keyboard)
+    await state.set_state(ResourceStates.edit_select)
     await callback.answer()
 
 @admin_router.callback_query(ResourceStates.edit_select, F.data == "resource_edit_name")
@@ -192,7 +268,7 @@ async def resource_update_name(message: types.Message, state: FSMContext):
     res_id = data['res_id']
     current_emoji = data['res_emoji']
     try:
-        await db.update_resource(res_id, new_name, current_emoji)
+        await db.update_resource(res_id, new_name, current_emoji, None)
         await message.answer(f"✅ Название ресурса обновлено на <b>{new_name}</b>.", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -232,7 +308,7 @@ async def resource_update_emoji(message: types.Message, state: FSMContext):
     res_id = data['res_id']
     current_name = data['res_name']
     try:
-        await db.update_resource(res_id, current_name, new_emoji)
+        await db.update_resource(res_id, current_name, new_emoji, None)
         await message.answer(f"✅ Эмодзи ресурса обновлён на {new_emoji}.", parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
