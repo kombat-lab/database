@@ -228,18 +228,28 @@ class Database:
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
-        """Возвращает ресурсы заданного типа с пагинацией, сортировка по имени."""
-        return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
-            (resource_type, limit, offset)
-        )
+        if resource_type == 'scroll_recipe':
+            # Возвращаем оба варианта: и scroll_recipe, и scroll
+            return await self.execute_query(
+                "SELECT id, name, emoji, type FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+                (limit, offset)
+            )
+        else:
+            return await self.execute_query(
+                "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+                (resource_type, limit, offset)
+            )
 
     async def get_resources_by_type_all(self, resource_type: str) -> List[Dict]:
-        """Возвращает все ресурсы заданного типа без пагинации (для внутренних нужд)."""
-        return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE",
-            (resource_type,)
-        )
+        if resource_type == 'scroll_recipe':
+            return await self.execute_query(
+                "SELECT id, name, emoji, type FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE"
+            )
+        else:
+            return await self.execute_query(
+                "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE",
+                (resource_type,)
+            )
 
     async def get_all_resources_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
