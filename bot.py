@@ -145,8 +145,7 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы")],
-            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="⚗️ Алхимия")],
-            [KeyboardButton(text="🔍 Поиск")]
+            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск")]
         ],
         resize_keyboard=True
     )
@@ -239,52 +238,17 @@ async def show_craft_resources_list(target, resources: list, page: int):
     else:
         await target.message.edit_text("⚗️ Выберите ресурс для крафта:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-# ---------- НОВЫЕ ФУНКЦИИ ДЛЯ РАЗДЕЛА "РЕСУРСЫ" ----------
 def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="📦 Крафтовые", callback_data="resource_cat_craft")],
         [InlineKeyboardButton(text="✨ Расходуемые", callback_data="resource_cat_consumable")],
         [InlineKeyboardButton(text="📜 Рецепты экипировки", callback_data="resource_cat_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="resource_cat_currency")],
+        [InlineKeyboardButton(text="⚗️ Алхимия (крафт ресурсов)", callback_data="resource_cat_alchemy")],
+        [InlineKeyboardButton(text="🗺️ Карты", callback_data="resource_cat_maps")],
         [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-async def show_resources_by_type(target, resource_type: str, page: int):
-    offset = (page - 1) * ITEMS_PER_PAGE
-    items = await db.get_resources_by_type(resource_type, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
-    has_next = len(items) > ITEMS_PER_PAGE
-    items = items[:ITEMS_PER_PAGE]
-
-    type_names = {
-        'craft': 'Крафтовые',
-        'consumable': 'Расходуемые',
-        'scroll_recipe': 'Рецепты экипировки',
-        'currency': 'Валюта'
-    }
-    type_display = type_names.get(resource_type, resource_type)
-
-    keyboard = []
-    for res in items:
-        text = f"{res['emoji']} {res['name']}"
-        callback_data = f"view_resource_{res['id']}_{resource_type}_{page}"
-        keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
-
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"res_page_{resource_type}_{page-1}"))
-    if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"res_page_{resource_type}_{page+1}"))
-    if nav:
-        keyboard.append(nav)
-
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
-    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")])
-
-    if isinstance(target, types.Message):
-        await target.answer(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    else:
-        await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
@@ -310,23 +274,35 @@ async def gear_button(message: types.Message):
     await message.delete()
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
-@dp.message(F.text == "⚗️ Алхимия")
-async def craft_button(message: types.Message):
-    await message.delete()
-    craftable_resources = await db.get_craftable_resources()
-    if not craftable_resources:
-        await message.answer("Пока нет доступных рецептов крафта ресурсов.")
-        return
-    await show_craft_resources_list(message, craftable_resources, 1)
-
 @dp.message(F.text == "🔍 Поиск")
 async def search_button(message: types.Message):
     await message.delete()
     await message.answer(
-        "Нажми на кнопку ниже, чтобы открыть инлайн-поиск.\nЗатем просто введи запрос (например, <b>бронзовик</b>).",
+        "Нажми на кнопку ниже, чтобы включить поиск.\nЗатем просто введи запрос (например, <b>бронзовик</b> или <b>хитин</b>).",
         reply_markup=get_inline_search_button(),
         parse_mode="HTML"
     )
+
+@dp.callback_query(F.data == "resource_cat_alchemy")
+async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext):
+    """Показывает список крафтовых ресурсов (бывший раздел Алхимия)"""
+    craftable_resources = await db.get_craftable_resources()
+    if not craftable_resources:
+        await callback.message.edit_text("Пока нет доступных рецептов крафта ресурсов.")
+        return
+    await show_craft_resources_list(callback, craftable_resources, 1)
+    await callback.answer()
+
+@dp.callback_query(F.data == "resource_cat_maps")
+async def resource_cat_maps(callback: types.CallbackQuery):
+    """Заглушка для категории Карты"""
+    await callback.message.edit_text(
+        "🗺️ Раздел «Карты» находится в разработке.\nСкоро здесь появятся карты локаций и маршруты.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")]
+        ])
+    )
+    await callback.answer()
 
 # ---------- Текстовый поиск ----------
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
