@@ -36,10 +36,21 @@ async def format_mob_card(mob_id: int) -> str:
     loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
+    
     if data['resource_drops']:
         text += "<b>Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
+    
     if data['gear_drops']:
-        text += "\n<b>Снаряжение:</b>\n" + "\n".join(f"{g['emoji']} {escape_html(g['name'])} ({g['slot']})" for g in data['gear_drops']) + "\n"
+        rarity_emoji = {
+            "common": "⚪",
+            "rare": "🟢",
+            "epic": "🔵"
+        }
+        text += "\n<b>Снаряжение:</b>\n"
+        for g in data['gear_drops']:
+            rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
+            text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
+    
     return text
 
 async def format_resource_card(resource_id: int) -> str:
