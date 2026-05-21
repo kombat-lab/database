@@ -567,10 +567,26 @@ class Database:
         return len(res) > 0
 
     async def add_drop(self, mob_id: int, item_type: str, item_id: int):
-        await self.execute_query(
-            "INSERT OR IGNORE INTO drops (mob_id, item_type, item_id) VALUES (?, ?, ?)",
-            (mob_id, item_type, item_id)
-        )
+        try:
+            if item_type == 'resource':
+                check = await self.execute_query("SELECT 1 FROM resources WHERE id = ?", (item_id,))
+            elif item_type == 'gear':
+                check = await self.execute_query("SELECT 1 FROM gear WHERE id = ?", (item_id,))
+            elif item_type == 'card':
+                check = await self.execute_query("SELECT 1 FROM cards WHERE id = ?", (item_id,))
+            else:
+                raise ValueError(f"Unknown item_type: {item_type}")
+    
+            if not check:
+                raise ValueError(f"{item_type} with id {item_id} does not exist")
+    
+            await self.execute_query(
+                "INSERT INTO drops (mob_id, item_type, item_id) VALUES (?, ?, ?)",
+                (mob_id, item_type, item_id)
+            )
+        except Exception as e:
+            logger.error(f"Failed to add drop: {e}")
+            raise
 
     async def remove_drop(self, mob_id: int, item_type: str, item_id: int):
         await self.execute_query(
