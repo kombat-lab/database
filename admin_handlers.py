@@ -890,12 +890,10 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
         return
 
-    # обновляем клавиатуру
+    # Получаем обновлённую клавиатуру
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
-    await callback.message.edit_text(
-        f"Управление дропом: {category}",
-        reply_markup=keyboard
-    )
+    # Обновляем только клавиатуру, текст оставляем прежним
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data == "back_to_drop_categories")
 async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
