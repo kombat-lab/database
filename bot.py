@@ -20,7 +20,7 @@ if not TOKEN:
 
 ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
-MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "⚗️ Алхимия", "🃏 Карты", "🔍 Поиск"}
+MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -169,8 +169,7 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🐾 Мобы"), KeyboardButton(text="📦 Ресурсы")],
-            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🃏 Карты")],
-            [KeyboardButton(text="🔍 Поиск")]
+            [KeyboardButton(text="⚔️ Снаряжение"), KeyboardButton(text="🔍 Поиск")]
         ],
         resize_keyboard=True
     )
@@ -269,7 +268,7 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📜 Рецепты экипировки", callback_data="resource_cat_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="resource_cat_currency")],
         [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="resource_cat_alchemy")],
-        [InlineKeyboardButton(text="Карты", callback_data="resource_cat_maps")],
+        [InlineKeyboardButton(text="🃏 Карты", callback_data="resource_cat_cards")],   # изменено
         [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -335,11 +334,6 @@ async def gear_button(message: types.Message):
     await message.delete()
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
-@dp.message(F.text == "🃏 Карты")
-async def cards_button(message: types.Message):
-    await message.delete()
-    await show_cards_list(message, 1)
-
 @dp.message(F.text == "🔍 Поиск")
 async def search_button(message: types.Message):
     await message.delete()
@@ -354,14 +348,9 @@ async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext)
     await show_resources_by_type(callback, 'alchemy', 1)
     await callback.answer()
 
-@dp.callback_query(F.data == "resource_cat_maps")
-async def resource_cat_maps(callback: types.CallbackQuery):
-    await callback.message.edit_text(
-        "Раздел в разработке.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")]
-        ])
-    )
+@dp.callback_query(F.data == "resource_cat_cards")
+async def resource_cat_cards(callback: types.CallbackQuery):
+    await show_cards_list(callback, 1)
     await callback.answer()
 
 # ---------- Текстовый поиск ----------
