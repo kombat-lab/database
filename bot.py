@@ -38,18 +38,20 @@ async def format_mob_card(mob_id: int) -> str:
     text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
     
     if data['resource_drops']:
-        text += "<b>Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
+        text += "<b>📦 Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
     
     if data['gear_drops']:
-        rarity_emoji = {
-            "common": "⚪",
-            "rare": "🟢",
-            "epic": "🔵"
-        }
-        text += "\n<b>Снаряжение:</b>\n"
+        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+        text += "\n<b>⚔️ Снаряжение:</b>\n"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
             text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
+    
+    if data['card_drops']:
+        text += "\n<b>🃏 Карты:</b>\n"
+        for c in data['card_drops']:
+            slot_info = f" (слот: {c['slot']})" if c.get('slot') else ""
+            text += f"{c['emoji']} {escape_html(c['name'])}{slot_info}\n"
     
     return text
 
