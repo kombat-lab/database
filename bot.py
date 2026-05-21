@@ -63,7 +63,7 @@ async def format_resource_card(resource_id: int) -> str:
         'scroll_recipe': '📜 Рецепт экипировки',
         'scroll': '📜 Рецепт экипировки',
         'currency': '💰 Валюта',
-        'alchemy': '🧪 Алхимия'
+        'alchemy': '⚗️ Алхимия'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
@@ -79,7 +79,7 @@ async def format_resource_card(resource_id: int) -> str:
     # Добавляем рецепт крафта, если он существует
     recipe = await db.get_recipe_for_resource(resource_id)
     if recipe and recipe['ingredients']:
-        text += "\n\n⚗️ <b>Крафт:</b>\n"
+        text += "\n⚗️ <b>Крафт:</b>\n"
         dust = None
         other = []
         for ing in recipe['ingredients']:
