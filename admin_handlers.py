@@ -720,7 +720,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
 
 # ------------------- Управление дропом (с поддержкой карт) -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
-    from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
+    from admin_utils import ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     items = []
     has_next = False
@@ -748,12 +748,10 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
             return InlineKeyboardMarkup(inline_keyboard=[])
     except Exception as e:
         logger.error(f"Ошибка загрузки списка дропа для {category}: {e}")
-        # Возвращаем клавиатуру с сообщением об ошибке
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ Ошибка загрузки", callback_data="admin_cancel_edit")],
             [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_drop_categories")]
         ])
-        return keyboard
 
     keyboard = []
     for item in items:
@@ -836,13 +834,23 @@ async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, sta
 
 @admin_router.callback_query(MobStates.drop_category, F.data.startswith("drop_category_"))
 async def show_drop_list(callback: types.CallbackQuery, state: FSMContext):
-    category = callback.data.split("_")[2]
+    category = callback.data.split("_")[2]   # resource, gear, card
     data = await state.get_data()
-    mob_id = data['mob_id']
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await callback.answer("❌ Ошибка: моб не найден. Начните редактирование заново.", show_alert=True)
+        await state.clear()
+        await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+        return
+
     keyboard = await get_drop_list_keyboard(mob_id, category, 1)
-    await callback.message.edit_text(f"Управление дропом: {category}\n✅ - падает, ❌ - не падает", reply_markup=keyboard)
+    await callback.message.edit_text(
+        f"Управление дропом: {category}\n✅ - падает, ❌ - не падает",
+        reply_markup=keyboard
+    )
     await state.update_data(drop_category=category, drop_page=1)
     await state.set_state(MobStates.drop_list_page)
+    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_page_"))
 async def drop_page(callback: types.CallbackQuery, state: FSMContext):
@@ -858,18 +866,36 @@ async def drop_page(callback: types.CallbackQuery, state: FSMContext):
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_toggle_"))
 async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
+    # формат: drop_toggle_{category}_{item_id}_{page}
     category = parts[2]
     item_id = int(parts[3])
     page = int(parts[4])
+
     data = await state.get_data()
-    mob_id = data['mob_id']
-    has_drop = await db.get_drop_status(mob_id, category, item_id)
-    if has_drop:
-        await db.remove_drop(mob_id, category, item_id)
-    else:
-        await db.add_drop(mob_id, category, item_id)
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await callback.answer("❌ Ошибка: моб не найден", show_alert=True)
+        return
+
+    try:
+        has_drop = await db.get_drop_status(mob_id, category, item_id)
+        if has_drop:
+            await db.remove_drop(mob_id, category, item_id)
+            await callback.answer("✅ Дроп убран", show_alert=False)
+        else:
+            await db.add_drop(mob_id, category, item_id)
+            await callback.answer("✅ Дроп добавлен", show_alert=False)
+    except Exception as e:
+        logger.error(f"Ошибка переключения дропа: {e}")
+        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
+        return
+
+    # обновляем клавиатуру
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
-    await callback.message.edit_text(f"Управление дропом: {category}", reply_markup=keyboard)
+    await callback.message.edit_text(
+        f"Управление дропом: {category}",
+        reply_markup=keyboard
+    )
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data == "back_to_drop_categories")
 async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
