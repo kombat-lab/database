@@ -847,7 +847,7 @@ async def drop_page(callback: types.CallbackQuery, state: FSMContext):
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_toggle_"))
 async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
-    category = parts[2]          # resource / gear / card
+    category = parts[2]
     item_id = int(parts[3])
     page = int(parts[4])
 
@@ -857,21 +857,22 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка: моб не найден", show_alert=True)
         return
 
-    has_drop = await db.get_drop_status(mob_id, category, item_id)
-    if has_drop:
-        await db.remove_drop(mob_id, category, item_id)
-        await callback.answer("❌ Дроп убран", show_alert=False)
-    else:
-        await db.add_drop(mob_id, category, item_id)
-        await callback.answer("✅ Дроп добавлен", show_alert=False)
+    try:
+        has_drop = await db.get_drop_status(mob_id, category, item_id)
+        if has_drop:
+            await db.remove_drop(mob_id, category, item_id)
+            await callback.answer("❌ Дроп убран", show_alert=False)
+        else:
+            await db.add_drop(mob_id, category, item_id)
+            await callback.answer("✅ Дроп добавлен", show_alert=False)
+    except Exception as e:
+        logger.error(f"Toggle drop error: {e}")
+        await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
+        return
 
-    # Обновляем только клавиатуру, текст не трогаем
+    # Обновляем клавиатуру
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
-
-@admin_router.callback_query(MobStates.drop_list_page, F.data == "back_to_drop_categories")
-async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
-    await mob_drop_category(callback, state)
 
 # ---------- Добавление моба ----------
 @admin_router.callback_query(F.data == "admin_add_mob")
