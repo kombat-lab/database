@@ -863,7 +863,10 @@ async def get_recipe_list_keyboard(result_type: str, page: int):
     recipes = recipes[:ADMIN_ITEMS_PER_PAGE]
     keyboard = []
     for r in recipes:
-        text = f"{r['result_emoji']} {r['result_name']} (ID рец.{r['id']}) | ингр:{r['ingredient_count']} влад:{r['owner_count']}"
+        if result_type == 'gear':
+            text = f"{r['result_emoji']} {r['result_name']} (ID рец.{r['id']}) | ингр:{r['ingredient_count']} влад:{r['owner_count']}"
+        else:
+            text = f"{r['result_emoji']} {r['result_name']} (ID рец.{r['id']}) | ингр:{r['ingredient_count']}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"recipe_view_{r['id']}")])
     nav = []
     if page > 1:
@@ -911,23 +914,29 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
         text += f"  {ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
     if not recipe['ingredients']:
         text += "<i>Нет ингредиентов</i>\n"
-    text += "\n👥 <b>Владельцы:</b>\n"
-    for owner in recipe['owners']:
-        text += f"  @{clean_username(owner)}\n"
-    if not recipe['owners']:
-        text += "<i>Нет владельцев</i>\n"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить ингредиент", callback_data="recipe_add_ingredient")],
-        [InlineKeyboardButton(text="👤 Добавить владельца", callback_data="recipe_add_owner")],
-        [InlineKeyboardButton(text="✏️ Редактировать ингредиенты", callback_data="recipe_edit_ingredients")],
-        [InlineKeyboardButton(text="❌ Удалить рецепт", callback_data="recipe_delete")],
-        [InlineKeyboardButton(text="🔙 Назад к списку", callback_data="recipe_back_to_list")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")]
-    ])
+
+    # Блок владельцев показываем только для снаряжения
+    if recipe['result_type'] == 'gear':
+        text += "\n👥 <b>Владельцы:</b>\n"
+        for owner in recipe['owners']:
+            text += f"  @{clean_username(owner)}\n"
+        if not recipe['owners']:
+            text += "<i>Нет владельцев</i>\n"
+
+    # Кнопки
+    keyboard = []
+    if recipe['result_type'] == 'gear':
+        keyboard.append([InlineKeyboardButton(text="👤 Добавить владельца", callback_data="recipe_add_owner")])
+    keyboard.append([InlineKeyboardButton(text="➕ Добавить ингредиент", callback_data="recipe_add_ingredient")])
+    keyboard.append([InlineKeyboardButton(text="✏️ Редактировать ингредиенты", callback_data="recipe_edit_ingredients")])
+    keyboard.append([InlineKeyboardButton(text="❌ Удалить рецепт", callback_data="recipe_delete")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="recipe_back_to_list")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+
     if isinstance(target, types.CallbackQuery):
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        await target.answer(text, parse_mode="HTML", reply_markup=keyboard)
+        await target.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(RecipeStates.view_recipe)
 
 @admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_view_"))
@@ -1074,6 +1083,12 @@ async def recipe_finish_adding(callback: types.CallbackQuery, state: FSMContext)
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_owner")
 async def recipe_add_owner_prompt(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data.get('recipe_id')
+    recipe = await db.get_recipe_details(recipe_id)
+    if recipe and recipe['result_type'] != 'gear':
+        await callback.answer("Владельцы добавляются только для рецептов снаряжения.", show_alert=True)
+        return
     await callback.message.edit_text("Введите username владельца (без @):")
     await state.set_state(RecipeStates.add_owner)
 
