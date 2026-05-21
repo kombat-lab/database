@@ -101,8 +101,18 @@ async def format_gear_card(gear_id: int) -> str:
     data = await db.get_gear_card(gear_id)
     if not data:
         return "Предмет не найден."
-    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
-    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+    rarity_names = {
+        "common": "Обычное",
+        "rare": "Редкое",
+        "epic": "Сверхредкое",
+        "legendary": "Эпическая"
+    }
+    rarity_emoji = {
+        "common": "⚪",
+        "rare": "🟢",
+        "epic": "🔵",
+        "legendary": "🟣"
+    }
     slot_names = {
         'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
         'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
@@ -202,7 +212,8 @@ def get_rarities_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
         [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")]
+        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")],
+        [InlineKeyboardButton(text="🟣 Эпическая", callback_data="list_gear_legendary_1")]
     ])
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -398,7 +409,7 @@ async def handle_search(message: types.Message, state: FSMContext):
         reply += "\n"
     if results["gear"]:
         reply += "<b>Снаряжение:</b>\n"
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
         for g in results["gear"]:
             reply += f"{g['emoji']} {escape_html(g['name'])} {rarity_emoji.get(g['rarity'], '')}\n"
         reply += "\n"
@@ -495,7 +506,12 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     rarity = parts[2]
     page = int(parts[3])
-    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
+    rarity_names = {
+        "common": "Обычное",
+        "rare": "Редкое",
+        "epic": "Сверхредкое",
+        "legendary": "Эпическая"
+    }
     rarity_name = rarity_names.get(rarity, rarity)
     keyboard = await get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ <b>Снаряжение — {rarity_name}</b>\nСтраница {page}"
