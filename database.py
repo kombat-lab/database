@@ -153,7 +153,10 @@ class Database:
                  WHERE d.mob_id = m.id AND d.item_type = 'resource') as resource_drops,
                 (SELECT GROUP_CONCAT(item_id || '|' || g.name || '|' || g.emoji || '|' || g.slot || '|' || g.rarity)
                  FROM drops d JOIN gear g ON d.item_id = g.id
-                 WHERE d.mob_id = m.id AND d.item_type = 'gear') as gear_drops
+                 WHERE d.mob_id = m.id AND d.item_type = 'gear') as gear_drops,
+                (SELECT GROUP_CONCAT(item_id || '|' || c.name || '|' || c.emoji || '|' || c.slot)
+                 FROM drops d JOIN cards c ON d.item_id = c.id
+                 WHERE d.mob_id = m.id AND d.item_type = 'card') as card_drops
             FROM mobs m
             JOIN locations l ON m.location_id = l.id
             WHERE m.id = ?
@@ -164,6 +167,7 @@ class Database:
         row = res[0]
         row["resource_drops"] = [self._parse_drop_item(s) for s in (row["resource_drops"].split(",") if row["resource_drops"] else [])]
         row["gear_drops"] = [self._parse_drop_item(s, gear=True) for s in (row["gear_drops"].split(",") if row["gear_drops"] else [])]
+        row["card_drops"] = [self._parse_drop_item(s, card=True) for s in (row["card_drops"].split(",") if row["card_drops"] else [])]
         return row
 
     async def get_mobs_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
@@ -612,7 +616,7 @@ class Database:
 
     # ========== ПАРСЕРЫ ==========
     @staticmethod
-    def _parse_drop_item(s: str, gear: bool = False) -> Dict:
+    def _parse_drop_item(s: str, gear: bool = False, card: bool = False) -> Dict:
         parts = s.split("|")
         if gear:
             if len(parts) >= 5:
@@ -625,6 +629,13 @@ class Database:
                 }
             else:
                 return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3], "rarity": "common"}
+        elif card:
+            return {
+                "id": int(parts[0]),
+                "name": parts[1],
+                "emoji": parts[2],
+                "slot": parts[3] if len(parts) > 3 else "?"
+            }
         else:
             return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
 
