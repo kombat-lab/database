@@ -243,7 +243,7 @@ async def show_cards_list(target, page: int):
 
     keyboard = []
     for card in cards:
-        text = f"🃏 {card['emoji']} {card['name']} (слот: {card['slot']})"
+        text = f"🃏{card['emoji']} {card['name']} (слот: {card['slot']})"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
 
     nav = []
