@@ -74,7 +74,7 @@ async def format_resource_card(resource_id: int) -> str:
         text += "<b>Падает с мобов:</b>\n"
         for m in data['mobs']:
             loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
+            text += f"{m['emoji']} {escape_html(m['name'])} {loc_str}\n"
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>"
 
