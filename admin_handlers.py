@@ -456,7 +456,7 @@ async def card_add_emoji(message: types.Message, state: FSMContext):
     await message.answer("Введите эмодзи:")
     await state.set_state(CardAddStates.emoji)
 
-@admin_router.callback_query(CardAddStates.emoji, F.text)
+@admin_router.message(CardAddStates.emoji, F.text)
 async def card_add_emoji_input(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
