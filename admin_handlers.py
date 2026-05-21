@@ -172,7 +172,7 @@ ENTITY_CONFIGS['gear'] = {
     ],
     'integer_fields': [],
     'select_options': {
-        'rarity': ['common', 'rare', 'epic'],
+        'rarity': ['common', 'rare', 'epic', 'legendary'],
         'slot': ['шлем', 'плечи', 'тело', 'плащ', 'пояс', 'штаны', 'ботинки', 'перчатки',
                  'кольцо 1', 'кольцо 2', 'амул', 'серьга 1', 'серьга 2', 'основная рука', 'вторая рука']
     },
@@ -180,7 +180,8 @@ ENTITY_CONFIGS['gear'] = {
         'rarity': {
             'common': '⚪ Обычное',
             'rare': '🟢 Редкое',
-            'epic': '🔵 Сверхредкое'
+            'epic': '🔵 Сверхредкое',
+            'legendary': '🟣 Эпическая'
         },
         'slot': {
             'шлем': '🪖 Шлем',
@@ -334,8 +335,7 @@ async def resource_save(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)  # FIXED: теперь render_entity_list адаптирован? Нет, это вызовет ошибку, но message не поддерживается. Лучше заменить на отправку сообщения. Однако в коде render_entity_list используется только в callback-контексте. Переделаем на прямую отправку.
-    # Временно: просто покажем главное меню
+    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
@@ -383,7 +383,8 @@ async def gear_add_rarity(message: types.Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚪ Обычное (common)", callback_data="rarity_common")],
         [InlineKeyboardButton(text="🟢 Редкое (rare)", callback_data="rarity_rare")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое (epic)", callback_data="rarity_epic")]
+        [InlineKeyboardButton(text="🔵 Сверхредкое (epic)", callback_data="rarity_epic")],
+        [InlineKeyboardButton(text="🟣 Эпическая (legendary)", callback_data="rarity_legendary")]
     ])
     await message.answer("Выберите редкость:", reply_markup=keyboard)
     await state.set_state(GearAddStates.rarity)
