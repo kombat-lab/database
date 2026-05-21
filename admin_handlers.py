@@ -720,54 +720,40 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
 
 # ------------------- Управление дропом (с поддержкой карт) -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
-    from admin_utils import ADMIN_ITEMS_PER_PAGE
+    from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
-    items = []
-    has_next = False
-
-    try:
-        if category == 'resource':
-            items = await db.get_resources_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
-            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-            items = items[:ADMIN_ITEMS_PER_PAGE]
-        elif category == 'gear':
-            items = await db.execute_query(
-                "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
-                (ADMIN_ITEMS_PER_PAGE + 1, offset)
-            )
-            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-            items = items[:ADMIN_ITEMS_PER_PAGE]
-        elif category == 'card':
-            items = await db.execute_query(
-                "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
-                (ADMIN_ITEMS_PER_PAGE + 1, offset)
-            )
-            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-            items = items[:ADMIN_ITEMS_PER_PAGE]
-        else:
-            return InlineKeyboardMarkup(inline_keyboard=[])
-    except Exception as e:
-        logger.error(f"Ошибка загрузки списка дропа для {category}: {e}")
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Ошибка загрузки", callback_data="admin_cancel_edit")],
-            [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_drop_categories")]
-        ])
+    if category == 'resource':
+        items = await db.get_resources_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
+        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+        items = items[:ADMIN_ITEMS_PER_PAGE]
+    elif category == 'gear':
+        items = await db.execute_query(
+            "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
+            (ADMIN_ITEMS_PER_PAGE + 1, offset)
+        )
+        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+        items = items[:ADMIN_ITEMS_PER_PAGE]
+    elif category == 'card':
+        items = await db.execute_query(
+            "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
+            (ADMIN_ITEMS_PER_PAGE + 1, offset)
+        )
+        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+        items = items[:ADMIN_ITEMS_PER_PAGE]
+    else:
+        return InlineKeyboardMarkup(inline_keyboard=[])
 
     keyboard = []
     for item in items:
-        try:
-            has_drop = await db.get_drop_status(mob_id, category, item['id'])
-            status = "✅" if has_drop else "❌"
-            text = f"{status} {item.get('emoji', '')} {item['name']}"
-            if category == 'gear' and 'slot' in item:
-                text += f" ({item['slot']})"
-            elif category == 'card' and 'slot' in item:
-                text += f" (слот: {item['slot']})"
-            callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
-            keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
-        except Exception as e:
-            logger.error(f"Ошибка получения статуса дропа для {category} ID {item['id']}: {e}")
-            continue
+        has_drop = await db.get_drop_status(mob_id, category, item['id'])
+        status = "✅" if has_drop else "❌"
+        text = f"{status} {item.get('emoji', '')} {item['name']}"
+        if category == 'gear' and 'slot' in item:
+            text += f" ({item['slot']})"
+        elif category == 'card' and 'slot' in item:
+            text += f" (слот: {item['slot']})"
+        callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
+        keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
     nav = []
     if page > 1:
@@ -791,7 +777,6 @@ async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
     await state.set_state(MobStates.drop_category)
-    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_category, F.data == "back_to_mob_list")
 async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, state: FSMContext):
@@ -834,15 +819,12 @@ async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, sta
 
 @admin_router.callback_query(MobStates.drop_category, F.data.startswith("drop_category_"))
 async def show_drop_list(callback: types.CallbackQuery, state: FSMContext):
-    category = callback.data.split("_")[2]   # resource, gear, card
+    category = callback.data.split("_")[2]
     data = await state.get_data()
     mob_id = data.get('mob_id')
     if not mob_id:
-        await callback.answer("❌ Ошибка: моб не найден. Начните редактирование заново.", show_alert=True)
-        await state.clear()
-        await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+        await callback.answer("❌ Ошибка: моб не найден", show_alert=True)
         return
-
     keyboard = await get_drop_list_keyboard(mob_id, category, 1)
     await callback.message.edit_text(
         f"Управление дропом: {category}\n✅ - падает, ❌ - не падает",
@@ -850,7 +832,6 @@ async def show_drop_list(callback: types.CallbackQuery, state: FSMContext):
     )
     await state.update_data(drop_category=category, drop_page=1)
     await state.set_state(MobStates.drop_list_page)
-    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_page_"))
 async def drop_page(callback: types.CallbackQuery, state: FSMContext):
@@ -866,8 +847,7 @@ async def drop_page(callback: types.CallbackQuery, state: FSMContext):
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_toggle_"))
 async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
-    # формат: drop_toggle_{category}_{item_id}_{page}
-    category = parts[2]
+    category = parts[2]          # resource / gear / card
     item_id = int(parts[3])
     page = int(parts[4])
 
@@ -877,22 +857,16 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("❌ Ошибка: моб не найден", show_alert=True)
         return
 
-    try:
-        has_drop = await db.get_drop_status(mob_id, category, item_id)
-        if has_drop:
-            await db.remove_drop(mob_id, category, item_id)
-            await callback.answer("✅ Дроп убран", show_alert=False)
-        else:
-            await db.add_drop(mob_id, category, item_id)
-            await callback.answer("✅ Дроп добавлен", show_alert=False)
-    except Exception as e:
-        logger.error(f"Ошибка переключения дропа: {e}")
-        await callback.answer(f"❌ Ошибка: {e}", show_alert=True)
-        return
+    has_drop = await db.get_drop_status(mob_id, category, item_id)
+    if has_drop:
+        await db.remove_drop(mob_id, category, item_id)
+        await callback.answer("❌ Дроп убран", show_alert=False)
+    else:
+        await db.add_drop(mob_id, category, item_id)
+        await callback.answer("✅ Дроп добавлен", show_alert=False)
 
-    # Получаем обновлённую клавиатуру
+    # Обновляем только клавиатуру, текст не трогаем
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
-    # Обновляем только клавиатуру, текст оставляем прежним
     await callback.message.edit_reply_markup(reply_markup=keyboard)
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data == "back_to_drop_categories")
