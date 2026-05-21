@@ -502,15 +502,6 @@ class Database:
         )
         return {'ingredients': ingredients}
 
-    async def get_craftable_resources(self) -> List[Dict]:
-        query = """
-            SELECT DISTINCT r.id, r.name, r.emoji, r.type
-            FROM resources r
-            JOIN recipes rc ON rc.result_type = 'resource' AND rc.result_id = r.id
-            ORDER BY r.id
-        """
-        return await self.execute_query(query)
-
     # ========== ДРОПЫ ==========
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
         res = await self.execute_query(
