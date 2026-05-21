@@ -140,8 +140,8 @@ async def format_card_card(card_id: int) -> str:
     card = await db.get_card_by_id(card_id)
     if not card:
         return "Карта не найдена."
-    text = f"{card['emoji']} <b>{escape_html(card['name'])}</b>\n"
-    text += f"🔧 Слот: {card['slot']}\n"
+    text = f"🃏 {card['emoji']} <b>{escape_html(card['name'])}</b>\n"
+    text += f"🔧 Слот: {card['slot']}\n\n"   # добавлен отступ
     bonuses = []
     for i in range(1, 5):
         bonus = card.get(f'bonus{i}', '')
@@ -243,7 +243,7 @@ async def show_cards_list(target, page: int):
 
     keyboard = []
     for card in cards:
-        text = f"{card['emoji']} {card['name']} (слот: {card['slot']})"
+        text = f"🃏 {card['emoji']} {card['name']} (слот: {card['slot']})"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
 
     nav = []
