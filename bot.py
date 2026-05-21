@@ -739,16 +739,19 @@ async def view_resource_by_type(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
-    await callback.message.delete()
+    # FIXED: сначала отправляем новое сообщение, потом удаляем старое
     await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
+    await callback.message.delete()
     await callback.answer()
 
 # ---------- Запуск ----------
 async def main():
     await db.connect()
     dp.include_router(admin_router)
-    await dp.start_polling(bot, skip_updates=True)
-    await db.close()
+    try:
+        await dp.start_polling(bot, skip_updates=True)
+    finally:
+        await db.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
