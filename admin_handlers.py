@@ -885,13 +885,11 @@ async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMConte
     data = await state.get_data()
     mob_id = data.get('mob_id')
     if not mob_id:
-        await callback.answer("Ошибка: моб не найден", show_alert=True)
+        await callback.answer("❌ Моб не найден", show_alert=True)
         return
-
-    # Показываем меню выбора категорий для этого моба
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
-        [InlineKeyboardButton(text="⚔️ Экипировка (common/rare)", callback_data="drop_category_gear")],
+        [InlineKeyboardButton(text="⚔️ Экипировка", callback_data="drop_category_gear")],
         [InlineKeyboardButton(text="🃏 Карты", callback_data="drop_category_card")],
         [InlineKeyboardButton(text="🔙 Назад к мобу", callback_data="back_to_mob_list")]
     ])
