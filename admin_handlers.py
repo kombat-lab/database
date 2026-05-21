@@ -769,11 +769,17 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
 
 @admin_router.callback_query(MobStates.edit_field, F.data == "mob_drop_menu")
 async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await callback.answer("Ошибка: моб не найден", show_alert=True)
+        return
+    await state.update_data(mob_id=mob_id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
         [InlineKeyboardButton(text="⚔️ Экипировка (common/rare)", callback_data="drop_category_gear")],
         [InlineKeyboardButton(text="🃏 Карты", callback_data="drop_category_card")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_mob_list")]
+        [InlineKeyboardButton(text="🔙 Назад к мобу", callback_data="back_to_mob_list")]
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
     await state.set_state(MobStates.drop_category)
@@ -873,6 +879,25 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
     # Обновляем клавиатуру
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
+
+@admin_router.callback_query(MobStates.drop_list_page, F.data == "back_to_drop_categories")
+async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await callback.answer("Ошибка: моб не найден", show_alert=True)
+        return
+
+    # Показываем меню выбора категорий для этого моба
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
+        [InlineKeyboardButton(text="⚔️ Экипировка (common/rare)", callback_data="drop_category_gear")],
+        [InlineKeyboardButton(text="🃏 Карты", callback_data="drop_category_card")],
+        [InlineKeyboardButton(text="🔙 Назад к мобу", callback_data="back_to_mob_list")]
+    ])
+    await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
+    await state.set_state(MobStates.drop_category)
+    await callback.answer()
 
 # ---------- Добавление моба ----------
 @admin_router.callback_query(F.data == "admin_add_mob")
