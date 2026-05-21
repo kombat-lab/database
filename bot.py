@@ -75,6 +75,25 @@ async def format_resource_card(resource_id: int) -> str:
             text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>"
+
+    # Добавляем рецепт крафта, если он существует
+    recipe = await db.get_recipe_for_resource(resource_id)
+    if recipe and recipe['ingredients']:
+        text += "\n\n⚗️ <b>Крафт:</b>\n"
+        dust = None
+        other = []
+        for ing in recipe['ingredients']:
+            if ing['resource_id'] == 71:  # 71 — это пыль (можно вынести в константу)
+                dust = ing
+            else:
+                other.append(ing)
+        if dust:
+            text += f"✨ Пыль — {dust['quantity']} шт.\n"
+        for ing in other:
+            text += f"{ing['emoji']} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
+        text += "\n🏛 <b>Где крафтить:</b>\n"
+        text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+
     return text
 
 async def format_gear_card(gear_id: int) -> str:
