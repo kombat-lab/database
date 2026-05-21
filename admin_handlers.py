@@ -722,37 +722,55 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
     from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
-    if category == 'resource':
-        items = await db.get_resources_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
-        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-        items = items[:ADMIN_ITEMS_PER_PAGE]
-    elif category == 'gear':
-        items = await db.execute_query(
-            "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
-            (ADMIN_ITEMS_PER_PAGE + 1, offset)
-        )
-        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-        items = items[:ADMIN_ITEMS_PER_PAGE]
-    elif category == 'card':
-        items = await db.execute_query(
-            "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
-            (ADMIN_ITEMS_PER_PAGE + 1, offset)
-        )
-        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
-        items = items[:ADMIN_ITEMS_PER_PAGE]
-    else:
-        return InlineKeyboardMarkup(inline_keyboard=[])
+    items = []
+    has_next = False
+
+    try:
+        if category == 'resource':
+            items = await db.get_resources_page(offset, ADMIN_ITEMS_PER_PAGE + 1)
+            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+            items = items[:ADMIN_ITEMS_PER_PAGE]
+        elif category == 'gear':
+            items = await db.execute_query(
+                "SELECT id, name, emoji, slot FROM gear WHERE rarity IN ('common', 'rare') ORDER BY id LIMIT ? OFFSET ?",
+                (ADMIN_ITEMS_PER_PAGE + 1, offset)
+            )
+            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+            items = items[:ADMIN_ITEMS_PER_PAGE]
+        elif category == 'card':
+            items = await db.execute_query(
+                "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
+                (ADMIN_ITEMS_PER_PAGE + 1, offset)
+            )
+            has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+            items = items[:ADMIN_ITEMS_PER_PAGE]
+        else:
+            return InlineKeyboardMarkup(inline_keyboard=[])
+    except Exception as e:
+        logger.error(f"Ошибка загрузки списка дропа для {category}: {e}")
+        # Возвращаем клавиатуру с сообщением об ошибке
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Ошибка загрузки", callback_data="admin_cancel_edit")],
+            [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_drop_categories")]
+        ])
+        return keyboard
+
     keyboard = []
     for item in items:
-        has_drop = await db.get_drop_status(mob_id, category, item['id'])
-        status = "✅" if has_drop else "❌"
-        text = f"{status} {item.get('emoji', '')} {item['name']}"
-        if category == 'gear' and 'slot' in item:
-            text += f" ({item['slot']})"
-        elif category == 'card' and 'slot' in item:
-            text += f" (слот: {item['slot']})"
-        callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
-        keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+        try:
+            has_drop = await db.get_drop_status(mob_id, category, item['id'])
+            status = "✅" if has_drop else "❌"
+            text = f"{status} {item.get('emoji', '')} {item['name']}"
+            if category == 'gear' and 'slot' in item:
+                text += f" ({item['slot']})"
+            elif category == 'card' and 'slot' in item:
+                text += f" (слот: {item['slot']})"
+            callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
+            keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+        except Exception as e:
+            logger.error(f"Ошибка получения статуса дропа для {category} ID {item['id']}: {e}")
+            continue
+
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"drop_page_{category}_{page-1}"))
@@ -760,6 +778,7 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"drop_page_{category}_{page+1}"))
     if nav:
         keyboard.append(nav)
+
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_drop_categories")])
     keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
