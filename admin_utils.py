@@ -51,9 +51,9 @@ def build_paginated_keyboard(items, page, has_next, item_callback_prefix, extra_
     
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"page_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_{page+1}"))
     if nav:
         keyboard.append(nav)
     
@@ -86,7 +86,7 @@ async def render_entity_list(callback: types.CallbackQuery, state: FSMContext, e
         extra_buttons=extra
     )
     await callback.message.edit_text(entity_config['list_title'], reply_markup=keyboard)
-    await state.update_data(editing_entity=entity_config['name'], current_page=page)  # FIXED: единый ключ
+    await state.update_data(editing_entity=entity_config['name'], current_page=page)
     await state.set_state(entity_config['list_state'])
     await callback.answer()
 
