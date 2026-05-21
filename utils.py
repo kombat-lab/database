@@ -1,4 +1,5 @@
 import html
+import re
 
 def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""
@@ -10,6 +11,12 @@ def escape_html(text: str) -> str:
 
 def is_valid_emoji(s: str) -> bool:
     """
-    Проверяет, что строка не пустая (разрешает любые символы, включая составные эмодзи).
+    Проверяет, что строка не пустая и содержит хотя бы один символ,
+    который не является буквой или цифрой (простейшая проверка на эмодзи).
     """
-    return bool(s and s.strip())
+    if not s or not s.strip():
+        return False
+    # Убираем вариант с одним символом, который является буквой/цифрой
+    if len(s) == 1 and s.isalnum():
+        return False
+    return True
