@@ -748,9 +748,9 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         has_drop = await db.get_drop_status(mob_id, category, item['id'])
         status = "✅" if has_drop else "❌"
         text = f"{status} {item.get('emoji', '')} {item['name']}"
-        if category == 'gear' and 'slot' in item:
+        if category == 'gear' and item.get('slot'):
             text += f" ({item['slot']})"
-        elif category == 'card' and 'slot' in item:
+        elif category == 'card' and item.get('slot'):
             text += f" (слот: {item['slot']})"
         callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
