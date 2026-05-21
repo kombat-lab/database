@@ -24,6 +24,7 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
         [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
         [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
+        [InlineKeyboardButton(text="🃏 Управление картами", callback_data="admin_manage_cards")],
         [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
     ]
@@ -146,9 +147,8 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await state.update_data(edit_field=field)
             await state.set_state(GenericEditStates.select_option)
         else:
-            # Обычный текстовый ввод
             await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
-            await state.update_data(edit_field=field)   # <-- ИСПРАВЛЕНО
+            await state.update_data(edit_field=field)
             await state.set_state(GenericEditStates.new_value)
         await callback.answer()
 
