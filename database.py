@@ -248,8 +248,13 @@ class Database:
         )
 
     async def delete_resource(self, resource_id: int):
+        # Удаляем связи в дропах
         await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
+        # Удаляем как ингредиент в рецептах
         await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
+        # FIXED: удаляем рецепт, где ресурс является результатом
+        await self.execute_query("DELETE FROM recipes WHERE result_type='resource' AND result_id = ?", (resource_id,))
+        # Удаляем сам ресурс
         await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
@@ -540,6 +545,8 @@ class Database:
 
     async def delete_card(self, card_id: int):
         await self.execute_query("DELETE FROM drops WHERE item_type='card' AND item_id=?", (card_id,))
+        # FIXED: если в будущем появятся рецепты на карты, удалим и их
+        await self.execute_query("DELETE FROM recipes WHERE result_type='card' AND result_id=?", (card_id,))
         await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
 
     async def get_card_drop_mobs(self, card_id: int) -> List[Dict]:
