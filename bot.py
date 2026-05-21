@@ -150,8 +150,16 @@ async def format_card_card(card_id: int) -> str:
     card = await db.get_card_by_id(card_id)
     if not card:
         return "Карта не найдена."
+    slot_names = {
+        'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
+        'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
+        'кольцо 1': '💍 Кольцо 1', 'кольцо 2': '💍 Кольцо 2', 'амул': '📿 Амулет',
+        'серьга 1': '🧏‍♀️ Серьга 1', 'серьга 2': '🧏‍♀️ Серьга 2',
+        'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
+    }
+    slot_text = slot_names.get(card['slot'], card['slot'])
     text = f"🃏 {card['emoji']} <b>{escape_html(card['name'])}</b>\n"
-    text += f"🔧 Слот: {card['slot']}\n\n"   # добавлен отступ
+    text += f"🔧 Слот: {slot_text}\n\n"
     bonuses = []
     for i in range(1, 5):
         bonus = card.get(f'bonus{i}', '')
