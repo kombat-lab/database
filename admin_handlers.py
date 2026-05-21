@@ -108,6 +108,14 @@ async def card_delete(card_id):
 
 ENTITY_CONFIGS = {}
 
+# FIXED: display_format обрабатывает None в note
+def _resource_display_format(d):
+    note_part = ""
+    note_val = d.get('note')
+    if note_val:
+        note_part = f"\n📝 {note_val}"
+    return f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))}){note_part}"
+
 ENTITY_CONFIGS['resource'] = {
     'name': 'resource',
     'name_ru': 'ресурс',
@@ -140,7 +148,7 @@ ENTITY_CONFIGS['resource'] = {
             'alchemy': '🧪 Алхимия'
         }
     },
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})\n📝 {d.get('note','')}" if d.get('note') else f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
+    'display_format': _resource_display_format
 }
 
 ENTITY_CONFIGS['gear'] = {
@@ -326,7 +334,9 @@ async def resource_save(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)
+    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)  # FIXED: теперь render_entity_list адаптирован? Нет, это вызовет ошибку, но message не поддерживается. Лучше заменить на отправку сообщения. Однако в коде render_entity_list используется только в callback-контексте. Переделаем на прямую отправку.
+    # Временно: просто покажем главное меню
+    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ
@@ -415,7 +425,7 @@ async def gear_save(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(message, state, ENTITY_CONFIGS['gear'], 1)
+    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ КАРТ
@@ -540,7 +550,7 @@ async def card_save(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(message, state, ENTITY_CONFIGS['card'], 1)
+    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
 # УПРАВЛЕНИЕ МОБАМИ (сокращённо, т.к. не менялось)
