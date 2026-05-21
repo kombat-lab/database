@@ -214,33 +214,6 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def show_craft_resources_list(target, resources: list, page: int):
-    total = len(resources)
-    start = (page - 1) * ITEMS_PER_PAGE
-    end = start + ITEMS_PER_PAGE
-    page_items = resources[start:end]
-    has_next = end < total
-
-    keyboard = []
-    for res in page_items:
-        keyboard.append([InlineKeyboardButton(
-            text=f"{res['emoji']} {res['name']}",
-            callback_data=f"craft_resource_{res['id']}_{page}"
-        )])
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"craft_page_{page-1}"))
-    if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"craft_page_{page+1}"))
-    if nav:
-        keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")])
-
-    if isinstance(target, types.Message):
-        await target.answer("⚗️ Выберите ресурс для крафта:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    else:
-        await target.message.edit_text("⚗️ Выберите ресурс для крафта:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
 def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="📦 Крафтовые", callback_data="resource_cat_craft")],
@@ -583,35 +556,6 @@ async def view_gear(callback: types.CallbackQuery):
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
-
-# ---------- Крафт ----------
-@dp.callback_query(F.data.startswith("craft_page_"))
-async def craft_page_callback(callback: types.CallbackQuery):
-    page = int(callback.data.split("_")[2])
-    craftable_resources = await db.get_craftable_resources()
-    await show_craft_resources_list(callback, craftable_resources, page)
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("craft_resource_"))
-async def view_craft_resource(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    resource_id = int(parts[2])
-    page = int(parts[3])
-    text = await format_craft_resource_card(resource_id)
-    back_button = InlineKeyboardButton(
-        text="🔙 Назад к списку",
-        callback_data=f"craft_back_to_list_{page}"
-    )
-    keyboard = [[back_button]]
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("craft_back_to_list_"))
-async def craft_back_to_list(callback: types.CallbackQuery):
-    page = int(callback.data.split("_")[4])
-    craftable_resources = await db.get_craftable_resources()
-    await show_craft_resources_list(callback, craftable_resources, page)
     await callback.answer()
 
 # ---------- НОВЫЕ CALLBACK ДЛЯ РЕСУРСОВ ПО ТИПАМ (с навигацией prev/next) ----------
