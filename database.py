@@ -29,6 +29,10 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
+    
+        # Миграция: добавляем 'card' в CHECK constraint таблицы drops
+        await self._migrate_drops_check()
+    
         await self._ensure_indexes()
         await self._load_locations_cache()
         logger.info(f"Database connected: {DB_PATH}")
