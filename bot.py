@@ -60,12 +60,12 @@ async def format_resource_card(resource_id: int) -> str:
     if not data:
         return "Ресурс не найден."
     type_names = {
-        'craft': '📦 Крафтовый',
+        'craft': '⚒️ Крафтовый',
         'consumable': '✨ Расходуемый',
         'scroll_recipe': '📜 Рецепт экипировки',
         'scroll': '📜 Рецепт экипировки',
         'currency': '💰 Валюта',
-        'alchemy': '🧪 Алхимия'
+        'alchemy': '⚗️ Алхимия'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
@@ -80,7 +80,7 @@ async def format_resource_card(resource_id: int) -> str:
 
     recipe = await db.get_recipe_for_resource(resource_id)
     if recipe and recipe['ingredients']:
-        text += "\n\n⚗️ <b>Крафт:</b>\n"
+        text += "\n\n⚗️ <b>Алхимия:</b>\n"
         dust = None
         other = []
         for ing in recipe['ingredients']:
@@ -107,7 +107,7 @@ async def format_gear_card(gear_id: int) -> str:
         'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
         'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
         'кольцо 1': '💍 Кольцо 1', 'кольцо 2': '💍 Кольцо 2', 'амул': '📿 Амулет',
-        'серьга 1': '🧏‍♀️ Серьга 1', 'серьга 2': '🧏‍♀️ Серьга 2',
+        'серьга 1': '🖇️ Серьга 1', 'серьга 2': '🖇️ Серьга 2',
         'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
     }
     rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
@@ -159,18 +159,18 @@ async def format_card_card(card_id: int) -> str:
     }
     slot_text = slot_names.get(card['slot'], card['slot'])
     text = f"🃏 {card['emoji']} <b>{escape_html(card['name'])}</b>\n"
-    text += f"🔧 Слот: {slot_text}\n\n"
+    text += f"Слот: {slot_text}\n\n"
     bonuses = []
     for i in range(1, 5):
         bonus = card.get(f'bonus{i}', '')
         if bonus:
             bonuses.append(bonus)
     if bonuses:
-        text += "✨ <b>Бонусы:</b>\n"
+        text += "<b>Бонусы:</b>\n"
         for b in bonuses:
             text += f"   • {escape_html(b)}\n"
     if card.get('note'):
-        text += f"\n📌 <i>{escape_html(card['note'])}</i>\n"
+        text += f"\n📰 <i>{escape_html(card['note'])}</i>\n"
 
     mobs = await db.get_card_drop_mobs(card_id)
     if mobs:
@@ -179,7 +179,7 @@ async def format_card_card(card_id: int) -> str:
             loc_str = f"{m['location_emoji']} {escape_html(m['location_name'])}" if m.get('location_name') else ""
             text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
     else:
-        text += "\n<i>Нигде не падает (возможно, крафт или событие)</i>"
+        text += "\n<i>Нет информации</i>"
     return text
 
 # ---------- Клавиатуры ----------
@@ -286,7 +286,7 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📜 Рецепты экипировки", callback_data="resource_cat_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="resource_cat_currency")],
         [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="resource_cat_alchemy")],
-        [InlineKeyboardButton(text="🃏 Карты", callback_data="resource_cat_cards")],   # изменено
+        [InlineKeyboardButton(text="🃏 Карты", callback_data="resource_cat_cards")],
         [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -314,9 +314,9 @@ async def show_resources_by_type(target, resource_type: str, page: int):
 
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"res_page_{resource_type}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"res_page_{resource_type}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"res_page_{resource_type}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"res_page_{resource_type}_{page+1}"))
     if nav:
         keyboard.append(nav)
 
@@ -521,12 +521,12 @@ async def view_mob(callback: types.CallbackQuery):
     nav_buttons = []
     if prev_mob:
         nav_buttons.append(InlineKeyboardButton(
-            text="◀ Предыдущий",
+            text="◀️ Предыдущий",
             callback_data=f"view_mobs_{prev_mob[0]['id']}_{location_id}_{page}"
         ))
     if next_mob:
         nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶",
+            text="Следующий ▶️",
             callback_data=f"view_mobs_{next_mob[0]['id']}_{location_id}_{page}"
         ))
     back_button = InlineKeyboardButton(
@@ -573,12 +573,12 @@ async def view_resource(callback: types.CallbackQuery):
     nav_buttons = []
     if prev_res:
         nav_buttons.append(InlineKeyboardButton(
-            text="◀ Предыдущий",
+            text="◀️ Предыдущий",
             callback_data=f"view_resources_{prev_res[0]['id']}_{location_id}_{page}"
         ))
     if next_res:
         nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶",
+            text="Следующий ▶️",
             callback_data=f"view_resources_{next_res[0]['id']}_{location_id}_{page}"
         ))
     back_button = InlineKeyboardButton(
@@ -611,12 +611,12 @@ async def view_gear(callback: types.CallbackQuery):
     nav_buttons = []
     if prev_gear:
         nav_buttons.append(InlineKeyboardButton(
-            text="◀ Предыдущий",
+            text="◀️ Предыдущий",
             callback_data=f"view_gear_{prev_gear[0]['id']}_{rarity}_{page}"
         ))
     if next_gear:
         nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶",
+            text="Следующий ▶️",
             callback_data=f"view_gear_{next_gear[0]['id']}_{rarity}_{page}"
         ))
     back_button = InlineKeyboardButton(
@@ -650,12 +650,12 @@ async def view_card(callback: types.CallbackQuery):
     nav_buttons = []
     if prev_card:
         nav_buttons.append(InlineKeyboardButton(
-            text="◀ Предыдущая",
+            text="◀️ Предыдущая",
             callback_data=f"view_card_{prev_card[0]['id']}_{page}"
         ))
     if next_card:
         nav_buttons.append(InlineKeyboardButton(
-            text="Следующая ▶",
+            text="Следующая ▶️",
             callback_data=f"view_card_{next_card[0]['id']}_{page}"
         ))
 
@@ -706,12 +706,12 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
-            text="◀ Предыдущий",
+            text="◀️ Предыдущий",
             callback_data=f"view_resource_{neighbours['prev_id']}_{resource_type}_{page}"
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶",
+            text="Следующий ▶️",
             callback_data=f"view_resource_{neighbours['next_id']}_{resource_type}_{page}"
         ))
 
