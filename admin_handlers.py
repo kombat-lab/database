@@ -27,20 +27,31 @@ def is_admin(user_id: int) -> bool:
 
 admin_router = Router()
 
-# Регистрируем обработчики закрытия/отмены на роутере
 admin_router.callback_query(F.data == "admin_close")(admin_close)
 admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
 
 # ============================================================
-# КОНФИГУРАЦИИ СУЩНОСТЕЙ (ресурсы, снаряжение) – для универсального CRUD
+# КОНФИГУРАЦИИ СУЩНОСТЕЙ
 # ============================================================
 
-# Состояния для списков ресурсов и снаряжения
 class ResourceListStates(StatesGroup):
     list_page = State()
 
 class GearListStates(StatesGroup):
     list_page = State()
+
+class CardListStates(StatesGroup):
+    list_page = State()
+
+class CardAddStates(StatesGroup):
+    name = State()
+    emoji = State()
+    slot = State()
+    bonus1 = State()
+    bonus2 = State()
+    bonus3 = State()
+    bonus4 = State()
+    note = State()
 
 # --- Ресурсы ---
 async def resource_get_page(offset, limit):
@@ -61,6 +72,39 @@ async def resource_get_by_id(res_id):
 
 async def resource_delete(res_id):
     await db.delete_resource(res_id)
+
+# --- Снаряжение ---
+async def gear_get_page(offset, limit):
+    return await db.get_all_gear(offset, limit)
+
+async def gear_update_field(gear_id, field, value):
+    if field == 'name':
+        await db.update_gear(gear_id, name=value)
+    elif field == 'emoji':
+        await db.update_gear(gear_id, emoji=value)
+    elif field == 'rarity':
+        await db.update_gear(gear_id, rarity=value)
+    elif field == 'slot':
+        await db.update_gear(gear_id, slot=value)
+
+async def gear_get_by_id(gear_id):
+    return await db.get_gear_by_id(gear_id)
+
+async def gear_delete(gear_id):
+    await db.delete_gear(gear_id)
+
+# --- Карты ---
+async def card_get_page(offset, limit):
+    return await db.get_cards_page(offset, limit)
+
+async def card_update_field(card_id, field, value):
+    await db.update_card(card_id, **{field: value})
+
+async def card_get_by_id(card_id):
+    return await db.get_card_by_id(card_id)
+
+async def card_delete(card_id):
+    await db.delete_card(card_id)
 
 ENTITY_CONFIGS = {}
 
@@ -98,26 +142,6 @@ ENTITY_CONFIGS['resource'] = {
     },
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})\n📝 {d.get('note','')}" if d.get('note') else f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
 }
-
-# --- Снаряжение ---
-async def gear_get_page(offset, limit):
-    return await db.get_all_gear(offset, limit)
-
-async def gear_update_field(gear_id, field, value):
-    if field == 'name':
-        await db.update_gear(gear_id, name=value)
-    elif field == 'emoji':
-        await db.update_gear(gear_id, emoji=value)
-    elif field == 'rarity':
-        await db.update_gear(gear_id, rarity=value)
-    elif field == 'slot':
-        await db.update_gear(gear_id, slot=value)
-
-async def gear_get_by_id(gear_id):
-    return await db.get_gear_by_id(gear_id)
-
-async def gear_delete(gear_id):
-    await db.delete_gear(gear_id)
 
 ENTITY_CONFIGS['gear'] = {
     'name': 'gear',
@@ -162,6 +186,37 @@ ENTITY_CONFIGS['gear'] = {
         }
     },
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{ENTITY_CONFIGS['gear']['display_mapping']['rarity'].get(d.get('rarity','common'), d.get('rarity','common'))}]"
+}
+
+ENTITY_CONFIGS['card'] = {
+    'name': 'card',
+    'name_ru': 'карту',
+    'get_page_func': card_get_page,
+    'get_by_id_func': card_get_by_id,
+    'update_field_func': card_update_field,
+    'delete_func': card_delete,
+    'item_callback_prefix': 'card_edit',
+    'list_state': CardListStates.list_page,
+    'list_title': "🃏 Управление картами:\nВыберите карту для редактирования или добавьте новую:",
+    'add_button': True,
+    'add_button_text': "➕ Добавить карту",
+    'add_callback': "card_add_start",
+    'edit_fields': [
+        ('name', '✏️ Название'),
+        ('emoji', '😀 Эмодзи'),
+        ('slot', '🔧 Слот'),
+        ('bonus1', '✨ Бонус 1'),
+        ('bonus2', '✨ Бонус 2'),
+        ('bonus3', '✨ Бонус 3'),
+        ('bonus4', '✨ Бонус 4'),
+        ('note', '📝 Примечание')
+    ],
+    'integer_fields': [],
+    'select_options': {
+        'slot': ['тело', 'перчатки', 'оружие', 'голова', 'ноги', 'спина', 'аксессуар', 'пояс']
+    },
+    'display_mapping': {},
+    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (слот: {d.get('slot','?')})"
 }
 
 # ============================================================
@@ -221,7 +276,7 @@ async def resource_add_emoji_input(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="✨ Расходуемый", callback_data="res_type_consumable")],
         [InlineKeyboardButton(text="📜 Рецепт экипировки", callback_data="res_type_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="res_type_currency")],
-        [InlineKeyboardButton(text="🧪 Алхимия", callback_data="res_type_alchemy")]   # добавлено
+        [InlineKeyboardButton(text="🧪 Алхимия", callback_data="res_type_alchemy")]
     ])
     await message.answer("Выберите тип ресурса:", reply_markup=keyboard)
     await state.set_state(ResourceAddStates.type)
@@ -343,7 +398,128 @@ async def gear_save(message: types.Message, state: FSMContext):
     await render_entity_list(message, state, ENTITY_CONFIGS['gear'], 1)
 
 # ============================================================
-# УПРАВЛЕНИЕ МОБАМИ
+# ОБРАБОТЧИКИ ДЛЯ КАРТ
+# ============================================================
+
+@admin_router.callback_query(F.data == "admin_manage_cards")
+async def manage_cards(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await render_entity_list(callback, state, ENTITY_CONFIGS['card'], 1)
+
+@admin_router.callback_query(CardListStates.list_page, F.data.startswith("card_edit_"))
+async def card_edit_item(callback: types.CallbackQuery, state: FSMContext):
+    card_id = int(callback.data.split("_")[2])
+    card = await db.get_card_by_id(card_id)
+    if not card:
+        await callback.message.edit_text("Карта не найдена.")
+        await callback.answer()
+        return
+    await show_edit_menu(callback, state, card_id, ENTITY_CONFIGS['card'], card)
+
+@admin_router.callback_query(CardListStates.list_page, F.data.startswith("page_"))
+async def card_page_nav(callback: types.CallbackQuery, state: FSMContext):
+    page = int(callback.data.split("_")[1])
+    await render_entity_list(callback, state, ENTITY_CONFIGS['card'], page)
+
+@admin_router.callback_query(CardListStates.list_page, F.data == "card_add_start")
+async def card_add_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите название карты:")
+    await state.set_state(CardAddStates.name)
+
+@admin_router.message(CardAddStates.name, F.text)
+async def card_add_emoji(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if not name:
+        await message.answer("Название не может быть пустым.")
+        return
+    await state.update_data(card_name=name)
+    await message.answer("Введите эмодзи:")
+    await state.set_state(CardAddStates.emoji)
+
+@admin_router.message(CardAddStates.emoji, F.text)
+async def card_add_emoji_input(message: types.Message, state: FSMContext):
+    emoji = message.text.strip()
+    if not is_valid_emoji(emoji):
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
+        return
+    await state.update_data(card_emoji=emoji)
+    slots = [
+        ("тело", "🦺 Тело"), ("перчатки", "🧤 Перчатки"), ("оружие", "🗡 Оружие"),
+        ("голова", "🪖 Голова"), ("ноги", "🩳 Ноги"), ("спина", "🧣 Спина"),
+        ("аксессуар", "📖 Аксессуар"), ("пояс", "⛓ Пояс")
+    ]
+    keyboard = [[InlineKeyboardButton(text=label, callback_data=f"card_slot_{name}")] for name, label in slots]
+    await message.answer("Выберите слот:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await state.set_state(CardAddStates.slot)
+
+@admin_router.callback_query(CardAddStates.slot, F.data.startswith("card_slot_"))
+async def card_add_bonus1(callback: types.CallbackQuery, state: FSMContext):
+    slot = callback.data.split("_")[2]
+    await state.update_data(card_slot=slot)
+    await callback.message.edit_text("Введите первый бонус (например: «Удача +2»):\nЕсли не нужно, отправьте «-».")
+    await state.set_state(CardAddStates.bonus1)
+
+@admin_router.message(CardAddStates.bonus1, F.text)
+async def card_add_bonus2(message: types.Message, state: FSMContext):
+    bonus1 = message.text.strip()
+    if bonus1 == "-":
+        bonus1 = ""
+    await state.update_data(card_bonus1=bonus1)
+    await message.answer("Введите второй бонус (или «-»):")
+    await state.set_state(CardAddStates.bonus2)
+
+@admin_router.message(CardAddStates.bonus2, F.text)
+async def card_add_bonus3(message: types.Message, state: FSMContext):
+    bonus2 = message.text.strip()
+    if bonus2 == "-":
+        bonus2 = ""
+    await state.update_data(card_bonus2=bonus2)
+    await message.answer("Введите третий бонус (или «-»):")
+    await state.set_state(CardAddStates.bonus3)
+
+@admin_router.message(CardAddStates.bonus3, F.text)
+async def card_add_bonus4(message: types.Message, state: FSMContext):
+    bonus3 = message.text.strip()
+    if bonus3 == "-":
+        bonus3 = ""
+    await state.update_data(card_bonus3=bonus3)
+    await message.answer("Введите четвёртый бонус (или «-»):")
+    await state.set_state(CardAddStates.bonus4)
+
+@admin_router.message(CardAddStates.bonus4, F.text)
+async def card_add_note(message: types.Message, state: FSMContext):
+    bonus4 = message.text.strip()
+    if bonus4 == "-":
+        bonus4 = ""
+    await state.update_data(card_bonus4=bonus4)
+    await message.answer("Введите примечание (или «-»):")
+    await state.set_state(CardAddStates.note)
+
+@admin_router.message(CardAddStates.note, F.text)
+async def card_save(message: types.Message, state: FSMContext):
+    note = message.text.strip()
+    if note == "-":
+        note = ""
+    data = await state.get_data()
+    try:
+        await db.add_card(
+            name=data['card_name'],
+            emoji=data['card_emoji'],
+            slot=data['card_slot'],
+            bonus1=data.get('card_bonus1', ''),
+            bonus2=data.get('card_bonus2', ''),
+            bonus3=data.get('card_bonus3', ''),
+            bonus4=data.get('card_bonus4', ''),
+            note=note
+        )
+        await message.answer("✅ Карта добавлена.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+    await state.clear()
+    await render_entity_list(message, state, ENTITY_CONFIGS['card'], 1)
+
+# ============================================================
+# УПРАВЛЕНИЕ МОБАМИ (сокращённо, т.к. не менялось)
 # ============================================================
 
 class MobStates(StatesGroup):
@@ -542,7 +718,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
 
-# ------------------- Управление дропом -------------------
+# ------------------- Управление дропом (с поддержкой карт) -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
     from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
@@ -557,6 +733,13 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         )
         has_next = len(items) > ADMIN_ITEMS_PER_PAGE
         items = items[:ADMIN_ITEMS_PER_PAGE]
+    elif category == 'card':
+        items = await db.execute_query(
+            "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
+            (ADMIN_ITEMS_PER_PAGE + 1, offset)
+        )
+        has_next = len(items) > ADMIN_ITEMS_PER_PAGE
+        items = items[:ADMIN_ITEMS_PER_PAGE]
     else:
         return InlineKeyboardMarkup(inline_keyboard=[])
     keyboard = []
@@ -566,6 +749,8 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
         text = f"{status} {item.get('emoji', '')} {item['name']}"
         if category == 'gear' and 'slot' in item:
             text += f" ({item['slot']})"
+        elif category == 'card' and 'slot' in item:
+            text += f" (слот: {item['slot']})"
         callback_data = f"drop_toggle_{category}_{item['id']}_{page}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
     nav = []
@@ -584,6 +769,7 @@ async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
         [InlineKeyboardButton(text="⚔️ Экипировка (common/rare)", callback_data="drop_category_gear")],
+        [InlineKeyboardButton(text="🃏 Карты", callback_data="drop_category_card")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_mob_list")]
     ])
     await callback.message.edit_text("Выберите категорию дропа:", reply_markup=keyboard)
@@ -771,7 +957,7 @@ async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
     await callback.answer()
 
-# ---------- Удаление моба (через отдельный пункт меню) ----------
+# ---------- Удаление моба ----------
 class DeleteMobStates(StatesGroup):
     select = State()
     confirm = State()
@@ -828,7 +1014,7 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# УПРАВЛЕНИЕ РЕЦЕПТАМИ
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ (с учётом owner только для gear)
 # ============================================================
 
 class RecipeStates(StatesGroup):
@@ -915,7 +1101,6 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
     if not recipe['ingredients']:
         text += "<i>Нет ингредиентов</i>\n"
 
-    # Блок владельцев показываем только для снаряжения
     if recipe['result_type'] == 'gear':
         text += "\n👥 <b>Владельцы:</b>\n"
         for owner in recipe['owners']:
@@ -923,7 +1108,6 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
         if not recipe['owners']:
             text += "<i>Нет владельцев</i>\n"
 
-    # Кнопки
     keyboard = []
     if recipe['result_type'] == 'gear':
         keyboard.append([InlineKeyboardButton(text="👤 Добавить владельца", callback_data="recipe_add_owner")])
@@ -1182,7 +1366,7 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     await state.set_state(RecipeStates.list_page)
 
 # ============================================================
-# Регистрация универсальных обработчиков (CRUD для ресурсов и снаряжения)
+# Регистрация универсальных обработчиков (CRUD)
 # ============================================================
 register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
 
