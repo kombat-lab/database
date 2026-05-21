@@ -85,14 +85,15 @@ ENTITY_CONFIGS['resource'] = {
     ],
     'integer_fields': [],
     'select_options': {
-        'type': ['craft', 'consumable', 'scroll_recipe', 'currency']
+        'type': ['craft', 'consumable', 'scroll_recipe', 'currency', 'alchemy']
     },
     'display_mapping': {
         'type': {
             'craft': '📦 Крафтовый',
             'consumable': '✨ Расходуемый',
             'scroll_recipe': '📜 Рецепт экипировки',
-            'currency': '💰 Валюта'
+            'currency': '💰 Валюта',
+            'alchemy': '🧪 Алхимия'
         }
     },
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})\n📝 {d.get('note','')}" if d.get('note') else f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))})"
@@ -219,14 +220,21 @@ async def resource_add_emoji_input(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="📦 Для крафта", callback_data="res_type_craft")],
         [InlineKeyboardButton(text="✨ Расходуемый", callback_data="res_type_consumable")],
         [InlineKeyboardButton(text="📜 Рецепт экипировки", callback_data="res_type_scroll_recipe")],
-        [InlineKeyboardButton(text="💰 Валюта", callback_data="res_type_currency")]
+        [InlineKeyboardButton(text="💰 Валюта", callback_data="res_type_currency")],
+        [InlineKeyboardButton(text="🧪 Алхимия", callback_data="res_type_alchemy")]   # добавлено
     ])
     await message.answer("Выберите тип ресурса:", reply_markup=keyboard)
     await state.set_state(ResourceAddStates.type)
 
 @admin_router.callback_query(ResourceAddStates.type, F.data.startswith("res_type_"))
 async def resource_add_note(callback: types.CallbackQuery, state: FSMContext):
-    type_map = {"craft": "craft", "consumable": "consumable", "scroll_recipe": "scroll_recipe", "currency": "currency"}
+    type_map = {
+        "craft": "craft",
+        "consumable": "consumable",
+        "scroll_recipe": "scroll_recipe",
+        "currency": "currency",
+        "alchemy": "alchemy"
+    }
     resource_type = type_map.get(callback.data.split("_")[2], "craft")
     await state.update_data(res_type=resource_type)
     await callback.message.edit_text(
