@@ -62,7 +62,8 @@ async def format_resource_card(resource_id: int) -> str:
         'consumable': '✨ Расходуемый',
         'scroll_recipe': '📜 Рецепт экипировки',
         'scroll': '📜 Рецепт экипировки',
-        'currency': '💰 Валюта'
+        'currency': '💰 Валюта',
+        'alchemy': '🧪 Алхимия'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
@@ -263,7 +264,8 @@ async def show_resources_by_type(target, resource_type: str, page: int):
         'craft': 'Крафтовые',
         'consumable': 'Расходуемые',
         'scroll_recipe': 'Рецепты экипировки',
-        'currency': 'Валюта'
+        'currency': 'Валюта',
+        'alchemy': 'Алхимия'
     }
     type_display = type_names.get(resource_type, resource_type)
 
@@ -324,12 +326,8 @@ async def search_button(message: types.Message):
 
 @dp.callback_query(F.data == "resource_cat_alchemy")
 async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext):
-    """Показывает список крафтовых ресурсов (бывший раздел Алхимия)"""
-    craftable_resources = await db.get_craftable_resources()
-    if not craftable_resources:
-        await callback.message.edit_text("Пока нет доступных рецептов крафта ресурсов.")
-        return
-    await show_craft_resources_list(callback, craftable_resources, 1)
+    """Показывает ресурсы типа 'alchemy' (алхимия)"""
+    await show_resources_by_type(callback, 'alchemy', 1)
     await callback.answer()
 
 @dp.callback_query(F.data == "resource_cat_maps")
