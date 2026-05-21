@@ -44,6 +44,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_recipes_result ON recipes(result_type, result_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipe_owners_recipe ON recipe_owners(recipe_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)",
         ]
         for sql in indexes:
             await self._conn.execute(sql)
@@ -99,7 +100,7 @@ class Database:
     # ========== ПОИСК ==========
     async def search(self, query: str) -> Dict[str, List[Dict]]:
         like_pattern = f"%{query}%"
-        results = {"mobs": [], "resources": [], "gear": []}
+        results = {"mobs": [], "resources": [], "gear": [], "cards": []}
 
         mobs = await self.execute_query("""
             SELECT m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp,
@@ -129,6 +130,15 @@ class Database:
             LIMIT 50
         """, (like_pattern,))
         results["gear"] = gear
+
+        cards = await self.execute_query("""
+            SELECT id, name, emoji, slot
+            FROM cards
+            WHERE LOWER_UNICODE(name) LIKE LOWER_UNICODE(?)
+            ORDER BY id
+            LIMIT 50
+        """, (like_pattern,))
+        results["cards"] = cards
 
         return results
 
@@ -174,7 +184,6 @@ class Database:
 
     # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
-        """Возвращает карточку ресурса с мобами, включая локацию каждого моба."""
         query = """
             SELECT r.id, r.name, r.emoji, r.type, r.note,
                    GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji || '|' || l.name || '|' || l.emoji) as mobs
@@ -265,12 +274,7 @@ class Database:
     async def get_all_resources_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
-    # Новый метод для пагинации ресурсов по типу
     async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
-        """
-        Возвращает { 'prev_id': int or None, 'next_id': int or None }
-        для ресурса указанного типа (с учётом scroll_recipe -> scroll/scroll_recipe).
-        """
         if resource_type == 'scroll_recipe':
             prev_query = """
                 SELECT id FROM resources
@@ -502,6 +506,58 @@ class Database:
         )
         return {'ingredients': ingredients}
 
+    # ========== КАРТЫ ==========
+    async def get_cards_page(self, offset: int, limit: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+
+    async def get_card_by_id(self, card_id: int) -> Optional[Dict]:
+        res = await self.execute_query("SELECT * FROM cards WHERE id = ?", (card_id,))
+        return res[0] if res else None
+
+    async def add_card(self, name: str, emoji: str, slot: str,
+                       bonus1: str = '', bonus2: str = '', bonus3: str = '', bonus4: str = '',
+                       note: str = '') -> int:
+        await self.execute_query(
+            """INSERT INTO cards (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
+        )
+        res = await self.execute_query("SELECT last_insert_rowid() as id")
+        return res[0]['id']
+
+    async def update_card(self, card_id: int, **kwargs):
+        allowed = {'name', 'emoji', 'slot', 'bonus1', 'bonus2', 'bonus3', 'bonus4', 'note'}
+        for field, value in kwargs.items():
+            if field in allowed:
+                await self.execute_query(f"UPDATE cards SET {field}=? WHERE id=?", (value, card_id))
+
+    async def delete_card(self, card_id: int):
+        await self.execute_query("DELETE FROM drops WHERE item_type='card' AND item_id=?", (card_id,))
+        await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
+
+    async def get_card_drop_mobs(self, card_id: int) -> List[Dict]:
+        return await self.execute_query(
+            """SELECT m.id, m.name, m.emoji, l.name as location_name, l.emoji as location_emoji
+               FROM drops d
+               JOIN mobs m ON d.mob_id = m.id
+               JOIN locations l ON m.location_id = l.id
+               WHERE d.item_type='card' AND d.item_id=?
+               ORDER BY m.id""",
+            (card_id,)
+        )
+
+    async def get_all_cards_simple(self) -> List[Dict]:
+        return await self.execute_query("SELECT id, name, emoji FROM cards ORDER BY id")
+
+    async def get_all_cards(self, offset: int, limit: int) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4 FROM cards ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset)
+        )
+
     # ========== ДРОПЫ ==========
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
         res = await self.execute_query(
@@ -520,62 +576,6 @@ class Database:
         await self.execute_query(
             "DELETE FROM drops WHERE mob_id = ? AND item_type = ? AND item_id = ?",
             (mob_id, item_type, item_id)
-        )
-
-    # ========== КАРТЫ ==========
-    async def get_cards_page(self, offset: int, limit: int) -> List[Dict]:
-        """Получить страницу карт для списка (админка)"""
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot FROM cards ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
-    
-    async def get_card_by_id(self, card_id: int) -> Optional[Dict]:
-        res = await self.execute_query("SELECT * FROM cards WHERE id = ?", (card_id,))
-        return res[0] if res else None
-    
-    async def add_card(self, name: str, emoji: str, slot: str,
-                       bonus1: str = '', bonus2: str = '', bonus3: str = '', bonus4: str = '',
-                       note: str = '') -> int:
-        await self.execute_query(
-            """INSERT INTO cards (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
-        )
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
-    
-    async def update_card(self, card_id: int, **kwargs):
-        allowed = {'name', 'emoji', 'slot', 'bonus1', 'bonus2', 'bonus3', 'bonus4', 'note'}
-        for field, value in kwargs.items():
-            if field in allowed:
-                await self.execute_query(f"UPDATE cards SET {field}=? WHERE id=?", (value, card_id))
-    
-    async def delete_card(self, card_id: int):
-        await self.execute_query("DELETE FROM drops WHERE item_type='card' AND item_id=?", (card_id,))
-        await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
-    
-    async def get_card_drop_mobs(self, card_id: int) -> List[Dict]:
-        """Получить мобов, с которых падает карта"""
-        return await self.execute_query(
-            """SELECT m.id, m.name, m.emoji, l.name as location_name, l.emoji as location_emoji
-               FROM drops d
-               JOIN mobs m ON d.mob_id = m.id
-               JOIN locations l ON m.location_id = l.id
-               WHERE d.item_type='card' AND d.item_id=?
-               ORDER BY m.id""",
-            (card_id,)
-        )
-    
-    async def get_all_cards_simple(self) -> List[Dict]:
-        """Для выбора в админке (если понадобится)"""
-        return await self.execute_query("SELECT id, name, emoji FROM cards ORDER BY id")
-    
-    async def get_all_cards(self, offset: int, limit: int) -> List[Dict]:
-        """Для пользовательского списка (все карты с пагинацией)"""
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4 FROM cards ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
         )
 
     # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
@@ -619,7 +619,6 @@ class Database:
 
     @staticmethod
     def _parse_mob_with_location(s: str) -> Dict:
-        """Парсит строку вида: id|name|emoji|location_name|location_emoji"""
         parts = s.split("|")
         return {
             "id": int(parts[0]),
