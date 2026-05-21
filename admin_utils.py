@@ -86,7 +86,7 @@ async def render_entity_list(callback: types.CallbackQuery, state: FSMContext, e
         extra_buttons=extra
     )
     await callback.message.edit_text(entity_config['list_title'], reply_markup=keyboard)
-    await state.update_data(entity_type=entity_config['name'], current_page=page)
+    await state.update_data(editing_entity=entity_config['name'], current_page=page)  # FIXED: единый ключ
     await state.set_state(entity_config['list_state'])
     await callback.answer()
 
@@ -243,9 +243,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
-            await message.answer("❌ Сущность не найдена. Возврат в список.")
-            from admin_handlers import render_entity_list
-            await render_entity_list(message, state, config, 1)
+            await message.answer("❌ Сущность не найдена. Возврат в админку.")
+            # FIXED: вместо вызова render_entity_list с message (который не поддерживается) просто показываем главное меню
+            await state.clear()
+            await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
             return
     
         fields = config['edit_fields']
