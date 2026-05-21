@@ -220,10 +220,19 @@ ENTITY_CONFIGS['card'] = {
     ],
     'integer_fields': [],
     'select_options': {
-        'slot': ['тело', 'перчатки', 'оружие', 'голова', 'ноги', 'спина', 'аксессуар', 'пояс']
+        'slot': ['шлем', 'плечи', 'тело', 'плащ', 'пояс', 'штаны', 'ботинки', 'перчатки',
+                 'кольцо 1', 'кольцо 2', 'амул', 'серьга 1', 'серьга 2', 'основная рука', 'вторая рука']
     },
-    'display_mapping': {},
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (слот: {d.get('slot','?')})"
+    'display_mapping': {
+        'slot': {
+            'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
+            'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
+            'кольцо 1': '💍 Кольцо 1', 'кольцо 2': '💍 Кольцо 2', 'амул': '📿 Амулет',
+            'серьга 1': '🧏‍♀️ Серьга 1', 'серьга 2': '🧏‍♀️ Серьга 2',
+            'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
+        }
+    },
+    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (слот: {ENTITY_CONFIGS['card']['display_mapping']['slot'].get(d.get('slot','?'), d.get('slot','?'))})"
 }
 
 # ============================================================
@@ -447,7 +456,7 @@ async def card_add_emoji(message: types.Message, state: FSMContext):
     await message.answer("Введите эмодзи:")
     await state.set_state(CardAddStates.emoji)
 
-@admin_router.message(CardAddStates.emoji, F.text)
+@admin_router.callback_query(CardAddStates.emoji, F.text)
 async def card_add_emoji_input(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
@@ -455,9 +464,13 @@ async def card_add_emoji_input(message: types.Message, state: FSMContext):
         return
     await state.update_data(card_emoji=emoji)
     slots = [
-        ("тело", "🦺 Тело"), ("перчатки", "🧤 Перчатки"), ("оружие", "🗡 Оружие"),
-        ("голова", "🪖 Голова"), ("ноги", "🩳 Ноги"), ("спина", "🧣 Спина"),
-        ("аксессуар", "📖 Аксессуар"), ("пояс", "⛓ Пояс")
+        ("шлем", "🪖 Шлем"), ("плечи", "🪹 Плечи"), ("тело", "🦺 Тело"),
+        ("плащ", "🧣 Плащ"), ("пояс", "⛓ Пояс"), ("штаны", "🩳 Штаны"),
+        ("ботинки", "🥾 Ботинки"), ("перчатки", "🧤 Перчатки"),
+        ("кольцо 1", "💍 Кольцо 1"), ("кольцо 2", "💍 Кольцо 2"),
+        ("амул", "📿 Амулет"), ("серьга 1", "🧏‍♀️ Серьга 1"),
+        ("серьга 2", "🧏‍♀️ Серьга 2"), ("основная рука", "🗡 Основная рука"),
+        ("вторая рука", "🛡 Вторая рука")
     ]
     keyboard = [[InlineKeyboardButton(text=label, callback_data=f"card_slot_{name}")] for name, label in slots]
     await message.answer("Выберите слот:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
