@@ -103,9 +103,17 @@ async def format_gear_card(gear_id: int) -> str:
         return "Предмет не найден."
     rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое"}
     rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+    slot_names = {
+        'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
+        'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
+        'кольцо 1': '💍 Кольцо 1', 'кольцо 2': '💍 Кольцо 2', 'амул': '📿 Амулет',
+        'серьга 1': '🧏‍♀️ Серьга 1', 'серьга 2': '🧏‍♀️ Серьга 2',
+        'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
+    }
     rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
+    slot_text = slot_names.get(data['slot'], data['slot'])
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
-    text += f"Редкость: {rarity_text}\nСлот: {data['slot']}\n"
+    text += f"Редкость: {rarity_text}\nСлот: {slot_text}\n"
     
     if data.get('craftable'):
         text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
