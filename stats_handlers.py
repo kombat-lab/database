@@ -129,13 +129,18 @@ async def confirm_reset(callback: types.CallbackQuery):
 
 @stats_router.callback_query(F.data == "stats_reset_confirm")
 async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMContext):
+    # Удаляем сообщение с подтверждением
     await callback.message.delete()
+    # Отправляем временное сообщение о ходе выполнения
     status_msg = await callback.message.answer("⏳ Сбрасываю аналитику...")
 
     try:
+        # Очищаем состояние FSM, чтобы избежать блокировок
         await state.clear()
-        await db.execute_query("COMMIT")
+
+        # Вызываем функцию сброса (она сама управляет транзакциями)
         await reset_analytics_data()
+
         await status_msg.edit_text("✅ Аналитика полностью сброшена.")
     except Exception as e:
         logger.exception("Сброс аналитики не удался")
@@ -146,8 +151,10 @@ async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMCont
             "• Недостаточно прав на выполнение VACUUM"
         )
     else:
+        # Небольшая пауза, чтобы пользователь увидел сообщение об успехе
         await asyncio.sleep(1.5)
     finally:
+        # Возвращаем меню статистики
         await show_stats_menu(callback.message, edit=False)
         await callback.answer()
 
