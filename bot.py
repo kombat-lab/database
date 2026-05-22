@@ -525,6 +525,14 @@ async def inline_search_handler(inline_query: InlineQuery):
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
 # ---------- Callback-обработчики ----------
+@dp.chosen_inline_result()
+async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult):
+    await log_inline_result_chosen(
+        chosen_result.from_user.id,
+        result_id=chosen_result.result_id,
+        query=chosen_result.query
+    )
+
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
