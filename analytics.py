@@ -1,13 +1,3 @@
-# analytics.py
-"""
-Модуль аналитики для Telegram-бота.
-Содержит:
-- Класс AnalyticsMiddleware для автоматического логирования пользователей
-- Функции для записи событий в базу данных
-- Буферизованную запись для снижения нагрузки на БД
-- Функции получения статистики (DAU, удержание, топы и т.д.)
-- Сброс аналитических данных
-"""
 import json
 import asyncio
 import logging
@@ -246,38 +236,22 @@ async def get_top_items(item_type: str, days: int = 30, limit: int = 10) -> List
         (event, f'-{days} days', limit)
     )
 
-async def get_top_search_queries(days: int = 30, limit: int = 30, search_type: str = 'all') -> List[Dict]:
-    """
-    Возвращает топ поисковых запросов.
-    search_type: 'all' (оба типа), 'text' (обычный поиск), 'inline' (инлайн-поиск)
-    """
-    if search_type == 'text':
-        event_type = 'search'
-    elif search_type == 'inline':
-        event_type = 'inline_search'
-    else:
-        event_type = "('search', 'inline_search')"
-        query = f"""
-            SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
-            FROM analytics_events
-            WHERE event_type IN ('search', 'inline_search')
-              AND timestamp >= datetime('now', ?)
-              AND metadata IS NOT NULL
-            GROUP BY query
-            ORDER BY count DESC
-            LIMIT ?
+async def get_top_selected_results(days: int = 30, limit: int = 30) -> List[Dict]:
+    """Топ выбранных результатов (из инлайн-режима)."""
+    return await db.execute_query(
         """
-        return await db.execute_query(query, (f'-{days} days', limit))
-    
-    query = """
-        SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
+        SELECT json_extract(metadata, '$.result_id') as result_id,
+               json_extract(metadata, '$.query') as query,
+               COUNT(*) as count
         FROM analytics_events
-        WHERE event_type = ? AND timestamp >= datetime('now', ?) AND metadata IS NOT NULL
-        GROUP BY query
+        WHERE event_type = 'inline_choice'
+          AND timestamp >= datetime('now', ?)
+        GROUP BY result_id, query
         ORDER BY count DESC
         LIMIT ?
-    """
-    return await db.execute_query(query, (event_type, f'-{days} days', limit))
+        """,
+        (f'-{days} days', limit)
+    )
 
 async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 30) -> List[Dict]:
     """
