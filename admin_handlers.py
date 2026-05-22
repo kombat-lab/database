@@ -5,6 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from analytics import get_active_users_count, get_retention, get_section_popularity, get_top_items, get_db_stats
 
 from database import db
 from utils import is_valid_emoji, clean_username
@@ -1444,6 +1445,50 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     keyboard = await get_recipe_list_keyboard(result_type, 1)
     await callback.message.answer(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
+
+# ============================================================
+# Аналитика
+# ============================================================
+
+@admin_router.message(Command("stats"))
+async def show_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return
+    
+    dau = await get_active_users_count(1)
+    wau = await get_active_users_count(7)
+    mau = await get_active_users_count(30)
+    
+    retention_d1 = await get_retention(1, 1)
+    retention_d7 = await get_retention(7, 7)
+    
+    sections = await get_section_popularity(30)
+    sections_text = "\n".join(f"  • {s['section']}: {s['views']}" for s in sections) if sections else "  • нет данных"
+    
+    top_mobs = await get_top_items('mob', 30, 5)
+    top_mobs_text = "\n".join(f"  • ID {m['target_id']}: {m['views']}" for m in top_mobs) if top_mobs else "  • нет данных"
+    
+    db_stats = await get_db_stats()
+    db_size_mb = db_stats['db_size_bytes'] / (1024 * 1024)
+    
+    text = (
+        f"📊 <b>Аналитика бота</b>\n\n"
+        f"👥 <b>Активные пользователи</b>\n"
+        f"  • За день: {dau}\n"
+        f"  • За неделю: {wau}\n"
+        f"  • За месяц: {mau}\n\n"
+        f"🔄 <b>Удержание</b>\n"
+        f"  • День 1: {retention_d1:.1f}%\n"
+        f"  • Неделя 1: {retention_d7:.1f}%\n\n"
+        f"📂 <b>Популярность разделов (30 дней)</b>\n{sections_text}\n\n"
+        f"🏆 <b>Топ-5 мобов по просмотрам (30 дней)</b>\n{top_mobs_text}\n\n"
+        f"💾 <b>Состояние БД</b>\n"
+        f"  • Событий: {db_stats['events']}\n"
+        f"  • Пользователей: {db_stats['users']}\n"
+        f"  • Размер: {db_size_mb:.2f} МБ"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 # ============================================================
 # Регистрация универсальных обработчиков (CRUD)
