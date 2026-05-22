@@ -692,11 +692,16 @@ async def view_card(callback: types.CallbackQuery):
         text="🔙 Назад к списку",
         callback_data=f"cards_page_{page}"
     )
+    back_to_cats_button = InlineKeyboardButton(
+        text="🔙 Назад к категориям",
+        callback_data="back_to_resource_cats"
+    )
+
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")])
+    keyboard.append([back_to_cats_button])
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
@@ -748,16 +753,11 @@ async def view_resource_by_type(callback: types.CallbackQuery):
         text="🔙 Назад к списку",
         callback_data=f"res_page_{resource_type}_{page}"
     )
-    home_button = InlineKeyboardButton(
-        text="🏠 Главное меню",
-        callback_data="back_to_main_menu"
-    )
 
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    keyboard.append([home_button])
 
     await callback.message.edit_text(
         text,
