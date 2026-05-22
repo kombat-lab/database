@@ -226,7 +226,6 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
 async def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ITEMS_PER_PAGE
     if category == "mobs":
-        # Используем сортировку по HP
         items = await db.get_mobs_by_location_sorted_by_hp(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     else:
         items = await db.get_resources_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
@@ -249,7 +248,6 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
 
 async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ITEMS_PER_PAGE
-    # Используем новую сортировку по слоту
     items = await db.get_gear_by_rarity_sorted_by_slot(rarity, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
@@ -530,7 +528,6 @@ async def view_mob(callback: types.CallbackQuery):
     page = int(parts[4])
     text = await format_mob_card(mob_id)
 
-    # Заменяем прямые SQL-запросы на новый метод
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
     nav_buttons = []
     if neighbours['prev_id']:
@@ -614,7 +611,6 @@ async def view_gear(callback: types.CallbackQuery):
     page = int(parts[4])
     text = await format_gear_card(gear_id)
 
-    # Заменяем прямые SQL-запросы на новый метод
     neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
     nav_buttons = []
     if neighbours['prev_id']:
@@ -747,7 +743,6 @@ async def view_resource_by_type(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
-    # FIXED: сначала отправляем новое сообщение, потом удаляем старое
     await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
     await callback.message.delete()
     await callback.answer()
