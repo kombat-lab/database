@@ -242,6 +242,39 @@ async def get_top_items(item_type: str, days: int = 30, limit: int = 10) -> List
         (event, f'-{days} days', limit)
     )
 
+async def get_top_search_queries(days: int = 30, limit: int = 30, search_type: str = 'all') -> List[Dict]:
+    """
+    Возвращает топ поисковых запросов.
+    search_type: 'all' (оба типа), 'text' (обычный поиск), 'inline' (инлайн-поиск)
+    """
+    if search_type == 'text':
+        event_type = 'search'
+    elif search_type == 'inline':
+        event_type = 'inline_search'
+    else:
+        event_type = "('search', 'inline_search')"
+        query = f"""
+            SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
+            FROM analytics_events
+            WHERE event_type IN ('search', 'inline_search')
+              AND timestamp >= datetime('now', ?)
+              AND metadata IS NOT NULL
+            GROUP BY query
+            ORDER BY count DESC
+            LIMIT ?
+        """
+        return await db.execute_query(query, (f'-{days} days', limit))
+    
+    query = """
+        SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
+        FROM analytics_events
+        WHERE event_type = ? AND timestamp >= datetime('now', ?) AND metadata IS NOT NULL
+        GROUP BY query
+        ORDER BY count DESC
+        LIMIT ?
+    """
+    return await db.execute_query(query, (event_type, f'-{days} days', limit))
+
 async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 30) -> List[Dict]:
     """
     Возвращает топ-N сущностей с их названиями и эмодзи.
