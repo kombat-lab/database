@@ -14,7 +14,7 @@ from database import db
 from admin_handlers import admin_router
 from utils import clean_username, escape_html
 from analytics import (
-    AnalyticsMiddleware, analytics_buffer,
+    AnalyticsMiddleware,
     log_start, log_view_mob, log_view_resource, log_view_gear, log_view_card,
     log_search, log_inline_search
 )
@@ -374,7 +374,6 @@ async def show_resources_by_type(target, resource_type: str, page: int):
         await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 async def delayed_log_inline_search(user_id: int, query: str, delay: float = 0.8):
-    """Логирует запрос только если за время задержки не поступил новый."""
     await asyncio.sleep(delay)
     if query.strip():
         await log_inline_search(user_id, query)
@@ -469,15 +468,12 @@ async def handle_search(message: types.Message, state: FSMContext):
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
     
-    # Отменяем предыдущую задачу для этого пользователя
     if inline_query.from_user.id in inline_log_tasks:
         inline_log_tasks[inline_query.from_user.id].cancel()
     
-    # Запускаем новую задачу с задержкой
     task = asyncio.create_task(delayed_log_inline_search(inline_query.from_user.id, query))
     inline_log_tasks[inline_query.from_user.id] = task
     
-    # Основная логика поиска (без логирования прямо здесь)
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
         return
@@ -524,15 +520,16 @@ async def inline_search_handler(inline_query: InlineQuery):
 
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
 
-# ---------- Callback-обработчики ----------
 @dp.chosen_inline_result()
 async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult):
+    from analytics import log_inline_result_chosen
     await log_inline_result_chosen(
         chosen_result.from_user.id,
         result_id=chosen_result.result_id,
         query=chosen_result.query
     )
 
+# ---------- Callback-обработчики ----------
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
@@ -808,27 +805,13 @@ async def back_to_main_menu(callback: types.CallbackQuery):
 # ---------- Запуск ----------
 async def main():
     await db.connect()
-    # Инициализация таблиц аналитики (создаст, если не существуют)
     await db.init_analytics_tables()
     
-    # Инициализация буфера аналитики (опционально, для снижения нагрузки)
-    global analytics_buffer
-    from analytics import AnalyticsBuffer, analytics_buffer as buf
-    analytics_buffer = AnalyticsBuffer(flush_interval=5.0, batch_size=100)
-    await analytics_buffer.start()
-    # Пробрасываем буфер в модуль analytics, чтобы _log_event использовал его
-    import analytics
-    analytics.analytics_buffer = analytics_buffer
-    
-    # Подключение middleware
     dp.update.middleware(AnalyticsMiddleware())
-    
     dp.include_router(admin_router)
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
-        if analytics_buffer:
-            await analytics_buffer.stop()
         await db.close()
 
 if __name__ == "__main__":
