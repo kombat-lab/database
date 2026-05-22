@@ -302,8 +302,6 @@ async def show_cards_list(target, page: int):
     if nav:
         keyboard.append(nav)
 
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
-
     if isinstance(target, types.Message):
         await target.answer("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
