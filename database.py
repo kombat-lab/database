@@ -186,6 +186,31 @@ class Database:
     async def delete_mob(self, mob_id: int):
         await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
 
+ # ========== МОБЫ: сортировка по HP ==========
+async def get_mobs_by_location_sorted_by_hp(self, location_id: int, offset: int, limit: int) -> List[Dict]:
+    """Возвращает мобов в локации, отсортированных по возрастанию HP."""
+    return await self.execute_query(
+        "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs "
+        "WHERE location_id = ? ORDER BY hp ASC, id LIMIT ? OFFSET ?",
+        (location_id, limit, offset)
+    )
+
+async def get_prev_next_mob_by_hp(self, mob_id: int, location_id: int) -> Dict[str, Optional[int]]:
+    """Возвращает предыдущий и следующий ID моба в порядке возрастания HP."""
+    rows = await self.execute_query(
+        "SELECT id FROM mobs WHERE location_id = ? ORDER BY hp ASC, id",
+        (location_id,)
+    )
+    ids = [row['id'] for row in rows]
+    try:
+        idx = ids.index(mob_id)
+        return {
+            'prev_id': ids[idx - 1] if idx > 0 else None,
+            'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
+        }
+    except ValueError:
+        return {'prev_id': None, 'next_id': None}   
+
     # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
@@ -417,6 +442,70 @@ class Database:
 
     async def get_all_gear_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM gear ORDER BY id")
+
+    # ========== СНАРЯЖЕНИЕ: сортировка по порядку слотов ==========
+# Кастомный порядок слотов (чем меньше число – тем выше в списке)
+SLOT_ORDER = {
+    'шлем': 1,
+    'плечи': 2,
+    'тело': 3,
+    'плащ': 4,
+    'пояс': 5,
+    'штаны': 6,
+    'ботинки': 7,
+    'перчатки': 8,
+    'кольцо': 9,
+    'амул': 10,
+    'серьга': 11,
+    'основная рука': 12,
+    'вторая рука': 13,
+}
+
+async def get_gear_by_rarity_sorted_by_slot(self, rarity: str, offset: int, limit: int) -> List[Dict]:
+    """
+    Возвращает снаряжение заданной редкости, отсортированное по кастомному
+    порядку слотов (затем по имени для стабильности).
+    """
+    # Строим CASE выражение для сортировки
+    case_expression = "CASE slot"
+    for slot, order in self.SLOT_ORDER.items():
+        case_expression += f" WHEN '{slot}' THEN {order}"
+    case_expression += " ELSE 99 END"
+    
+    query = f"""
+        SELECT id, name, rarity, slot, emoji
+        FROM gear
+        WHERE rarity = ?
+        ORDER BY {case_expression}, name COLLATE NOCASE
+        LIMIT ? OFFSET ?
+    """
+    return await self.execute_query(query, (rarity, limit, offset))
+
+async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:
+    """Возвращает предыдущий и следующий ID снаряжения в порядке сортировки по слоту."""
+    # Получаем все ID для данной редкости в нужном порядке
+    case_expression = "CASE slot"
+    for slot, order in self.SLOT_ORDER.items():
+        case_expression += f" WHEN '{slot}' THEN {order}"
+    case_expression += " ELSE 99 END"
+    
+    rows = await self.execute_query(
+        f"""
+        SELECT id FROM gear
+        WHERE rarity = ?
+        ORDER BY {case_expression}, name COLLATE NOCASE
+        """,
+        (rarity,)
+    )
+    ids = [row['id'] for row in rows]
+    try:
+        idx = ids.index(gear_id)
+        return {
+            'prev_id': ids[idx - 1] if idx > 0 else None,
+            'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
+        }
+    except ValueError:
+        return {'prev_id': None, 'next_id': None}
 
     # ========== РЕЦЕПТЫ ==========
     async def get_all_recipes(self, result_type: str, offset: int, limit: int) -> List[Dict]:
