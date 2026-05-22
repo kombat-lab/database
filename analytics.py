@@ -261,3 +261,72 @@ async def get_db_stats() -> dict:
         'users': users_count[0]['cnt'] if users_count else 0,
         'db_size_bytes': size[0]['size'] if size else 0
     }
+
+async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 30) -> list:
+    """
+    Возвращает топ-N сущностей с их названиями и эмодзи.
+    item_type: 'mob', 'resource', 'gear', 'card'
+    """
+    event_map = {
+        'mob': 'view_mob',
+        'resource': 'view_resource',
+        'gear': 'view_gear',
+        'card': 'view_card'
+    }
+    event = event_map.get(item_type)
+    if not event:
+        return []
+    
+    # В зависимости от типа джойним нужную таблицу
+    if item_type == 'mob':
+        table = 'mobs'
+        name_field = 'name'
+        emoji_field = 'emoji'
+        id_field = 'id'
+    elif item_type == 'resource':
+        table = 'resources'
+        name_field = 'name'
+        emoji_field = 'emoji'
+        id_field = 'id'
+    elif item_type == 'gear':
+        table = 'gear'
+        name_field = 'name'
+        emoji_field = 'emoji'
+        id_field = 'id'
+    elif item_type == 'card':
+        table = 'cards'
+        name_field = 'name'
+        emoji_field = 'emoji'
+        id_field = 'id'
+    else:
+        return []
+    
+    query = f"""
+        SELECT 
+            ae.target_id,
+            COUNT(*) as views,
+            {table}.{name_field} as name,
+            {table}.{emoji_field} as emoji
+        FROM analytics_events ae
+        LEFT JOIN {table} ON ae.target_id = {table}.{id_field}
+        WHERE ae.event_type = ?
+          AND ae.timestamp >= datetime('now', ?)
+        GROUP BY ae.target_id
+        ORDER BY views DESC
+        LIMIT ?
+    """
+    rows = await db.execute_query(query, (event, f'-{days} days', limit))
+    # Заменяем None-значения на заглушки (если запись удалена)
+    for row in rows:
+        if not row['name']:
+            row['name'] = f"[Удалён ID {row['target_id']}]"
+        if not row['emoji']:
+            row['emoji'] = '❓'
+    return rows
+
+async def reset_analytics_data():
+    """Полностью очищает таблицы аналитики (без удаления структуры)."""
+    await db.execute_query("DELETE FROM analytics_events")
+    await db.execute_query("DELETE FROM users")
+    # Сброс автоинкремента (опционально)
+    await db.execute_query("DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')")
