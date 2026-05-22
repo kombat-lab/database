@@ -114,52 +114,48 @@ class Database:
     async def invalidate_location_cache(self):
         await self._load_locations_cache()
 
-    # В database.py, внутри класса Database:
-
-async def register_user_if_not_exists(self, user_id: int, username: str = None,
-                                       first_name: str = None, last_name: str = None):
-    """Создаёт запись о пользователе, если её не было. Не обновляет last_activity."""
-    await self.execute_query(
-        """
-        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, first_seen, last_activity)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,
-        (user_id, username, first_name, last_name)
-    )
-    # Если запись уже была, ничего не делаем – last_activity не обновляем.
-
-async def init_analytics_tables(self):
-    """Создаёт таблицы и индексы для аналитики (вызвать один раз при запуске)."""
-    # Таблица пользователей
-    await self.execute_query("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT
+    # ========== АНАЛИТИКА (НОВОЕ) ==========
+    async def register_user_if_not_exists(self, user_id: int, username: str = None,
+                                           first_name: str = None, last_name: str = None):
+        """Создаёт запись о пользователе, если её не было. Не обновляет last_activity."""
+        await self.execute_query(
+            """
+            INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, first_seen, last_activity)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (user_id, username, first_name, last_name)
         )
-    """)
-    # Таблица событий
-    await self.execute_query("""
-        CREATE TABLE IF NOT EXISTS analytics_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            event_type TEXT NOT NULL,
-            target_id INTEGER,
-            target_type TEXT,
-            metadata TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
-    # Индексы
-    await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON analytics_events(timestamp)")
-    # Для быстрых группировок по типу события
-    await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_type ON analytics_events(event_type)")
-    # Для топовых запросов по целевым ID
-    await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_target ON analytics_events(target_type, target_id)")
+
+    async def init_analytics_tables(self):
+        """Создаёт таблицы и индексы для аналитики (вызвать один раз при запуске)."""
+        # Таблица пользователей
+        await self.execute_query("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT
+            )
+        """)
+        # Таблица событий
+        await self.execute_query("""
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                target_id INTEGER,
+                target_type TEXT,
+                metadata TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        """)
+        # Индексы
+        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON analytics_events(timestamp)")
+        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_type ON analytics_events(event_type)")
+        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_target ON analytics_events(target_type, target_id)")
 
     # ========== ПОИСК ==========
     async def search(self, query: str) -> Dict[str, List[Dict]]:
