@@ -1,5 +1,6 @@
 # stats_handlers.py
 import logging
+import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -101,21 +102,36 @@ async def show_general_stats(callback: types.CallbackQuery):
     await callback.answer()
 
 async def confirm_reset(callback: types.CallbackQuery):
+    """Показывает подтверждение сброса, только если текущее сообщение не является уже формой подтверждения."""
+    # Проверяем, не находится ли уже пользователь в режиме подтверждения
+    current_text = callback.message.text or ""
+    if "⚠️ ВНИМАНИЕ!" in current_text:
+        # Уже показываем подтверждение — ничего не делаем
+        await callback.answer("Подтверждение уже показано")
+        return
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
     ])
-    await callback.message.edit_text(
-        "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
-        "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
-        "- историю просмотров карточек\n"
-        "- данные о пользователях\n"
-        "- все события\n\n"
-        "<b>Это действие необратимо!</b>\n\n"
-        "Уверены?",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
+    try:
+        await callback.message.edit_text(
+            "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+            "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
+            "- историю просмотров карточек\n"
+            "- данные о пользователях\n"
+            "- все события\n\n"
+            "<b>Это действие необратимо!</b>\n\n"
+            "Уверены?",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    except types.TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Игнорируем, если сообщение не изменилось
+            pass
+        else:
+            raise
     await callback.answer()
 
 # ------------------------------------------------------------
@@ -156,11 +172,14 @@ async def stats_router_callback(callback: types.CallbackQuery):
 
 @stats_router.callback_query(F.data == "stats_reset_confirm")
 async def reset_analytics_callback(callback: types.CallbackQuery):
+    """Выполняет сброс аналитических таблиц."""
     try:
         await reset_analytics_data()
         await callback.message.edit_text("✅ Аналитика полностью сброшена.")
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
+    # Возвращаем в меню статистики через секунду, чтобы пользователь увидел результат
+    await asyncio.sleep(1)
     await show_stats_menu(callback.message, edit=False)
     await callback.answer()
 
