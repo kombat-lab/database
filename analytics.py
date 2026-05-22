@@ -158,6 +158,10 @@ async def log_search(user_id: int, query: str):
 async def log_inline_search(user_id: int, query: str):
     await _log_event(user_id, 'inline_search', metadata={'query': query})
 
+async def log_inline_result_chosen(user_id: int, result_id: str, query: str):
+    """Логирует, какой именно результат пользователь выбрал в инлайн-режиме."""
+    await _log_event(user_id, 'inline_choice', metadata={'result_id': result_id, 'query': query})
+
 # ============================================================
 # Функции для получения статистики (админские)
 # ============================================================
