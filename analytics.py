@@ -189,14 +189,15 @@ async def reset_analytics_data():
     logger.warning("=== СБРОС АНАЛИТИКИ ===")
     _resetting = True
     try:
-        await db.execute_query("DELETE FROM analytics_events")
+        # Удаляем всех пользователей — каскадно удалятся все события
         await db.execute_query("DELETE FROM users")
-        # Сброс автоинкремента
-        await db.execute_query("DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')")
-        await db.execute_query("VACUUM")
-        logger.info("Таблицы очищены, VACUUM выполнен")
+        # Сбрасываем автоинкремент для таблицы analytics_events
+        await db.execute_query("DELETE FROM sqlite_sequence WHERE name = 'analytics_events'")
+        # Выполняем VACUUM отдельным методом, чтобы избежать лишних fetchall
+        await db.vacuum()
+        logger.info("Таблицы аналитики очищены, VACUUM выполнен")
     except Exception as e:
         logger.exception(f"Ошибка при сбросе: {e}")
+        raise   # ← важно: пробрасываем исключение, чтобы обработчик узнал об ошибке
     finally:
         _resetting = False
-    logger.warning("=== СБРОС ЗАВЕРШЁН ===")
