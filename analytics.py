@@ -267,7 +267,30 @@ async def get_db_stats() -> dict:
         'db_size_bytes': size[0]['size'] if size else 0
     }
 
+# analytics.py (только исправленная функция)
+
 async def reset_analytics_data():
-    await db.execute_query("DELETE FROM analytics_events")
-    await db.execute_query("DELETE FROM users")
-    await db.execute_query("DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')")
+    """Полностью очищает таблицы аналитики и сбрасывает счётчики."""
+    global analytics_buffer
+
+    # 1. Очищаем очередь буфера, чтобы старые события не записались после сброса
+    if analytics_buffer:
+        analytics_buffer.queue.clear()
+        # Принудительный сброс не делаем – просто очищаем память
+
+    # 2. Проверяем, какие таблицы существуют
+    tables = await db.execute_query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('analytics_events', 'users')"
+    )
+    table_names = [t['name'] for t in tables]
+
+    # 3. Выполняем очистку в одной транзакции
+    async with db.transaction():
+        if 'analytics_events' in table_names:
+            await db.execute_query("DELETE FROM analytics_events")
+        if 'users' in table_names:
+            await db.execute_query("DELETE FROM users")
+        # Сброс автоинкремента (если таблицы были)
+        await db.execute_query(
+            "DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')"
+        )
