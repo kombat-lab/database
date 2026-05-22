@@ -10,21 +10,16 @@ from analytics import (
     get_retention,
     get_top_items_with_names,
     get_db_stats,
-    get_top_search_queries,
     reset_analytics_data,
+    get_top_search_queries,
 )
-
 
 logger = logging.getLogger(__name__)
 
 stats_router = Router()
 
 # ------------------------------------------------------------
-# Вспомогательные функции (клавиатуры и отображение)
-# ------------------------------------------------------------
-
 async def show_stats_menu(target, edit: bool = False):
-    """Показывает меню статистики с кнопками по типам сущностей."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🐾 Топ-30 мобов", callback_data="stats_mobs")],
         [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
@@ -41,7 +36,6 @@ async def show_stats_menu(target, edit: bool = False):
         await target.answer("📈 Выберите раздел статистики:", reply_markup=keyboard)
 
 async def show_top_items(callback: types.CallbackQuery, item_type: str, type_name_ru: str):
-    """Показывает топ-30 сущностей указанного типа с названиями и эмодзи."""
     items = await get_top_items_with_names(item_type, days=30, limit=30)
     if not items:
         text = f"📊 Нет данных по {type_name_ru} за последние 30 дней."
@@ -53,7 +47,6 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
             views = item['views']
             lines.append(f"{idx}. {emoji} {name} — {views} просмотров")
         text = f"🏆 <b>Топ-30 {type_name_ru} за 30 дней</b>\n\n" + "\n".join(lines)
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
     ])
@@ -61,18 +54,16 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
     await callback.answer()
 
 async def show_top_searches(callback: types.CallbackQuery):
-    """Показывает топ-30 поисковых запросов (обычный + инлайн)."""
     items = await get_top_search_queries(days=30, limit=30, search_type='all')
     if not items:
         text = "📊 Нет поисковых запросов за последние 30 дней."
     else:
         lines = []
         for idx, item in enumerate(items, 1):
-            query = item['query'][:50]  # обрезаем длинные запросы
+            query = item['query'][:50]
             count = item['count']
             lines.append(f"{idx}. \"{query}\" — {count} раз")
         text = f"🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
     ])
@@ -80,18 +71,14 @@ async def show_top_searches(callback: types.CallbackQuery):
     await callback.answer()
 
 async def show_general_stats(callback: types.CallbackQuery):
-    """Общая статистика: DAU, WAU, MAU, удержание, размер БД."""
     dau = await get_active_users_count(1)
     wau = await get_active_users_count(7)
     mau = await get_active_users_count(30)
-    
     retention_d1 = await get_retention(1, 1)
     retention_d7 = await get_retention(7, 7)
     retention_d30 = await get_retention(30, 30)
-    
     db_stats = await get_db_stats()
     db_size_mb = db_stats['db_size_bytes'] / (1024 * 1024)
-    
     text = (
         f"📊 <b>Общая статистика бота</b>\n\n"
         f"👥 <b>Активные пользователи</b>\n"
@@ -114,7 +101,6 @@ async def show_general_stats(callback: types.CallbackQuery):
     await callback.answer()
 
 async def confirm_reset(callback: types.CallbackQuery):
-    """Подтверждение сброса аналитики."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
@@ -133,13 +119,11 @@ async def confirm_reset(callback: types.CallbackQuery):
     await callback.answer()
 
 # ------------------------------------------------------------
-# Хендлеры команд и callback'ов
+# Хендлеры
 # ------------------------------------------------------------
-
 @stats_router.message(Command("stats"))
 async def show_stats_command(message: types.Message):
-    """Обработчик команды /stats (только для админов)."""
-    from admin_handlers import is_admin  # избегаем циклического импорта
+    from admin_handlers import is_admin
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет доступа.")
         return
@@ -147,15 +131,12 @@ async def show_stats_command(message: types.Message):
 
 @stats_router.callback_query(F.data == "admin_stats")
 async def admin_stats_callback(callback: types.CallbackQuery):
-    """Кнопка "Статистика" в админ-панели."""
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 
 @stats_router.callback_query(F.data.startswith("stats_"))
 async def stats_router_callback(callback: types.CallbackQuery):
-    """Маршрутизация выбора раздела статистики."""
     action = callback.data.split("_")[1]
-    
     if action == "mobs":
         await show_top_items(callback, 'mob', 'мобов')
     elif action == "resources":
@@ -164,29 +145,26 @@ async def stats_router_callback(callback: types.CallbackQuery):
         await show_top_items(callback, 'gear', 'предметов снаряжения')
     elif action == "cards":
         await show_top_items(callback, 'card', 'карт')
+    elif action == "searches":
+        await show_top_searches(callback)
     elif action == "general":
         await show_general_stats(callback)
     elif action == "reset":
         await confirm_reset(callback)
-    elif action == "searches":
-        await show_top_searches(callback)
     else:
         await callback.answer("Неизвестная команда")
 
 @stats_router.callback_query(F.data == "stats_reset_confirm")
 async def reset_analytics_callback(callback: types.CallbackQuery):
-    """Выполняет сброс аналитических таблиц."""
     try:
         await reset_analytics_data()
         await callback.message.edit_text("✅ Аналитика полностью сброшена.")
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
-    # Возвращаем в меню статистики
     await show_stats_menu(callback.message, edit=False)
     await callback.answer()
 
 @stats_router.callback_query(F.data == "back_to_stats")
 async def back_to_stats(callback: types.CallbackQuery):
-    """Возврат в главное меню статистики."""
     await show_stats_menu(callback, edit=True)
     await callback.answer()
