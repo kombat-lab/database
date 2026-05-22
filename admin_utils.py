@@ -26,6 +26,7 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
         [InlineKeyboardButton(text="🃏 Управление картами", callback_data="admin_manage_cards")],
         [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
