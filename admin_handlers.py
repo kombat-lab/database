@@ -5,7 +5,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from analytics import get_active_users_count, get_retention, get_section_popularity, get_top_items, get_db_stats
 
 from database import db
 from utils import is_valid_emoji, clean_username
@@ -17,6 +16,13 @@ from admin_utils import (
     render_entity_list,
     show_edit_menu,
     register_generic_handlers,
+)
+from analytics import (
+    get_active_users_count,
+    get_retention,
+    get_top_items_with_names,
+    get_db_stats,
+    reset_analytics_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,7 +38,7 @@ admin_router.callback_query(F.data == "admin_close")(admin_close)
 admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
 
 # ============================================================
-# КОНФИГУРАЦИИ СУЩНОСТЕЙ
+# КОНФИГУРАЦИИ СУЩНОСТЕЙ (без изменений)
 # ============================================================
 
 class ResourceListStates(StatesGroup):
@@ -109,7 +115,6 @@ async def card_delete(card_id):
 
 ENTITY_CONFIGS = {}
 
-# FIXED: display_format обрабатывает None в note
 def _resource_display_format(d):
     note_part = ""
     note_val = d.get('note')
@@ -248,7 +253,7 @@ ENTITY_CONFIGS['card'] = {
 }
 
 # ============================================================
-# ОБРАБОТЧИКИ ДЛЯ РЕСУРСОВ
+# ОБРАБОТЧИКИ ДЛЯ РЕСУРСОВ (без изменений)
 # ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_resources")
@@ -342,7 +347,7 @@ async def resource_save(message: types.Message, state: FSMContext):
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
-# ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ
+# ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ (без изменений)
 # ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_gear")
@@ -433,7 +438,7 @@ async def gear_save(message: types.Message, state: FSMContext):
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
-# ОБРАБОТЧИКИ ДЛЯ КАРТ
+# ОБРАБОТЧИКИ ДЛЯ КАРТ (без изменений)
 # ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_cards")
@@ -559,7 +564,151 @@ async def card_save(message: types.Message, state: FSMContext):
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
-# УПРАВЛЕНИЕ МОБАМИ (сокращённо, т.к. не менялось)
+# СТАТИСТИКА (НОВАЯ)
+# ============================================================
+
+@admin_router.message(Command("stats"))
+async def show_stats_command(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return
+    await show_stats_menu(message)
+
+async def show_stats_menu(target, edit: bool = False):
+    """Показывает меню статистики с кнопками по типам сущностей."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐾 Топ-30 мобов", callback_data="stats_mobs")],
+        [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
+        [InlineKeyboardButton(text="⚔️ Топ-30 снаряжения", callback_data="stats_gear")],
+        [InlineKeyboardButton(text="🃏 Топ-30 карт", callback_data="stats_cards")],
+        [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
+        [InlineKeyboardButton(text="🗑 Сбросить аналитику", callback_data="stats_reset")],
+        [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
+    ])
+    if edit and isinstance(target, types.CallbackQuery):
+        await target.message.edit_text("📈 Выберите раздел статистики:", reply_markup=keyboard)
+    else:
+        await target.answer("📈 Выберите раздел статистики:", reply_markup=keyboard)
+
+@admin_router.callback_query(F.data == "admin_stats")
+async def admin_stats_callback(callback: types.CallbackQuery):
+    await show_stats_menu(callback, edit=True)
+    await callback.answer()
+
+@admin_router.callback_query(F.data.startswith("stats_"))
+async def stats_router(callback: types.CallbackQuery):
+    action = callback.data.split("_")[1]
+    
+    if action == "mobs":
+        await show_top_items(callback, 'mob')
+    elif action == "resources":
+        await show_top_items(callback, 'resource')
+    elif action == "gear":
+        await show_top_items(callback, 'gear')
+    elif action == "cards":
+        await show_top_items(callback, 'card')
+    elif action == "general":
+        await show_general_stats(callback)
+    elif action == "reset":
+        await confirm_reset(callback)
+    else:
+        await callback.answer("Неизвестная команда")
+
+async def show_top_items(callback: types.CallbackQuery, item_type: str):
+    """Показывает топ-30 сущностей указанного типа с названиями и эмодзи."""
+    items = await get_top_items_with_names(item_type, days=30, limit=30)
+    if not items:
+        text = f"📊 Нет данных по {item_type} за последние 30 дней."
+    else:
+        # Формируем красивый список
+        lines = []
+        for idx, item in enumerate(items, 1):
+            emoji = item.get('emoji', '')
+            name = item.get('name', f"ID {item['target_id']}")
+            views = item['views']
+            lines.append(f"{idx}. {emoji} {name} — {views} просмотров")
+        text = f"🏆 <b>Топ-30 {item_type}ов за 30 дней</b>\n\n" + "\n".join(lines)
+    
+    # Кнопка назад
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+async def show_general_stats(callback: types.CallbackQuery):
+    """Общая статистика: DAU, WAU, MAU, удержание, размер БД."""
+    dau = await get_active_users_count(1)
+    wau = await get_active_users_count(7)
+    mau = await get_active_users_count(30)
+    
+    retention_d1 = await get_retention(1, 1)
+    retention_d7 = await get_retention(7, 7)
+    retention_d30 = await get_retention(30, 30)
+    
+    db_stats = await get_db_stats()
+    db_size_mb = db_stats['db_size_bytes'] / (1024 * 1024)
+    
+    text = (
+        f"📊 <b>Общая статистика бота</b>\n\n"
+        f"👥 <b>Активные пользователи</b>\n"
+        f"  • За день (DAU): {dau}\n"
+        f"  • За неделю (WAU): {wau}\n"
+        f"  • За месяц (MAU): {mau}\n\n"
+        f"🔄 <b>Удержание (Retention)</b>\n"
+        f"  • День 1: {retention_d1:.1f}%\n"
+        f"  • Неделя 1: {retention_d7:.1f}%\n"
+        f"  • Месяц 1: {retention_d30:.1f}%\n\n"
+        f"💾 <b>Состояние БД</b>\n"
+        f"  • Событий: {db_stats['events']}\n"
+        f"  • Пользователей: {db_stats['users']}\n"
+        f"  • Размер: {db_size_mb:.2f} МБ"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+async def confirm_reset(callback: types.CallbackQuery):
+    """Подтверждение сброса аналитики."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
+    ])
+    await callback.message.edit_text(
+        "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
+        "- историю просмотров карточек\n"
+        "- данные о пользователях\n"
+        "- все события\n\n"
+        "<b>Это действие необратимо!</b>\n\n"
+        "Уверены?",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "stats_reset_confirm")
+async def reset_analytics(callback: types.CallbackQuery):
+    """Выполняет сброс аналитических таблиц."""
+    try:
+        await reset_analytics_data()
+        await callback.message.edit_text("✅ Аналитика полностью сброшена.")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
+    # Возвращаем в меню статистики
+    await show_stats_menu(callback.message, edit=False)
+    await callback.answer()
+
+@admin_router.callback_query(F.data == "back_to_stats")
+async def back_to_stats(callback: types.CallbackQuery):
+    """Возврат в главное меню статистики."""
+    await show_stats_menu(callback, edit=True)
+    await callback.answer()
+
+# ============================================================
+# УПРАВЛЕНИЕ МОБАМИ (сокращённо, без изменений)
 # ============================================================
 
 class MobStates(StatesGroup):
@@ -1095,7 +1244,7 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# УПРАВЛЕНИЕ РЕЦЕПТАМИ (с учётом owner только для gear)
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ (без изменений)
 # ============================================================
 
 class RecipeStates(StatesGroup):
@@ -1445,50 +1594,6 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     keyboard = await get_recipe_list_keyboard(result_type, 1)
     await callback.message.answer(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
-
-# ============================================================
-# Аналитика
-# ============================================================
-
-@admin_router.message(Command("stats"))
-async def show_stats(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
-        return
-    
-    dau = await get_active_users_count(1)
-    wau = await get_active_users_count(7)
-    mau = await get_active_users_count(30)
-    
-    retention_d1 = await get_retention(1, 1)
-    retention_d7 = await get_retention(7, 7)
-    
-    sections = await get_section_popularity(30)
-    sections_text = "\n".join(f"  • {s['section']}: {s['views']}" for s in sections) if sections else "  • нет данных"
-    
-    top_mobs = await get_top_items('mob', 30, 5)
-    top_mobs_text = "\n".join(f"  • ID {m['target_id']}: {m['views']}" for m in top_mobs) if top_mobs else "  • нет данных"
-    
-    db_stats = await get_db_stats()
-    db_size_mb = db_stats['db_size_bytes'] / (1024 * 1024)
-    
-    text = (
-        f"📊 <b>Аналитика бота</b>\n\n"
-        f"👥 <b>Активные пользователи</b>\n"
-        f"  • За день: {dau}\n"
-        f"  • За неделю: {wau}\n"
-        f"  • За месяц: {mau}\n\n"
-        f"🔄 <b>Удержание</b>\n"
-        f"  • День 1: {retention_d1:.1f}%\n"
-        f"  • Неделя 1: {retention_d7:.1f}%\n\n"
-        f"📂 <b>Популярность разделов (30 дней)</b>\n{sections_text}\n\n"
-        f"🏆 <b>Топ-5 мобов по просмотрам (30 дней)</b>\n{top_mobs_text}\n\n"
-        f"💾 <b>Состояние БД</b>\n"
-        f"  • Событий: {db_stats['events']}\n"
-        f"  • Пользователей: {db_stats['users']}\n"
-        f"  • Размер: {db_size_mb:.2f} МБ"
-    )
-    await message.answer(text, parse_mode="HTML")
 
 # ============================================================
 # Регистрация универсальных обработчиков (CRUD)
