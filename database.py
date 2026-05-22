@@ -632,7 +632,6 @@ class Database:
         )
 
     async def get_all_cards_sorted_by_slot(self, offset: int, limit: int) -> List[Dict]:
-    """Возвращает все карты, отсортированные по кастомному порядку слотов."""
     case_expression = "CASE slot"
     for slot, order in self.SLOT_ORDER.items():
         case_expression += f" WHEN '{slot}' THEN {order}"
@@ -647,7 +646,6 @@ class Database:
     return await self.execute_query(query, (limit, offset))
 
 async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
-    """Возвращает предыдущий и следующий ID карты в порядке сортировки по слоту."""
     case_expression = "CASE slot"
     for slot, order in self.SLOT_ORDER.items():
         case_expression += f" WHEN '{slot}' THEN {order}"
