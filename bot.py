@@ -29,6 +29,7 @@ MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаря�
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+inline_log_tasks = {}
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -372,6 +373,13 @@ async def show_resources_by_type(target, resource_type: str, page: int):
     else:
         await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
+async def delayed_log_inline_search(user_id: int, query: str, delay: float = 0.8):
+    """Логирует запрос только если за время задержки не поступил новый."""
+    await asyncio.sleep(delay)
+    if query.strip():
+        await log_inline_search(user_id, query)
+    inline_log_tasks.pop(user_id, None)
+
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
@@ -460,11 +468,19 @@ async def handle_search(message: types.Message, state: FSMContext):
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
+    
+    # Отменяем предыдущую задачу для этого пользователя
+    if inline_query.from_user.id in inline_log_tasks:
+        inline_log_tasks[inline_query.from_user.id].cancel()
+    
+    # Запускаем новую задачу с задержкой
+    task = asyncio.create_task(delayed_log_inline_search(inline_query.from_user.id, query))
+    inline_log_tasks[inline_query.from_user.id] = task
+    
+    # Основная логика поиска (без логирования прямо здесь)
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
         return
-
-    await log_inline_search(inline_query.from_user.id, query)
 
     results = await db.search(query)
     inline_results = []
