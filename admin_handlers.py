@@ -17,7 +17,7 @@ from admin_utils import (
     show_edit_menu,
     register_generic_handlers,
 )
-from stats_handlers import stats_router   # <--- импорт статистики
+from stats_handlers import stats_router
 
 logger = logging.getLogger(__name__)
 
@@ -918,7 +918,6 @@ async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer(f"❌ Ошибка: {str(e)[:100]}", show_alert=True)
         return
 
-    # Обновляем клавиатуру
     keyboard = await get_drop_list_keyboard(mob_id, category, page)
     await callback.message.edit_reply_markup(reply_markup=keyboard)
 
@@ -1097,7 +1096,7 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# УПРАВЛЕНИЕ РЕЦЕПТАМИ (с учётом owner только для gear)
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ (без изменений)
 # ============================================================
 
 class RecipeStates(StatesGroup):
