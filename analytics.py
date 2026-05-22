@@ -1,3 +1,4 @@
+# analytics.py
 import json
 import asyncio
 import logging
@@ -9,11 +10,10 @@ from database import db
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# Буферизация событий (для высокой нагрузки)
+# Буферизация событий (опционально)
 # ============================================================
 
 class AnalyticsBuffer:
-    """Буфер для пакетной вставки событий в БД."""
     def __init__(self, flush_interval: float = 5.0, batch_size: int = 100):
         self.queue = []
         self.flush_interval = flush_interval
@@ -22,14 +22,12 @@ class AnalyticsBuffer:
         self._task = None
 
     async def add(self, event: Dict[str, Any]):
-        """Добавить событие в буфер."""
         self.queue.append(event)
         if len(self.queue) >= self.batch_size or \
            asyncio.get_event_loop().time() - self.last_flush >= self.flush_interval:
             await self.flush()
 
     async def flush(self):
-        """Принудительно сбросить буфер в БД."""
         if not self.queue:
             return
         events = self.queue[:]
@@ -50,7 +48,6 @@ class AnalyticsBuffer:
             logger.error(f"Failed to flush analytics events: {e}")
 
     async def start(self):
-        """Запустить периодическую очистку буфера."""
         async def periodic_flush():
             while True:
                 await asyncio.sleep(self.flush_interval)
@@ -58,7 +55,6 @@ class AnalyticsBuffer:
         self._task = asyncio.create_task(periodic_flush())
 
     async def stop(self):
-        """Остановить периодическую очистку и сбросить остатки."""
         if self._task:
             self._task.cancel()
             try:
@@ -67,15 +63,13 @@ class AnalyticsBuffer:
                 pass
         await self.flush()
 
-# Глобальный экземпляр буфера (создаётся в bot.py)
 analytics_buffer = None
 
 # ============================================================
-# Middleware для автоматического логирования пользователей
+# Middleware
 # ============================================================
 
 class AnalyticsMiddleware(BaseMiddleware):
-    """Middleware, логирующий появление пользователя (без спама)."""
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -84,7 +78,6 @@ class AnalyticsMiddleware(BaseMiddleware):
     ) -> Any:
         user: User = data.get('event_from_user')
         if user and not user.is_bot:
-            # Регистрируем пользователя, если его ещё нет
             await db.register_user_if_not_exists(
                 user_id=user.id,
                 username=user.username,
@@ -94,12 +87,11 @@ class AnalyticsMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 # ============================================================
-# Функции для логирования конкретных событий
+# Логирование событий
 # ============================================================
 
 async def _log_event(user_id: int, event_type: str, target_id: int = None,
                      target_type: str = None, metadata: dict = None):
-    """Внутренняя функция записи события (с буферизацией)."""
     event = {
         'user_id': user_id,
         'event_type': event_type,
@@ -110,7 +102,6 @@ async def _log_event(user_id: int, event_type: str, target_id: int = None,
     if analytics_buffer:
         await analytics_buffer.add(event)
     else:
-        # Прямая запись (без буфера) – для отладки или малой нагрузки
         try:
             await db._conn.execute(
                 """
@@ -149,38 +140,22 @@ async def log_inline_search(user_id: int, query: str):
     await _log_event(user_id, 'inline_search', metadata={'query': query})
 
 async def log_inline_result_chosen(user_id: int, result_id: str, query: str):
-    """Логирует, какой именно результат пользователь выбрал в инлайн-режиме."""
     await _log_event(user_id, 'inline_choice', metadata={'result_id': result_id, 'query': query})
 
 # ============================================================
-# Функции для получения статистики (админские)
+# Функции для получения статистики
 # ============================================================
 
 async def get_active_users_count(days: int = 1) -> int:
-    """Количество уникальных пользователей за последние N дней."""
     res = await db.execute_query(
-        """
-        SELECT COUNT(DISTINCT user_id) as cnt
-        FROM analytics_events
-        WHERE timestamp >= datetime('now', ?)
-        """,
+        "SELECT COUNT(DISTINCT user_id) as cnt FROM analytics_events WHERE timestamp >= datetime('now', ?)",
         (f'-{days} days',)
     )
     return res[0]['cnt'] if res else 0
 
 async def get_retention(cohort_days_ago: int, after_days: int) -> float:
-    """
-    Retention: доля пользователей, активных через `after_days` дней после первого визита.
-    cohort_days_ago – сколько дней назад смотрим когорту (например, 1 = вчерашние новички).
-    after_days – через сколько дней после первого визита проверяем активность.
-    Возвращает процент (0-100).
-    """
     first_visitors = await db.execute_query(
-        """
-        SELECT user_id
-        FROM users
-        WHERE DATE(first_seen) = DATE('now', ?)
-        """,
+        "SELECT user_id FROM users WHERE DATE(first_seen) = DATE('now', ?)",
         (f'-{cohort_days_ago} days',)
     )
     if not first_visitors:
@@ -199,7 +174,6 @@ async def get_retention(cohort_days_ago: int, after_days: int) -> float:
     return (active[0]['cnt'] / len(user_ids)) * 100
 
 async def get_section_popularity(days: int = 30) -> List[Dict]:
-    """Популярность разделов (если нужно)."""
     return await db.execute_query(
         """
         SELECT target_type as section, COUNT(*) as views
@@ -212,52 +186,7 @@ async def get_section_popularity(days: int = 30) -> List[Dict]:
         (f'-{days} days',)
     )
 
-async def get_top_items(item_type: str, days: int = 30, limit: int = 10) -> List[Dict]:
-    """Топ-10 просмотров (только ID)."""
-    event_map = {
-        'mob': 'view_mob',
-        'resource': 'view_resource',
-        'gear': 'view_gear',
-        'card': 'view_card'
-    }
-    event = event_map.get(item_type)
-    if not event:
-        return []
-    return await db.execute_query(
-        f"""
-        SELECT target_id, COUNT(*) as views
-        FROM analytics_events
-        WHERE event_type = ?
-          AND timestamp >= datetime('now', ?)
-        GROUP BY target_id
-        ORDER BY views DESC
-        LIMIT ?
-        """,
-        (event, f'-{days} days', limit)
-    )
-
-async def get_top_selected_results(days: int = 30, limit: int = 30) -> List[Dict]:
-    """Топ выбранных результатов (из инлайн-режима)."""
-    return await db.execute_query(
-        """
-        SELECT json_extract(metadata, '$.result_id') as result_id,
-               json_extract(metadata, '$.query') as query,
-               COUNT(*) as count
-        FROM analytics_events
-        WHERE event_type = 'inline_choice'
-          AND timestamp >= datetime('now', ?)
-        GROUP BY result_id, query
-        ORDER BY count DESC
-        LIMIT ?
-        """,
-        (f'-{days} days', limit)
-    )
-
 async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 30) -> List[Dict]:
-    """
-    Возвращает топ-N сущностей с их названиями и эмодзи.
-    item_type: 'mob', 'resource', 'gear', 'card'
-    """
     event_map = {
         'mob': 'view_mob',
         'resource': 'view_resource',
@@ -267,33 +196,20 @@ async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 
     event = event_map.get(item_type)
     if not event:
         return []
-    
-    # Определяем таблицу и поля
     if item_type == 'mob':
         table = 'mobs'
-        name_field = 'name'
-        emoji_field = 'emoji'
     elif item_type == 'resource':
         table = 'resources'
-        name_field = 'name'
-        emoji_field = 'emoji'
     elif item_type == 'gear':
         table = 'gear'
-        name_field = 'name'
-        emoji_field = 'emoji'
-    elif item_type == 'card':
-        table = 'cards'
-        name_field = 'name'
-        emoji_field = 'emoji'
     else:
-        return []
-    
+        table = 'cards'
     query = f"""
         SELECT 
             ae.target_id,
             COUNT(*) as views,
-            {table}.{name_field} as name,
-            {table}.{emoji_field} as emoji
+            {table}.name as name,
+            {table}.emoji as emoji
         FROM analytics_events ae
         LEFT JOIN {table} ON ae.target_id = {table}.id
         WHERE ae.event_type = ?
@@ -303,7 +219,6 @@ async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 
         LIMIT ?
     """
     rows = await db.execute_query(query, (event, f'-{days} days', limit))
-    # Заменяем None-значения (если запись удалена)
     for row in rows:
         if not row['name']:
             row['name'] = f"[Удалён ID {row['target_id']}]"
@@ -311,21 +226,48 @@ async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 
             row['emoji'] = '❓'
     return rows
 
+async def get_top_search_queries(days: int = 30, limit: int = 30, search_type: str = 'all') -> List[Dict]:
+    """
+    search_type: 'all', 'text', 'inline'
+    """
+    if search_type == 'text':
+        event_type = 'search'
+    elif search_type == 'inline':
+        event_type = 'inline_search'
+    else:
+        query = """
+            SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
+            FROM analytics_events
+            WHERE event_type IN ('search', 'inline_search')
+              AND timestamp >= datetime('now', ?)
+              AND metadata IS NOT NULL
+            GROUP BY query
+            ORDER BY count DESC
+            LIMIT ?
+        """
+        return await db.execute_query(query, (f'-{days} days', limit))
+    
+    query = """
+        SELECT json_extract(metadata, '$.query') as query, COUNT(*) as count
+        FROM analytics_events
+        WHERE event_type = ? AND timestamp >= datetime('now', ?) AND metadata IS NOT NULL
+        GROUP BY query
+        ORDER BY count DESC
+        LIMIT ?
+    """
+    return await db.execute_query(query, (event_type, f'-{days} days', limit))
+
 async def get_db_stats() -> dict:
-    """Возвращает количество записей и размер БД для мониторинга."""
-    events_count = await db.execute_query("SELECT COUNT(*) as cnt FROM analytics_events")
-    users_count = await db.execute_query("SELECT COUNT(*) as cnt FROM users")
-    # Размер БД в байтах
+    events = await db.execute_query("SELECT COUNT(*) as cnt FROM analytics_events")
+    users = await db.execute_query("SELECT COUNT(*) as cnt FROM users")
     size = await db.execute_query("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
     return {
-        'events': events_count[0]['cnt'] if events_count else 0,
-        'users': users_count[0]['cnt'] if users_count else 0,
+        'events': events[0]['cnt'] if events else 0,
+        'users': users[0]['cnt'] if users else 0,
         'db_size_bytes': size[0]['size'] if size else 0
     }
 
 async def reset_analytics_data():
-    """Полностью очищает таблицы аналитики (без удаления структуры)."""
     await db.execute_query("DELETE FROM analytics_events")
     await db.execute_query("DELETE FROM users")
-    # Сброс автоинкремента (sqlite_sequence)
     await db.execute_query("DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')")
