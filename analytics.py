@@ -6,10 +6,6 @@ from typing import Dict, Any, Optional, Callable, Awaitable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, User, Message, CallbackQuery
 from database import db
-from analytics import (
-    AnalyticsMiddleware, analytics_buffer, log_start, log_open_section,
-    log_view_mob, log_view_resource, log_view_gear, log_view_card, log_search
-)
 
 logger = logging.getLogger(__name__)
 
