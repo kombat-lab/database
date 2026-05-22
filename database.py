@@ -754,7 +754,6 @@ class Database:
 
     # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
     async def vacuum(self):
-        """Выполняет VACUUM. Не использует fetchall, работает с сырым соединением."""
         await self._conn.execute("VACUUM")
         await self._conn.commit()
     
