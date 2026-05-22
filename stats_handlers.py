@@ -172,18 +172,14 @@ async def stats_router_callback(callback: types.CallbackQuery):
 
 @stats_router.callback_query(F.data == "stats_reset_confirm")
 async def reset_analytics_callback(callback: types.CallbackQuery):
-    """Выполняет сброс аналитических таблиц."""
-    # Показываем "песочные часы"
-    await callback.message.edit_text("⏳ Сброс аналитики...")
+    logger.warning("Нажата кнопка подтверждения сброса аналитики")
     try:
+        await callback.message.edit_text("⏳ Сброс аналитики...")
         await reset_analytics_data()
-        # После сброса принудительно обновляем кэш пользователей, если он есть (у вас его нет)
-        # Но можно принудительно перечитать статистику (например, показать пустые значения)
         await callback.message.edit_text("✅ Аналитика полностью сброшена.")
     except Exception as e:
-        logger.exception("Ошибка сброса аналитики")
+        logger.exception("Сброс не удался")
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
-    # Возвращаем в меню статистики
     await asyncio.sleep(1)
     await show_stats_menu(callback.message, edit=False)
     await callback.answer()
