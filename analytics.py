@@ -267,30 +267,56 @@ async def get_db_stats() -> dict:
         'db_size_bytes': size[0]['size'] if size else 0
     }
 
-# analytics.py (только исправленная функция)
-
 async def reset_analytics_data():
-    """Полностью очищает таблицы аналитики и сбрасывает счётчики."""
+    """
+    Полностью и БЕЗВОЗВРАТНО стирает ВСЮ аналитику:
+    - таблицу analytics_events
+    - таблицу users
+    - сбрасывает автоинкремент
+    - очищает буфер аналитики (если активен)
+    - перезапускает буфер, чтобы он не подлил старые события
+    """
     global analytics_buffer
 
-    # 1. Очищаем очередь буфера, чтобы старые события не записались после сброса
+    # 1. Останавливаем буфер, если он запущен
     if analytics_buffer:
+        # Останавливаем фоновую задачу
+        if analytics_buffer._task and not analytics_buffer._task.done():
+            analytics_buffer._task.cancel()
+            try:
+                await analytics_buffer._task
+            except asyncio.CancelledError:
+                pass
+        # Очищаем очередь
         analytics_buffer.queue.clear()
-        # Принудительный сброс не делаем – просто очищаем память
+        # Пересоздаём буфер заново (старый экземпляр больше не используется)
+        analytics_buffer = AnalyticsBuffer(flush_interval=5.0, batch_size=100)
+        # Запускаем новый буфер
+        await analytics_buffer.start()
+        # Пробрасываем в модуль, как в bot.py
+        import analytics
+        analytics.analytics_buffer = analytics_buffer
 
-    # 2. Проверяем, какие таблицы существуют
-    tables = await db.execute_query(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('analytics_events', 'users')"
-    )
-    table_names = [t['name'] for t in tables]
+    # 2. Принудительно фиксируем всё, что могло остаться
+    try:
+        await db._conn.execute("COMMIT")
+    except:
+        pass
 
-    # 3. Выполняем очистку в одной транзакции
+    # 3. Удаляем данные из таблиц (с отключением проверки внешних ключей, чтобы не мешало)
+    await db.execute_query("PRAGMA foreign_keys = OFF")
     async with db.transaction():
-        if 'analytics_events' in table_names:
-            await db.execute_query("DELETE FROM analytics_events")
-        if 'users' in table_names:
-            await db.execute_query("DELETE FROM users")
-        # Сброс автоинкремента (если таблицы были)
+        # Проверяем существование таблиц через sqlite_master
+        tables = await db.execute_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('analytics_events', 'users')"
+        )
+        for tbl in tables:
+            await db.execute_query(f"DELETE FROM {tbl['name']}")
+        # Сброс автоинкремента
         await db.execute_query(
             "DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')"
         )
+    await db.execute_query("PRAGMA foreign_keys = ON")
+
+    # 4. Небольшая пауза, чтобы БД завершила все операции
+    await asyncio.sleep(0.3)
