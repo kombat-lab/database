@@ -74,7 +74,7 @@ async def format_resource_card(resource_id: int) -> str:
         text += "<b>Падает с мобов:</b>\n"
         for m in data['mobs']:
             loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
+            text += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>"
 
@@ -189,7 +189,7 @@ async def format_card_card(card_id: int) -> str:
         text += "\n<b>📜 Падает с мобов:</b>\n"
         for m in mobs:
             loc_str = f"{m['location_emoji']} {escape_html(m['location_name'])}" if m.get('location_name') else ""
-            text += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
+            text += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
     else:
         text += "\n<i>Нет информации</i>"
     return text
@@ -417,7 +417,7 @@ async def handle_search(message: types.Message, state: FSMContext):
         reply += "<b>Мобы:</b>\n"
         for m in results["mobs"]:
             loc_str = f"{m['location_emoji']} {escape_html(m['location_name'])}" if m.get('location_name') else "?"
-            reply += f"{m['emoji']} {escape_html(m['name'])} ({loc_str})\n"
+            reply += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
         reply += "\n"
     if results["resources"]:
         reply += "<b>Ресурсы:</b>\n"
