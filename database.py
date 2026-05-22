@@ -9,16 +9,17 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
 
+
 def _lower_unicode(s: str) -> str:
     if s is None:
         return None
     return s.lower()
 
+
 class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
     ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}
-
-    # Порядок слотов для снаряжения и карт (чем меньше число – тем выше в списке)
+    
     SLOT_ORDER = {
         'шлем': 1,
         'плечи': 2,
@@ -76,31 +77,46 @@ class Database:
             await self._conn.close()
 
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        async with self._conn.execute(query, params) as cursor:
-            try:
-                rows = await cursor.fetchall()
-                if not query.strip().upper().startswith("SELECT") and not self._in_transaction:
-                    await self._conn.commit()
-                if not rows:
-                    return []
-                if not hasattr(rows[0], 'keys'):
-                    col_names = [desc[0] for desc in cursor.description]
-                    return [dict(zip(col_names, row)) for row in rows]
-                return [dict(row) for row in rows]
-            except Exception as e:
-                if not self._in_transaction:
-                    await self._conn.rollback()
-                raise e
+        try:
+            async with self._conn.execute(query, params) as cursor:
+                try:
+                    rows = await cursor.fetchall()
+                    if not query.strip().upper().startswith("SELECT") and not self._in_transaction:
+                        await self._conn.commit()
+                    if not rows:
+                        return []
+                    if not hasattr(rows[0], 'keys'):
+                        col_names = [desc[0] for desc in cursor.description]
+                        return [dict(zip(col_names, row)) for row in rows]
+                    return [dict(row) for row in rows]
+                except Exception as e:
+                    if not self._in_transaction:
+                        try:
+                            await self._conn.rollback()
+                        except Exception:
+                            pass
+                    raise
+        except Exception as e:
+            logger.error(f"[DB ERROR] {e}")
+            raise
 
     @asynccontextmanager
     async def transaction(self):
+        if self._in_transaction:
+            logger.warning("попытка вложенной транзакции – пропущен BEGIN")
+            yield
+            return
         self._in_transaction = True
         try:
             await self._conn.execute("BEGIN")
             yield
             await self._conn.commit()
-        except Exception:
-            await self._conn.rollback()
+        except Exception as e:
+            logger.error(f"transaction failed: {e}")
+            try:
+                await self._conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             self._in_transaction = False
@@ -114,10 +130,9 @@ class Database:
     async def invalidate_location_cache(self):
         await self._load_locations_cache()
 
-    # ========== АНАЛИТИКА (НОВОЕ) ==========
+    # ========== АНАЛИТИКА ==========
     async def register_user_if_not_exists(self, user_id: int, username: str = None,
-                                           first_name: str = None, last_name: str = None):
-        """Создаёт запись о пользователе, если её не было. Не обновляет last_activity."""
+                                          first_name: str = None, last_name: str = None):
         await self.execute_query(
             """
             INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, first_seen, last_activity)
@@ -127,8 +142,6 @@ class Database:
         )
 
     async def init_analytics_tables(self):
-        """Создаёт таблицы и индексы для аналитики (вызвать один раз при запуске)."""
-        # Таблица пользователей
         await self.execute_query("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -139,7 +152,6 @@ class Database:
                 last_name TEXT
             )
         """)
-        # Таблица событий
         await self.execute_query("""
             CREATE TABLE IF NOT EXISTS analytics_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,7 +164,6 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         """)
-        # Индексы
         await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON analytics_events(timestamp)")
         await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_type ON analytics_events(event_type)")
         await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_target ON analytics_events(target_type, target_id)")
@@ -238,7 +249,6 @@ class Database:
         )
 
     async def get_mobs_by_location_sorted_by_hp(self, location_id: int, offset: int, limit: int) -> List[Dict]:
-        """Мобы в локации, отсортированные по возрастанию HP."""
         return await self.execute_query(
             "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs "
             "WHERE location_id = ? ORDER BY hp ASC, id LIMIT ? OFFSET ?",
@@ -246,7 +256,6 @@ class Database:
         )
 
     async def get_prev_next_mob_by_hp(self, mob_id: int, location_id: int) -> Dict[str, Optional[int]]:
-        """Предыдущий и следующий моб в порядке возрастания HP."""
         rows = await self.execute_query(
             "SELECT id FROM mobs WHERE location_id = ? ORDER BY hp ASC, id",
             (location_id,)
@@ -364,7 +373,6 @@ class Database:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
     async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
-        """Предыдущий и следующий ресурс по алфавиту внутри типа."""
         if resource_type == 'scroll_recipe':
             rows = await self.execute_query(
                 "SELECT id FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE"
@@ -481,8 +489,7 @@ class Database:
         )
 
     async def get_gear_by_rarity_sorted_by_slot(self, rarity: str, offset: int, limit: int) -> List[Dict]:
-        """Снаряжение заданной редкости, отсортированное по кастомному порядку слотов."""
-        case_expression = "CASE slot"
+        case_expression = "CASE slot "
         for slot, order in self.SLOT_ORDER.items():
             case_expression += f" WHEN '{slot}' THEN {order}"
         case_expression += " ELSE 99 END"
@@ -497,8 +504,7 @@ class Database:
         return await self.execute_query(query, (rarity, limit, offset))
 
     async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:
-        """Предыдущий и следующий ID снаряжения в порядке сортировки по слоту."""
-        case_expression = "CASE slot"
+        case_expression = "CASE slot "
         for slot, order in self.SLOT_ORDER.items():
             case_expression += f" WHEN '{slot}' THEN {order}"
         case_expression += " ELSE 99 END"
@@ -629,8 +635,7 @@ class Database:
         )
 
     async def get_all_cards_sorted_by_slot(self, offset: int, limit: int) -> List[Dict]:
-        """Все карты, отсортированные по кастомному порядку слотов."""
-        case_expression = "CASE slot"
+        case_expression = "CASE slot "
         for slot, order in self.SLOT_ORDER.items():
             case_expression += f" WHEN '{slot}' THEN {order}"
         case_expression += " ELSE 99 END"
@@ -690,8 +695,7 @@ class Database:
         )
 
     async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
-        """Предыдущий и следующий ID карты в порядке сортировки по слоту."""
-        case_expression = "CASE slot"
+        case_expression = "CASE slot "
         for slot, order in self.SLOT_ORDER.items():
             case_expression += f" WHEN '{slot}' THEN {order}"
         case_expression += " ELSE 99 END"
@@ -730,10 +734,10 @@ class Database:
                 check = await self.execute_query("SELECT 1 FROM cards WHERE id = ?", (item_id,))
             else:
                 raise ValueError(f"Unknown item_type: {item_type}")
-    
+
             if not check:
                 raise ValueError(f"{item_type} with id {item_id} does not exist")
-    
+
             await self.execute_query(
                 "INSERT INTO drops (mob_id, item_type, item_id) VALUES (?, ?, ?)",
                 (mob_id, item_type, item_id)
@@ -804,5 +808,6 @@ class Database:
             "location_name": parts[3] if len(parts) > 3 else None,
             "location_emoji": parts[4] if len(parts) > 4 else None
         }
+
 
 db = Database()
