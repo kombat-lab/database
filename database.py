@@ -753,6 +753,11 @@ class Database:
         )
 
     # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
+    async def vacuum(self):
+        """Выполняет VACUUM. Не использует fetchall, работает с сырым соединением."""
+        await self._conn.execute("VACUUM")
+        await self._conn.commit()
+    
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",
