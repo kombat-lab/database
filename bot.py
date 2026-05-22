@@ -293,8 +293,7 @@ async def show_cards_list(target, page: int):
         slot_icon = slot_icons.get(card['slot'], '❓')
         text = f"🃏{card['emoji']} {card['name']} {slot_icon}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
-        keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
-        
+
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"cards_page_{page-1}"))
@@ -302,6 +301,8 @@ async def show_cards_list(target, page: int):
         nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"cards_page_{page+1}"))
     if nav:
         keyboard.append(nav)
+
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
 
     if isinstance(target, types.Message):
         await target.answer("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -686,7 +687,6 @@ async def view_card(callback: types.CallbackQuery):
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    keyboard.append([back_to_cats_button])
 
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
