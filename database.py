@@ -18,7 +18,7 @@ class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
     ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}
 
-    # Порядок слотов для снаряжения (чем меньше число – тем выше в списке)
+    # Порядок слотов для снаряжения и карт (чем меньше число – тем выше в списке)
     SLOT_ORDER = {
         'шлем': 1,
         'плечи': 2,
@@ -585,6 +585,21 @@ class Database:
             (limit, offset)
         )
 
+    async def get_all_cards_sorted_by_slot(self, offset: int, limit: int) -> List[Dict]:
+        """Все карты, отсортированные по кастомному порядку слотов."""
+        case_expression = "CASE slot"
+        for slot, order in self.SLOT_ORDER.items():
+            case_expression += f" WHEN '{slot}' THEN {order}"
+        case_expression += " ELSE 99 END"
+        
+        query = f"""
+            SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note
+            FROM cards
+            ORDER BY {case_expression}, name COLLATE NOCASE
+            LIMIT ? OFFSET ?
+        """
+        return await self.execute_query(query, (limit, offset))
+
     async def get_card_by_id(self, card_id: int) -> Optional[Dict]:
         res = await self.execute_query("SELECT * FROM cards WHERE id = ?", (card_id,))
         return res[0] if res else None
@@ -631,41 +646,28 @@ class Database:
             (limit, offset)
         )
 
-    async def get_all_cards_sorted_by_slot(self, offset: int, limit: int) -> List[Dict]:
-    case_expression = "CASE slot"
-    for slot, order in self.SLOT_ORDER.items():
-        case_expression += f" WHEN '{slot}' THEN {order}"
-    case_expression += " ELSE 99 END"
-    
-    query = f"""
-        SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note
-        FROM cards
-        ORDER BY {case_expression}, name COLLATE NOCASE
-        LIMIT ? OFFSET ?
-    """
-    return await self.execute_query(query, (limit, offset))
-
-async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
-    case_expression = "CASE slot"
-    for slot, order in self.SLOT_ORDER.items():
-        case_expression += f" WHEN '{slot}' THEN {order}"
-    case_expression += " ELSE 99 END"
-    
-    rows = await self.execute_query(
-        f"""
-        SELECT id FROM cards
-        ORDER BY {case_expression}, name COLLATE NOCASE
-        """
-    )
-    ids = [row['id'] for row in rows]
-    try:
-        idx = ids.index(card_id)
-        return {
-            'prev_id': ids[idx - 1] if idx > 0 else None,
-            'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
-        }
-    except ValueError:
-        return {'prev_id': None, 'next_id': None}
+    async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
+        """Предыдущий и следующий ID карты в порядке сортировки по слоту."""
+        case_expression = "CASE slot"
+        for slot, order in self.SLOT_ORDER.items():
+            case_expression += f" WHEN '{slot}' THEN {order}"
+        case_expression += " ELSE 99 END"
+        
+        rows = await self.execute_query(
+            f"""
+            SELECT id FROM cards
+            ORDER BY {case_expression}, name COLLATE NOCASE
+            """
+        )
+        ids = [row['id'] for row in rows]
+        try:
+            idx = ids.index(card_id)
+            return {
+                'prev_id': ids[idx - 1] if idx > 0 else None,
+                'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
+            }
+        except ValueError:
+            return {'prev_id': None, 'next_id': None}
 
     # ========== ДРОПЫ ==========
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
