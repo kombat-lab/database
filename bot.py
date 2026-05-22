@@ -226,7 +226,8 @@ def get_inline_search_button() -> InlineKeyboardMarkup:
 async def get_items_keyboard(category: str, location_id: int, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ITEMS_PER_PAGE
     if category == "mobs":
-        items = await db.get_mobs_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+        # Используем сортировку по HP
+        items = await db.get_mobs_by_location_sorted_by_hp(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     else:
         items = await db.get_resources_by_location(location_id, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(items) > ITEMS_PER_PAGE
@@ -248,7 +249,8 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
 
 async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ITEMS_PER_PAGE
-    items = await db.get_gear_by_rarity(rarity, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+    # Используем новую сортировку по слоту
+    items = await db.get_gear_by_rarity_sorted_by_slot(rarity, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
     keyboard = []
@@ -528,24 +530,18 @@ async def view_mob(callback: types.CallbackQuery):
     page = int(parts[4])
     text = await format_mob_card(mob_id)
 
-    prev_mob = await db.execute_query(
-        "SELECT id FROM mobs WHERE location_id = ? AND id < ? ORDER BY id DESC LIMIT 1",
-        (location_id, mob_id)
-    )
-    next_mob = await db.execute_query(
-        "SELECT id FROM mobs WHERE location_id = ? AND id > ? ORDER BY id LIMIT 1",
-        (location_id, mob_id)
-    )
+    # Заменяем прямые SQL-запросы на новый метод
+    neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
     nav_buttons = []
-    if prev_mob:
+    if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_mobs_{prev_mob[0]['id']}_{location_id}_{page}"
+            callback_data=f"view_mobs_{neighbours['prev_id']}_{location_id}_{page}"
         ))
-    if next_mob:
+    if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_mobs_{next_mob[0]['id']}_{location_id}_{page}"
+            callback_data=f"view_mobs_{neighbours['next_id']}_{location_id}_{page}"
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
@@ -618,24 +614,18 @@ async def view_gear(callback: types.CallbackQuery):
     page = int(parts[4])
     text = await format_gear_card(gear_id)
 
-    prev_gear = await db.execute_query(
-        "SELECT id FROM gear WHERE rarity = ? AND id < ? ORDER BY id DESC LIMIT 1",
-        (rarity, gear_id)
-    )
-    next_gear = await db.execute_query(
-        "SELECT id FROM gear WHERE rarity = ? AND id > ? ORDER BY id LIMIT 1",
-        (rarity, gear_id)
-    )
+    # Заменяем прямые SQL-запросы на новый метод
+    neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
     nav_buttons = []
-    if prev_gear:
+    if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_gear_{prev_gear[0]['id']}_{rarity}_{page}"
+            callback_data=f"view_gear_{neighbours['prev_id']}_{rarity}_{page}"
         ))
-    if next_gear:
+    if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_gear_{next_gear[0]['id']}_{rarity}_{page}"
+            callback_data=f"view_gear_{neighbours['next_id']}_{rarity}_{page}"
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
