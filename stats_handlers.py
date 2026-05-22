@@ -37,11 +37,11 @@ async def show_stats_menu(target, edit: bool = False):
     else:
         await target.answer("📈 Выберите раздел статистики:", reply_markup=keyboard)
 
-async def show_top_items(callback: types.CallbackQuery, item_type: str):
+async def show_top_items(callback: types.CallbackQuery, item_type: str, type_name_ru: str):
     """Показывает топ-30 сущностей указанного типа с названиями и эмодзи."""
     items = await get_top_items_with_names(item_type, days=30, limit=30)
     if not items:
-        text = f"📊 Нет данных по {item_type} за последние 30 дней."
+        text = f"📊 Нет данных по {type_name_ru} за последние 30 дней."
     else:
         lines = []
         for idx, item in enumerate(items, 1):
@@ -49,7 +49,7 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str):
             name = item.get('name', f"ID {item['target_id']}")
             views = item['views']
             lines.append(f"{idx}. {emoji} {name} — {views} просмотров")
-        text = f"🏆 <b>Топ-30 {item_type}ов за 30 дней</b>\n\n" + "\n".join(lines)
+        text = f"🏆 <b>Топ-30 {type_name_ru} за 30 дней</b>\n\n" + "\n".join(lines)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
@@ -135,13 +135,13 @@ async def stats_router_callback(callback: types.CallbackQuery):
     action = callback.data.split("_")[1]
     
     if action == "mobs":
-        await show_top_items(callback, 'mob')
+        await show_top_items(callback, 'mob', 'мобов')
     elif action == "resources":
-        await show_top_items(callback, 'resource')
+        await show_top_items(callback, 'resource', 'ресурсов')
     elif action == "gear":
-        await show_top_items(callback, 'gear')
+        await show_top_items(callback, 'gear', 'предметов снаряжения')
     elif action == "cards":
-        await show_top_items(callback, 'card')
+        await show_top_items(callback, 'card', 'карт')
     elif action == "general":
         await show_general_stats(callback)
     elif action == "reset":
