@@ -285,8 +285,6 @@ async def show_cards_list(target, page: int):
     if nav:
         keyboard.append(nav)
 
-    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")])
-
     if isinstance(target, types.Message):
         await target.answer("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
@@ -299,8 +297,7 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📜 Рецепты экипировки", callback_data="resource_cat_scroll_recipe")],
         [InlineKeyboardButton(text="💰 Валюта", callback_data="resource_cat_currency")],
         [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="resource_cat_alchemy")],
-        [InlineKeyboardButton(text="🃏 Карты", callback_data="resource_cat_cards")],
-        [InlineKeyboardButton(text="🔙 Главное меню", callback_data="back_to_main_menu")]
+        [InlineKeyboardButton(text="🃏 Карты", callback_data="resource_cat_cards")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
