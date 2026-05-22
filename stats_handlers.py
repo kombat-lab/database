@@ -103,8 +103,12 @@ async def show_general_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
-
 async def confirm_reset(callback: types.CallbackQuery):
+    current_text = callback.message.text or ""
+    if "⚠️ ВНИМАНИЕ!" in current_text:
+        await callback.answer("Подтверждение уже показано")
+        return
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
@@ -121,7 +125,6 @@ async def confirm_reset(callback: types.CallbackQuery):
         reply_markup=keyboard
     )
     await callback.answer()
-
 
 # ========== ХЕНДЛЕРЫ ==========
 @stats_router.message(Command("stats"))
