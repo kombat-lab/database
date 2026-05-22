@@ -272,7 +272,6 @@ async def show_cards_list(target, page: int):
     has_next = len(cards) > ITEMS_PER_PAGE
     cards = cards[:ITEMS_PER_PAGE]
 
-    # Словарь соответствия слота иконке
     slot_icons = {
         'шлем': '🪖',
         'плечи': '🪹',
@@ -356,32 +355,6 @@ async def show_resources_by_type(target, resource_type: str, page: int):
         await target.answer(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
         await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-async def show_cards_list(target, page: int):
-    offset = (page - 1) * ITEMS_PER_PAGE
-    cards = await db.get_all_cards(offset, ITEMS_PER_PAGE + FETCH_EXTRA)
-    has_next = len(cards) > ITEMS_PER_PAGE
-    cards = cards[:ITEMS_PER_PAGE]
-
-    keyboard = []
-    for card in cards:
-        text = f"🃏{card['emoji']} {card['name']} (слот: {card['slot']})"
-        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
-
-    nav = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"cards_page_{page-1}"))
-    if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"cards_page_{page+1}"))
-    if nav:
-        keyboard.append(nav)
-
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="back_to_resource_cats")])
-
-    if isinstance(target, types.Message):
-        await target.answer("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    else:
-        await target.message.edit_text("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
