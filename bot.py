@@ -68,19 +68,30 @@ async def format_resource_card(resource_id: int) -> str:
         'alchemy': '⚗️ Алхимия'
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
+    is_alchemy = (data.get('type') == 'alchemy')
+    
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
-    text += f"🏷 Тип: {type_str}\n\n"
+    text += f"🏷 Тип: {type_str}\n"
+    
+    if not is_alchemy:
+        text += "\n"
+    
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n"
         for m in data['mobs']:
             loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
             text += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
+        text += "\n"
     if data.get('note'):
-        text += f"\n📝 <i>{escape_html(data['note'])}</i>"
+        text += f"\n📝 <i>{escape_html(data['note'])}</i>\n"
 
     recipe = await db.get_recipe_for_resource(resource_id)
     if recipe and recipe['ingredients']:
-        text += "\n\n⚗️ <b>Алхимия:</b>\n"
+        if not is_alchemy:
+            text += "\n⚗️ <b>Алхимия:</b>\n"
+        else:
+            if not data['mobs'] and not data.get('note'):
+                text += "\n"
         dust = None
         other = []
         for ing in recipe['ingredients']:
