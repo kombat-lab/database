@@ -175,10 +175,12 @@ async def reset_analytics_callback(callback: types.CallbackQuery):
     """Выполняет сброс аналитических таблиц."""
     try:
         await reset_analytics_data()
+        # Небольшая пауза, чтобы БД завершила все операции
+        await asyncio.sleep(0.5)
         await callback.message.edit_text("✅ Аналитика полностью сброшена.")
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
-    # Возвращаем в меню статистики через секунду, чтобы пользователь увидел результат
+    # Возвращаем в меню статистики через секунду
     await asyncio.sleep(1)
     await show_stats_menu(callback.message, edit=False)
     await callback.answer()
