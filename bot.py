@@ -391,22 +391,18 @@ async def search_command(message: types.Message):
 
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    await message.delete()
     await message.answer("Выбери локацию для мобов:", reply_markup=await get_locations_keyboard("mobs"))
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
-    await message.delete()
     await message.answer("Выберите категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
 
 @dp.message(F.text == "⚔️ Снаряжение")
 async def gear_button(message: types.Message):
-    await message.delete()
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
 @dp.message(F.text == "🔍 Поиск")
 async def search_button(message: types.Message):
-    await message.delete()
     await message.answer(
         "Нажми на кнопку ниже, чтобы включить поиск.\nЗатем просто введи запрос (например, <b>бронзовик</b> или <b>хитин</b>).",
         reply_markup=get_inline_search_button(),
