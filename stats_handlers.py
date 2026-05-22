@@ -2,6 +2,7 @@ import logging
 import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from analytics import (
     get_active_users_count,
@@ -11,6 +12,7 @@ from analytics import (
     reset_analytics_data,
     get_top_search_queries,
 )
+from database import db
 
 logger = logging.getLogger(__name__)
 stats_router = Router()
@@ -103,16 +105,14 @@ async def show_general_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
+
 @stats_router.callback_query(F.data == "stats_reset")
 async def confirm_reset(callback: types.CallbackQuery):
-    # Удаляем сообщение, из которого нажали
     await callback.message.delete()
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
     ])
-    # Отправляем новое сообщение с подтверждением
     await callback.message.answer(
         "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
         "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
@@ -126,7 +126,32 @@ async def confirm_reset(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# ========== ХЕНДЛЕРЫ ==========
+
+@stats_router.callback_query(F.data == "stats_reset_confirm")
+async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    status_msg = await callback.message.answer("⏳ Сбрасываю аналитику...")
+
+    try:
+        await state.clear()
+        await db.execute_query("COMMIT")
+        await reset_analytics_data()
+        await status_msg.edit_text("✅ Аналитика полностью сброшена.")
+    except Exception as e:
+        logger.exception("Сброс аналитики не удался")
+        await status_msg.edit_text(
+            f"❌ Ошибка при сбросе: {e}\n\n"
+            "Возможные причины:\n"
+            "• База данных временно заблокирована (попробуйте позже)\n"
+            "• Недостаточно прав на выполнение VACUUM"
+        )
+    else:
+        await asyncio.sleep(1.5)
+    finally:
+        await show_stats_menu(callback.message, edit=False)
+        await callback.answer()
+
+
 @stats_router.message(Command("stats"))
 async def show_stats_command(message: types.Message):
     from admin_handlers import is_admin
@@ -141,11 +166,13 @@ async def admin_stats_callback(callback: types.CallbackQuery):
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 
+
 @stats_router.callback_query(F.data == "back_to_stats")
 async def back_to_stats(callback: types.CallbackQuery):
     await callback.message.delete()
     await show_stats_menu(callback.message, edit=False)
     await callback.answer()
+
 
 @stats_router.callback_query(F.data.startswith("stats_"))
 async def stats_router_callback(callback: types.CallbackQuery):
@@ -166,35 +193,3 @@ async def stats_router_callback(callback: types.CallbackQuery):
         await confirm_reset(callback)
     else:
         await callback.answer("Неизвестная команда")
-
-@stats_router.callback_query(F.data == "stats_reset_confirm")
-async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMContext):
-    # Удаляем исходное сообщение с подтверждением, чтобы не путать пользователя
-    await callback.message.delete()
-    
-    # Отправляем временное сообщение о начале сброса
-    status_msg = await callback.message.answer("⏳ Сбрасываю аналитику...")
-    
-    try:
-        # Очищаем состояние FSM, чтобы избежать блокировок
-        await state.clear()
-        # Принудительно завершаем возможную транзакцию
-        await db.execute_query("COMMIT")
-        
-        await reset_analytics_data()
-        
-        # Успех
-        await status_msg.edit_text("✅ Аналитика полностью сброшена.")
-    except Exception as e:
-        logger.exception("Сброс аналитики не удался")
-        await status_msg.edit_text(f"❌ Ошибка при сбросе: {e}\n\n"
-                                   f"Возможные причины:\n"
-                                   f"• База данных временно заблокирована (попробуйте позже)\n"
-                                   f"• Недостаточно прав на выполнение VACUUM")
-    else:
-        # Пауза, чтобы пользователь увидел сообщение об успехе
-        await asyncio.sleep(1.5)
-    finally:
-        # Показываем меню статистики заново (новым сообщением)
-        await show_stats_menu(callback.message, edit=False)
-        await callback.answer()
