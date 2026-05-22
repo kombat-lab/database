@@ -103,17 +103,17 @@ async def show_general_stats(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
+@stats_router.callback_query(F.data == "stats_reset")
 async def confirm_reset(callback: types.CallbackQuery):
-    current_text = callback.message.text or ""
-    if "⚠️ ВНИМАНИЕ!" in current_text:
-        await callback.answer("Подтверждение уже показано")
-        return
-
+    # Удаляем сообщение, из которого нажали
+    await callback.message.delete()
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
     ])
-    await callback.message.edit_text(
+    # Отправляем новое сообщение с подтверждением
+    await callback.message.answer(
         "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
         "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
         "- историю просмотров карточек\n"
@@ -141,12 +141,11 @@ async def admin_stats_callback(callback: types.CallbackQuery):
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 
-
 @stats_router.callback_query(F.data == "back_to_stats")
 async def back_to_stats(callback: types.CallbackQuery):
-    await show_stats_menu(callback, edit=True)
+    await callback.message.delete()
+    await show_stats_menu(callback.message, edit=False)
     await callback.answer()
-
 
 @stats_router.callback_query(F.data.startswith("stats_"))
 async def stats_router_callback(callback: types.CallbackQuery):
@@ -168,7 +167,6 @@ async def stats_router_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("Неизвестная команда")
 
-
 @stats_router.callback_query(F.data == "stats_reset_confirm")
 async def reset_analytics_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("⏳ Сбрасываю аналитику...")
@@ -178,5 +176,5 @@ async def reset_analytics_callback(callback: types.CallbackQuery):
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {e}")
     await asyncio.sleep(1.5)
-    await show_stats_menu(callback.message, edit=False)
+    await show_stats_menu(callback.message, edit=False)   # edit=False обязательно
     await callback.answer()
