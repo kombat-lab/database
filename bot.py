@@ -13,6 +13,11 @@ from aiogram.fsm.context import FSMContext
 from database import db
 from admin_handlers import admin_router
 from utils import clean_username, escape_html
+from analytics import (
+    AnalyticsMiddleware, analytics_buffer,
+    log_start, log_view_mob, log_view_resource, log_view_gear, log_view_card,
+    log_search, log_inline_search
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -370,6 +375,7 @@ async def show_resources_by_type(target, resource_type: str, page: int):
 # ---------- Обработчики ----------
 @dp.message(Command("start", "menu"))
 async def send_menu(message: types.Message):
+    await log_start(message.from_user.id)
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
 
 @dp.message(Command("search"))
@@ -417,7 +423,9 @@ async def handle_search(message: types.Message, state: FSMContext):
     if len(query_text) < 2:
         await message.answer("Введите хотя бы 2 символа для поиска.")
         return
-
+    
+    await log_search(message.from_user.id, query_text)
+    
     results = await db.search(query_text)
     if not any(results.values()):
         await message.answer("Ничего не найдено.")
@@ -455,6 +463,8 @@ async def inline_search_handler(inline_query: InlineQuery):
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
         return
+
+    await log_inline_search(inline_query.from_user.id, query)
 
     results = await db.search(query)
     inline_results = []
@@ -552,6 +562,7 @@ async def view_mob(callback: types.CallbackQuery):
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
+    await log_view_mob(callback.from_user.id, mob_id)
     text = await format_mob_card(mob_id)
 
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
@@ -583,6 +594,7 @@ async def view_resource(callback: types.CallbackQuery):
     res_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
+    await log_view_resource(callback.from_user.id, res_id)
     text = await format_resource_card(res_id)
 
     prev_res = await db.execute_query(
@@ -635,6 +647,7 @@ async def view_gear(callback: types.CallbackQuery):
     gear_id = int(parts[2])
     rarity = parts[3]
     page = int(parts[4])
+    await log_view_gear(callback.from_user.id, gear_id)
     text = await format_gear_card(gear_id)
 
     neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
@@ -672,6 +685,7 @@ async def view_card(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     card_id = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 else 1
+    await log_view_card(callback.from_user.id, card_id)
     text = await format_card_card(card_id)
 
     neighbours = await db.get_prev_next_card_by_slot(card_id)
@@ -727,7 +741,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     resource_id = int(parts[2])
     resource_type = parts[3]
     page = int(parts[4])
-
+    await log_view_resource(callback.from_user.id, resource_id)
     text = await format_resource_card(resource_id)
 
     neighbours = await db.get_prev_next_resource_by_type(resource_id, resource_type)
@@ -770,10 +784,27 @@ async def back_to_main_menu(callback: types.CallbackQuery):
 # ---------- Запуск ----------
 async def main():
     await db.connect()
+    # Инициализация таблиц аналитики (создаст, если не существуют)
+    await db.init_analytics_tables()
+    
+    # Инициализация буфера аналитики (опционально, для снижения нагрузки)
+    global analytics_buffer
+    from analytics import AnalyticsBuffer, analytics_buffer as buf
+    analytics_buffer = AnalyticsBuffer(flush_interval=5.0, batch_size=100)
+    await analytics_buffer.start()
+    # Пробрасываем буфер в модуль analytics, чтобы _log_event использовал его
+    import analytics
+    analytics.analytics_buffer = analytics_buffer
+    
+    # Подключение middleware
+    dp.update.middleware(AnalyticsMiddleware())
+    
     dp.include_router(admin_router)
     try:
         await dp.start_polling(bot, skip_updates=True)
     finally:
+        if analytics_buffer:
+            await analytics_buffer.stop()
         await db.close()
 
 if __name__ == "__main__":
