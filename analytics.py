@@ -269,54 +269,59 @@ async def get_db_stats() -> dict:
 
 async def reset_analytics_data():
     """
-    Полностью и БЕЗВОЗВРАТНО стирает ВСЮ аналитику:
-    - таблицу analytics_events
-    - таблицу users
-    - сбрасывает автоинкремент
-    - очищает буфер аналитики (если активен)
-    - перезапускает буфер, чтобы он не подлил старые события
+    Полностью очищает таблицы аналитики и сбрасывает счётчики.
     """
     global analytics_buffer
+    import logging
+    logger = logging.getLogger(__name__)
 
-    # 1. Останавливаем буфер, если он запущен
+    logger.warning("!!! СБРОС АНАЛИТИКИ ЗАПУЩЕН !!!")
+
+    # 1. Останавливаем и очищаем буфер аналитики, чтобы он не дописывал события
     if analytics_buffer:
-        # Останавливаем фоновую задачу
         if analytics_buffer._task and not analytics_buffer._task.done():
             analytics_buffer._task.cancel()
             try:
                 await analytics_buffer._task
             except asyncio.CancelledError:
                 pass
-        # Очищаем очередь
         analytics_buffer.queue.clear()
-        # Пересоздаём буфер заново (старый экземпляр больше не используется)
+        # Создаём новый буфер (пока без запуска, чтобы не мешал)
         analytics_buffer = AnalyticsBuffer(flush_interval=5.0, batch_size=100)
-        # Запускаем новый буфер
-        await analytics_buffer.start()
-        # Пробрасываем в модуль, как в bot.py
-        import analytics
-        analytics.analytics_buffer = analytics_buffer
 
-    # 2. Принудительно фиксируем всё, что могло остаться
+    # 2. Прямой доступ к сырому соединению БД – никаких авто-коммитов
+    conn = db._conn
+    if not conn:
+        logger.error("Нет соединения с БД")
+        return
+
     try:
-        await db._conn.execute("COMMIT")
-    except:
-        pass
+        # Отключаем проверку внешних ключей на время очистки
+        await conn.execute("PRAGMA foreign_keys = OFF")
+        await conn.execute("BEGIN IMMEDIATE")
 
-    # 3. Удаляем данные из таблиц (с отключением проверки внешних ключей, чтобы не мешало)
-    await db.execute_query("PRAGMA foreign_keys = OFF")
-    async with db.transaction():
-        # Проверяем существование таблиц через sqlite_master
-        tables = await db.execute_query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('analytics_events', 'users')"
-        )
-        for tbl in tables:
-            await db.execute_query(f"DELETE FROM {tbl['name']}")
-        # Сброс автоинкремента
-        await db.execute_query(
-            "DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')"
-        )
-    await db.execute_query("PRAGMA foreign_keys = ON")
+        # Удаляем данные из таблиц
+        await conn.execute("DELETE FROM analytics_events")
+        await conn.execute("DELETE FROM users")
 
-    # 4. Небольшая пауза, чтобы БД завершила все операции
-    await asyncio.sleep(0.3)
+        # Сбрасываем автоинкремент
+        await conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('analytics_events', 'users')")
+
+        await conn.commit()
+        logger.info("Таблицы аналитики успешно очищены")
+
+    except Exception as e:
+        logger.exception("Ошибка при очистке аналитики")
+        await conn.rollback()
+        raise
+    finally:
+        # Включаем обратно проверку внешних ключей
+        await conn.execute("PRAGMA foreign_keys = ON")
+
+    # 3. Запускаем новый буфер
+    await analytics_buffer.start()
+    import analytics
+    analytics.analytics_buffer = analytics_buffer
+
+    # 4. Небольшая пауза для гарантии
+    await asyncio.sleep(0.2)
