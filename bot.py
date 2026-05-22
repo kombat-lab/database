@@ -268,7 +268,7 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
 
 async def show_cards_list(target, page: int):
     offset = (page - 1) * ITEMS_PER_PAGE
-    cards = await db.get_all_cards(offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+    cards = await db.get_all_cards_sorted_by_slot(offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(cards) > ITEMS_PER_PAGE
     cards = cards[:ITEMS_PER_PAGE]
 
@@ -663,19 +663,18 @@ async def view_card(callback: types.CallbackQuery):
     page = int(parts[3]) if len(parts) > 3 else 1
     text = await format_card_card(card_id)
 
-    prev_card = await db.execute_query("SELECT id FROM cards WHERE id < ? ORDER BY id DESC LIMIT 1", (card_id,))
-    next_card = await db.execute_query("SELECT id FROM cards WHERE id > ? ORDER BY id LIMIT 1", (card_id,))
+    neighbours = await db.get_prev_next_card_by_slot(card_id)
 
     nav_buttons = []
-    if prev_card:
+    if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущая",
-            callback_data=f"view_card_{prev_card[0]['id']}_{page}"
+            callback_data=f"view_card_{neighbours['prev_id']}_{page}"
         ))
-    if next_card:
+    if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующая ▶️",
-            callback_data=f"view_card_{next_card[0]['id']}_{page}"
+            callback_data=f"view_card_{neighbours['next_id']}_{page}"
         ))
 
     back_button = InlineKeyboardButton(
