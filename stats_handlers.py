@@ -10,8 +10,10 @@ from analytics import (
     get_retention,
     get_top_items_with_names,
     get_db_stats,
+    get_top_search_queries,
     reset_analytics_data,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ async def show_stats_menu(target, edit: bool = False):
         [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
         [InlineKeyboardButton(text="⚔️ Топ-30 снаряжения", callback_data="stats_gear")],
         [InlineKeyboardButton(text="🃏 Топ-30 карт", callback_data="stats_cards")],
+        [InlineKeyboardButton(text="🔍 Топ-30 поисковых запросов", callback_data="stats_searches")],
         [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
         [InlineKeyboardButton(text="🗑 Сбросить аналитику", callback_data="stats_reset")],
         [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
@@ -50,6 +53,25 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
             views = item['views']
             lines.append(f"{idx}. {emoji} {name} — {views} просмотров")
         text = f"🏆 <b>Топ-30 {type_name_ru} за 30 дней</b>\n\n" + "\n".join(lines)
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
+
+async def show_top_searches(callback: types.CallbackQuery):
+    """Показывает топ-30 поисковых запросов (обычный + инлайн)."""
+    items = await get_top_search_queries(days=30, limit=30, search_type='all')
+    if not items:
+        text = "📊 Нет поисковых запросов за последние 30 дней."
+    else:
+        lines = []
+        for idx, item in enumerate(items, 1):
+            query = item['query'][:50]  # обрезаем длинные запросы
+            count = item['count']
+            lines.append(f"{idx}. \"{query}\" — {count} раз")
+        text = f"🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
@@ -146,6 +168,8 @@ async def stats_router_callback(callback: types.CallbackQuery):
         await show_general_stats(callback)
     elif action == "reset":
         await confirm_reset(callback)
+    elif action == "searches":
+        await show_top_searches(callback)
     else:
         await callback.answer("Неизвестная команда")
 
