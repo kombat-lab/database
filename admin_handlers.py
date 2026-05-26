@@ -561,7 +561,7 @@ async def card_save(message: types.Message, state: FSMContext):
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
-# УПРАВЛЕНИЕ МОБАМИ (сокращённо, без изменений)
+# УПРАВЛЕНИЕ МОБАМИ
 # ============================================================
 
 class MobStates(StatesGroup):
@@ -760,7 +760,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
 
-# ------------------- Управление дропом (с поддержкой карт) -------------------
+# ------------------- Управление дропом -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
     from admin_utils import build_paginated_keyboard, ADMIN_ITEMS_PER_PAGE
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
@@ -799,9 +799,9 @@ async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> Inlin
 
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"drop_page_{category}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"drop_page_{category}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"drop_page_{category}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"drop_page_{category}_{page+1}"))
     if nav:
         keyboard.append(nav)
 
@@ -1096,7 +1096,7 @@ async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # ============================================================
-# УПРАВЛЕНИЕ РЕЦЕПТАМИ (без изменений)
+# УПРАВЛЕНИЕ РЕЦЕПТАМИ
 # ============================================================
 
 class RecipeStates(StatesGroup):
@@ -1138,9 +1138,9 @@ async def get_recipe_list_keyboard(result_type: str, page: int):
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"recipe_view_{r['id']}")])
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"recipe_page_{result_type}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"recipe_page_{result_type}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"recipe_page_{result_type}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"recipe_page_{result_type}_{page+1}"))
     if nav:
         keyboard.append(nav)
     keyboard.append([InlineKeyboardButton(text="➕ Добавить рецепт", callback_data=f"recipe_add_{result_type}")])
@@ -1279,9 +1279,9 @@ async def show_ingredient_page(target, resources, page, state):
         keyboard.append([InlineKeyboardButton(text=f"{r['emoji']} {r['name']}", callback_data=f"recipe_ing_select_{r['id']}_{page}")])
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"recipe_ing_page_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"recipe_ing_page_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"recipe_ing_page_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"recipe_ing_page_{page+1}"))
     if nav:
         keyboard.append(nav)
     keyboard.append([InlineKeyboardButton(text="🔙 Готово", callback_data="recipe_finish_adding")])
