@@ -275,9 +275,9 @@ async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardM
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_gear_{rarity}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_gear_{rarity}_{page+1}"))
     if nav:
         keyboard.append(nav)
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
@@ -313,9 +313,9 @@ async def show_cards_list(target, page: int):
 
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"cards_page_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"cards_page_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"cards_page_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"cards_page_{page+1}"))
     if nav:
         keyboard.append(nav)
 
