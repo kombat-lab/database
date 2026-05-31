@@ -635,7 +635,7 @@ async def mob_edit_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @admin_router.callback_query(MobStates.edit_field, F.data.startswith("mob_edit_field_"))
 async def mob_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
-    field = callback.data.split("_")[3]
+    field = callback.data.split("_", 3)[3]
     await state.update_data(edit_field=field)
     await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
     await state.set_state(MobStates.edit_new_value)
