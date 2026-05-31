@@ -546,6 +546,14 @@ class Database:
         """
         return await self.execute_query(query, (result_type, limit, offset))
 
+    async def get_recipe_id_by_gear(self, gear_id: int) -> Optional[int]:
+        """Возвращает ID рецепта для указанного снаряжения (если есть)."""
+        res = await self.execute_query(
+            "SELECT id FROM recipes WHERE result_type = 'gear' AND result_id = ?",
+            (gear_id,)
+        )
+        return res[0]['id'] if res else None
+
     async def get_recipe_details(self, recipe_id: int) -> Optional[Dict]:
         recipe = await self.execute_query("SELECT * FROM recipes WHERE id=?", (recipe_id,))
         if not recipe:
