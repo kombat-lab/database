@@ -664,16 +664,15 @@ async def view_gear(callback: types.CallbackQuery):
     gear_id = int(parts[2])
     rarity = parts[3]
     page = int(parts[4])
+
     await log_view_gear(callback.from_user.id, gear_id)
     text = await format_gear_card(gear_id)
 
-    # Получаем рецепт, если есть
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
 
-    # Формируем клавиатуру
-    nav_buttons = []
     neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
+    nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
@@ -694,10 +693,9 @@ async def view_gear(callback: types.CallbackQuery):
     if nav_buttons:
         keyboard.append(nav_buttons)
 
-    # Кнопка для рецепта (только если есть рецепт и у пользователя есть username)
-    if recipe_id and user_username:
-        # Проверяем, есть ли уже пользователь в списке владельцев
-        owners = await db.get_recipe_owners(recipe_id)  # нужно добавить этот метод
+    # Кнопка добавления/удаления рецепта только для синей (сверхредкой) экипировки
+    if rarity == 'epic' and recipe_id and user_username:
+        owners = await db.get_recipe_owners(recipe_id)
         if user_username in owners:
             keyboard.append([InlineKeyboardButton(
                 text="❌ У меня нет рецепта",
@@ -710,7 +708,6 @@ async def view_gear(callback: types.CallbackQuery):
             )])
 
     keyboard.append([back_button])
-
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
@@ -766,16 +763,29 @@ async def recipe_claim(callback: types.CallbackQuery):
     username = callback.from_user.username
 
     if not username:
-        await callback.answer("У вас нет username, установите его в Telegram.", show_alert=True)
+        await callback.answer("У вас нет username. Установите его в настройках Telegram.", show_alert=True)
         return
 
-    # Добавляем владельца
     await db.add_recipe_owner(recipe_id, username)
-
-    # Обновляем карточку
     await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("✅ Вы добавлены в список владельцев рецепта!")
+    await callback.answer("✅ Вы добавлены в список владельцев рецепта!", show_alert=False)
 
+@dp.callback_query(F.data.startswith("recipe_relinquish_"))
+async def recipe_relinquish(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    recipe_id = int(parts[2])
+    gear_id = int(parts[3])
+    rarity = parts[4]
+    page = int(parts[5])
+    username = callback.from_user.username
+
+    if not username:
+        await callback.answer("Ошибка: username не найден.", show_alert=True)
+        return
+
+    await db.remove_recipe_owner(recipe_id, username)
+    await update_gear_card(callback, gear_id, rarity, page)
+    await callback.answer("❌ Вы удалены из списка владельцев рецепта.", show_alert=False)
 
 @dp.callback_query(F.data.startswith("recipe_relinquish_"))
 async def recipe_relinquish(callback: types.CallbackQuery):
@@ -795,9 +805,8 @@ async def recipe_relinquish(callback: types.CallbackQuery):
     await update_gear_card(callback, gear_id, rarity, page)
     await callback.answer("❌ Вы удалены из списка владельцев рецепта.")
 
-
 async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: str, page: int):
-    """Обновляет сообщение с карточкой снаряжения."""
+    """Обновляет карточку снаряжения после изменения владельца рецепта."""
     text = await format_gear_card(gear_id)
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
@@ -824,7 +833,7 @@ async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: 
     if nav_buttons:
         keyboard.append(nav_buttons)
 
-    if recipe_id and user_username:
+    if rarity == 'epic' and recipe_id and user_username:
         owners = await db.get_recipe_owners(recipe_id)
         if user_username in owners:
             keyboard.append([InlineKeyboardButton(
@@ -838,7 +847,6 @@ async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: 
             )])
 
     keyboard.append([back_button])
-
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 # ---------- Ресурсы по категориям ----------
