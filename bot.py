@@ -255,9 +255,9 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"page_{category}_{location_id}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶", callback_data=f"page_{category}_{location_id}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_{category}_{location_id}_{page+1}"))
     if nav:
         keyboard.append(nav)
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к локациям", callback_data=f"back_to_locations_{category}")])
