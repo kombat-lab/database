@@ -554,6 +554,14 @@ class Database:
         )
         return res[0]['id'] if res else None
 
+    async def get_recipe_owners(self, recipe_id: int) -> List[str]:
+        """Возвращает список username владельцев рецепта."""
+        rows = await self.execute_query(
+            "SELECT player_username FROM recipe_owners WHERE recipe_id = ?",
+            (recipe_id,)
+        )
+        return [row['player_username'] for row in rows]
+
     async def get_recipe_details(self, recipe_id: int) -> Optional[Dict]:
         recipe = await self.execute_query("SELECT * FROM recipes WHERE id=?", (recipe_id,))
         if not recipe:
