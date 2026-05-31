@@ -667,8 +667,13 @@ async def view_gear(callback: types.CallbackQuery):
     await log_view_gear(callback.from_user.id, gear_id)
     text = await format_gear_card(gear_id)
 
-    neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
+    # Получаем рецепт, если есть
+    recipe_id = await db.get_recipe_id_by_gear(gear_id)
+    user_username = callback.from_user.username
+
+    # Формируем клавиатуру
     nav_buttons = []
+    neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
@@ -679,14 +684,33 @@ async def view_gear(callback: types.CallbackQuery):
             text="Следующий ▶️",
             callback_data=f"view_gear_{neighbours['next_id']}_{rarity}_{page}"
         ))
+
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
         callback_data=f"list_gear_{rarity}_{page}"
     )
+
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
+
+    # Кнопка для рецепта (только если есть рецепт и у пользователя есть username)
+    if recipe_id and user_username:
+        # Проверяем, есть ли уже пользователь в списке владельцев
+        owners = await db.get_recipe_owners(recipe_id)  # нужно добавить этот метод
+        if user_username in owners:
+            keyboard.append([InlineKeyboardButton(
+                text="❌ У меня нет рецепта",
+                callback_data=f"recipe_relinquish_{recipe_id}_{gear_id}_{rarity}_{page}"
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                text="✅ У меня есть рецепт",
+                callback_data=f"recipe_claim_{recipe_id}_{gear_id}_{rarity}_{page}"
+            )])
+
     keyboard.append([back_button])
+
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
