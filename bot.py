@@ -387,15 +387,15 @@ async def send_menu(message: types.Message):
 
 @dp.message(Command("search"))
 async def search_command(message: types.Message):
-    await message.answer("🔎 Просто напишите название моба, ресурса, снаряжения или карты в чат.")
+    await message.answer("🔎 Напиши название моба, ресурса, снаряжения или карты.")
 
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    await message.answer("Выбери локацию для мобов:", reply_markup=await get_locations_keyboard("mobs"))
+    await message.answer("Выбери локацию мобов:", reply_markup=await get_locations_keyboard("mobs"))
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
-    await message.answer("Выберите категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
+    await message.answer("Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
 
 @dp.message(F.text == "⚔️ Снаряжение")
 async def gear_button(message: types.Message):
@@ -424,7 +424,7 @@ async def resource_cat_cards(callback: types.CallbackQuery):
 async def handle_search(message: types.Message, state: FSMContext):
     query_text = message.text.strip()
     if len(query_text) < 2:
-        await message.answer("Введите хотя бы 2 символа для поиска.")
+        await message.answer("Введи хотя бы 2 символа для поиска.")
         return
     
     await log_search(message.from_user.id, query_text)
@@ -471,7 +471,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     inline_log_tasks[inline_query.from_user.id] = task
     
     if not query:
-        await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введите запрос для поиска", switch_pm_parameter="start")
+        await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введи запрос для поиска", switch_pm_parameter="start")
         return
 
     results = await db.search(query)
@@ -763,12 +763,12 @@ async def recipe_claim(callback: types.CallbackQuery):
     username = callback.from_user.username
 
     if not username:
-        await callback.answer("У вас нет username. Установите его в настройках Telegram.", show_alert=True)
+        await callback.answer("У тебя нет username. Установи его в настройках Telegram.", show_alert=True)
         return
 
     await db.add_recipe_owner(recipe_id, username)
     await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("✅ Вы добавлены в список владельцев рецепта!", show_alert=False)
+    await callback.answer("✅ Ты добавлен в список владельцев рецепта!", show_alert=False)
 
 @dp.callback_query(F.data.startswith("recipe_relinquish_"))
 async def recipe_relinquish(callback: types.CallbackQuery):
@@ -785,7 +785,7 @@ async def recipe_relinquish(callback: types.CallbackQuery):
 
     await db.remove_recipe_owner(recipe_id, username)
     await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("❌ Вы удалены из списка владельцев рецепта.", show_alert=False)
+    await callback.answer("❌ Ты удален из списка владельцев рецепта.", show_alert=False)
 
 @dp.callback_query(F.data.startswith("recipe_relinquish_"))
 async def recipe_relinquish(callback: types.CallbackQuery):
@@ -803,7 +803,7 @@ async def recipe_relinquish(callback: types.CallbackQuery):
     await db.remove_recipe_owner(recipe_id, username)
 
     await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("❌ Вы удалены из списка владельцев рецепта.")
+    await callback.answer("❌ Ты удален из списка владельцев рецепта.")
 
 async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: str, page: int):
     """Обновляет карточку снаряжения после изменения владельца рецепта."""
@@ -866,7 +866,7 @@ async def resource_page_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_resource_cats")
 async def back_to_resource_categories(callback: types.CallbackQuery):
-    await callback.message.edit_text("Выберите категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
+    await callback.message.edit_text("Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resource_"))
