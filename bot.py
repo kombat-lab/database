@@ -34,6 +34,22 @@ inline_log_tasks = {}
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+SLOT_ICONS = {
+    'шлем': '🪖',
+    'плечи': '🪹',
+    'тело': '🦺',
+    'плащ': '🧣',
+    'пояс': '⛓',
+    'штаны': '🩳',
+    'ботинки': '🥾',
+    'перчатки': '🧤',
+    'кольцо': '💍',
+    'амул': '📿',
+    'серьга': '🧏‍♀️',
+    'основная рука': '🗡',
+    'вторая рука': '🛡'
+}
+
 # ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
     data = await db.get_mob_full_card(mob_id)
@@ -56,8 +72,8 @@ async def format_mob_card(mob_id: int) -> str:
     if data['card_drops']:
         text += "\n<b>🃏 Карты:</b>\n"
         for c in data['card_drops']:
-            slot_info = f" (слот: {c['slot']})" if c.get('slot') else ""
-            text += f"{c['emoji']} {escape_html(c['name'])}{slot_info}\n"
+            slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
+            text += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}\n".strip() + "\n"
     
     return text
 
@@ -288,26 +304,9 @@ async def show_cards_list(target, page: int):
     cards = await db.get_all_cards_sorted_by_slot(offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(cards) > ITEMS_PER_PAGE
     cards = cards[:ITEMS_PER_PAGE]
-
-    slot_icons = {
-        'шлем': '🪖',
-        'плечи': '🪹',
-        'тело': '🦺',
-        'плащ': '🧣',
-        'пояс': '⛓',
-        'штаны': '🩳',
-        'ботинки': '🥾',
-        'перчатки': '🧤',
-        'кольцо': '💍',
-        'амул': '📿',
-        'серьга': '🧏‍♀️',
-        'основная рука': '🗡',
-        'вторая рука': '🛡'
-    }
-
     keyboard = []
     for card in cards:
-        slot_icon = slot_icons.get(card['slot'], '❓')
+        slot_icon = SLOT_ICONS.get(card['slot'], '❓')
         text = f"🃏{card['emoji']} {card['name']} {slot_icon}"
         keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
 
