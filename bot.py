@@ -1,7 +1,6 @@
 import os
 import logging
 import asyncio
-import html
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -53,47 +52,30 @@ SLOT_ICONS = {
 
 # ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
-    """Возвращает HTML-строку в формате <rich> для карточки моба."""
     data = await db.get_mob_full_card(mob_id)
     if not data:
-        return "<rich><b>Моб не найден.</b></rich>"
-
-    html_content = f"<rich><h2>{data['emoji']} {escape_html(data['name'])}</h2>"
-    html_content += f"<p><i>📍 {data['loc_emoji']} {escape_html(data['loc_name'])}</i></p>"
-
-    # Таблица характеристик
-    html_content += "<table bordered><tbody>"
-    html_content += f"<tr><td><b>❤️ HP</b></td><td>{data['hp']}</td></tr>"
-    html_content += f"<tr><td><b>✨ Пыль</b></td><td>{data['dust_min']}–{data['dust_max']}</td></tr>"
-    html_content += f"<tr><td><b>⭐ Опыт</b></td><td>{data['exp']}</td></tr>"
-    html_content += "</tbody></table>"
-
-    # Ресурсы (таблица)
+        return "Моб не найден."
+    loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
+    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
+    text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
+    
     if data['resource_drops']:
-        html_content += "<h3>📦 Падает (ресурсы)</h3><table bordered striped><thead><tr><th>Ресурс</th><th>Иконка</th></tr></thead><tbody>"
-        for r in data['resource_drops']:
-            html_content += f"<tr><td>{escape_html(r['name'])}</td><td>{r['emoji']}</td></tr>"
-        html_content += "</tbody></table>"
-
-    # Снаряжение (список)
+        text += "<b>📦 Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
+    
     if data['gear_drops']:
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
-        html_content += "<h3>⚔️ Снаряжение</h3><ul>"
+        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+        text += "\n<b>⚔️ Снаряжение:</b>\n"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
-            html_content += f"<li>{rarity_icon} {escape_html(g['name'])}</li>"
-        html_content += "</ul>"
-
-    # Карты (список)
+            text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
+    
     if data['card_drops']:
-        html_content += "<h3>🃏 Карты</h3><ul>"
+        text += "\n<b>🃏 Карты:</b>\n"
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            html_content += f"<li>{c['emoji']} {escape_html(c['name'])} {slot_icon}</li>"
-        html_content += "</ul>"
-
-    html_content += "</rich>"
-    return html_content
+            text += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}\n".strip() + "\n"
+    
+    return text
 
 async def format_resource_card(resource_id: int) -> str:
     data = await db.get_resource_card(resource_id)
@@ -587,12 +569,7 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
     rarity_name = rarity_names.get(rarity, rarity)
     keyboard = await get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ <b>Снаряжение — {rarity_name}</b>\nСтраница {page}"
-    rich_text = await format_mob_card(mob_id)
-    await bot.send_rich_message(
-        chat_id=callback.message.chat.id,
-        rich_text=rich_text,
-        reply_markup=keyboard
-    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
@@ -601,16 +578,10 @@ async def view_mob(callback: types.CallbackQuery):
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-
     await log_view_mob(callback.from_user.id, mob_id)
+    text = await format_mob_card(mob_id)
 
-    # Генерируем rich-текст
-    rich_text = await format_mob_card(mob_id)
-
-    # Получаем соседей для навигации
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
-
-    # Клавиатура (та же логика)
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
@@ -630,14 +601,7 @@ async def view_mob(callback: types.CallbackQuery):
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-    await callback.bot.edit_rich_message(
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-        rich_text=rich_text,
-        reply_markup=reply_markup
-    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
