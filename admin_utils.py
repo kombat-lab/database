@@ -32,7 +32,10 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 async def admin_close(callback: types.CallbackQuery):
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except AttributeError:
+        pass  # InaccessibleMessage не поддерживает delete
     await callback.answer()
 
 async def admin_cancel_edit(callback: types.CallbackQuery, state: FSMContext):
