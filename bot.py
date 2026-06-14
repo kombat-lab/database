@@ -601,10 +601,16 @@ async def view_mob(callback: types.CallbackQuery):
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-    await log_view_mob(callback.from_user.id, mob_id)
-    text = await format_mob_card(mob_id)
 
+    await log_view_mob(callback.from_user.id, mob_id)
+
+    # Генерируем rich-текст
+    rich_text = await format_mob_card(mob_id)
+
+    # Получаем соседей для навигации
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
+
+    # Клавиатура (та же логика)
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
@@ -624,7 +630,14 @@ async def view_mob(callback: types.CallbackQuery):
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await callback.bot.edit_rich_message(
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        rich_text=rich_text,
+        reply_markup=reply_markup
+    )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
