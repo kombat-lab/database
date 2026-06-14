@@ -53,30 +53,47 @@ SLOT_ICONS = {
 
 # ---------- Формирование карточек ----------
 async def format_mob_card(mob_id: int) -> str:
+    """Возвращает HTML-строку в формате <rich> для карточки моба."""
     data = await db.get_mob_full_card(mob_id)
     if not data:
-        return "Моб не найден."
-    loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
-    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
-    text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
-    
+        return "<rich><b>Моб не найден.</b></rich>"
+
+    html_content = f"<rich><h2>{data['emoji']} {escape_html(data['name'])}</h2>"
+    html_content += f"<p><i>📍 {data['loc_emoji']} {escape_html(data['loc_name'])}</i></p>"
+
+    # Таблица характеристик
+    html_content += "<table bordered><tbody>"
+    html_content += f"<tr><td><b>❤️ HP</b></td><td>{data['hp']}</td></tr>"
+    html_content += f"<tr><td><b>✨ Пыль</b></td><td>{data['dust_min']}–{data['dust_max']}</td></tr>"
+    html_content += f"<tr><td><b>⭐ Опыт</b></td><td>{data['exp']}</td></tr>"
+    html_content += "</tbody></table>"
+
+    # Ресурсы (таблица)
     if data['resource_drops']:
-        text += "<b>📦 Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
-    
+        html_content += "<h3>📦 Падает (ресурсы)</h3><table bordered striped><thead><tr><th>Ресурс</th><th>Иконка</th></tr></thead><tbody>"
+        for r in data['resource_drops']:
+            html_content += f"<tr><td>{escape_html(r['name'])}</td><td>{r['emoji']}</td></tr>"
+        html_content += "</tbody></table>"
+
+    # Снаряжение (список)
     if data['gear_drops']:
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
-        text += "\n<b>⚔️ Снаряжение:</b>\n"
+        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
+        html_content += "<h3>⚔️ Снаряжение</h3><ul>"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
-            text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
-    
+            html_content += f"<li>{rarity_icon} {escape_html(g['name'])}</li>"
+        html_content += "</ul>"
+
+    # Карты (список)
     if data['card_drops']:
-        text += "\n<b>🃏 Карты:</b>\n"
+        html_content += "<h3>🃏 Карты</h3><ul>"
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            text += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}\n".strip() + "\n"
-    
-    return text
+            html_content += f"<li>{c['emoji']} {escape_html(c['name'])} {slot_icon}</li>"
+        html_content += "</ul>"
+
+    html_content += "</rich>"
+    return html_content
 
 async def format_resource_card(resource_id: int) -> str:
     data = await db.get_resource_card(resource_id)
