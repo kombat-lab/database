@@ -587,7 +587,12 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
     rarity_name = rarity_names.get(rarity, rarity)
     keyboard = await get_gear_by_rarity_keyboard(rarity, page)
     text = f"⚔️ <b>Снаряжение — {rarity_name}</b>\nСтраница {page}"
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    rich_text = await format_mob_card(mob_id)
+    await bot.send_rich_message(
+        chat_id=callback.message.chat.id,
+        rich_text=rich_text,
+        reply_markup=keyboard
+    )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
