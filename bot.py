@@ -177,7 +177,88 @@ async def format_resource_card(resource_id: int) -> str:
 
     return text
 
-async def format_gear_card(gear_id: int) -> str:
+async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
+    data = await db.get_gear_card(gear_id)
+    if not data:
+        return InputRichMessage(html="Предмет не найден.")
+
+    rarity_names = {
+        "common": "Обычное",
+        "rare": "Редкое",
+        "epic": "Сверхредкое",
+        "legendary": "Эпическая"
+    }
+    rarity_emoji = {
+        "common": "⚪",
+        "rare": "🟢",
+        "epic": "🔵",
+        "legendary": "🟣"
+    }
+    slot_names = {
+        'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
+        'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
+        'кольцо': '💍 Кольцо', 'амул': '📿 Амулет', 'серьга': '🧏‍♀️ Серьга',
+        'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
+    }
+    rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
+    slot_text = slot_names.get(data['slot'], data['slot'])
+    craft_text = "да" if data.get('craftable') else "нет"
+
+    # Заголовок с именем и эмодзи
+    html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
+
+    # Таблица 2×3 (заголовки и значения)
+    html += """
+    <table border="1" cellspacing="0" cellpadding="5">
+        <tbody>
+            <tr>
+                <th><b>Редкость</b></th>
+                <th><b>Слот</b></th>
+                <th><b>Крафт</b></th>
+            </tr>
+            <tr>
+                <td>{rarity}</td>
+                <td>{slot}</td>
+                <td>{craft}</td>
+            </tr>
+        </tbody>
+    </table>
+    """.format(rarity=rarity_text, slot=slot_text, craft=craft_text)
+
+    # Блок с ресурсами (если крафтится)
+    if data.get('craftable'):
+        html += "<b>Требуемые ресурсы:</b><br>"
+        if data['ingredients']:
+            rows = ""
+            for ing in data['ingredients']:
+                ing_name = f"{ing['emoji']} {escape_html(ing['name'])}"
+                rows += f"<tr><td>{ing_name}</td><td>{ing['quantity']} шт.</td></tr>"
+            html += f"""
+            <table border="1" cellspacing="0" cellpadding="5">
+                <tbody>
+                    {rows}
+                </tbody>
+            </table>
+            """
+        else:
+            html += "<i>Рецепт не найден.</i>"
+
+        if data['owners']:
+            owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
+            html += f"<b>👥 Владельцы рецепта:</b><br>{owners_list}<br>"
+
+    # Блок с мобами
+    if data['mobs']:
+        if data['rarity'] == 'epic':
+            html += "<br><b>📜 Свиток падает с мобов:</b><br>"
+        else:
+            html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
+        mobs_list = "<br>".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs'])
+        html += mobs_list
+
+    return InputRichMessage(html=html.strip())
+
+async def ormat_gear_card_plain(gear_id: int) -> str:
     data = await db.get_gear_card(gear_id)
     if not data:
         return "Предмет не найден."
@@ -543,7 +624,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         ))
 
     for gear in results.get("gear", [])[:50]:
-        text = await format_gear_card(gear["id"])
+        text = await format_gear_card_plain(gear["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"gear_{gear['id']}",
             title=gear['name'],
@@ -725,7 +806,8 @@ async def view_gear(callback: types.CallbackQuery):
     page = int(parts[4])
 
     await log_view_gear(callback.from_user.id, gear_id)
-    text = await format_gear_card(gear_id)
+
+    rich_msg = await format_gear_card_rich(gear_id)
 
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
@@ -752,7 +834,6 @@ async def view_gear(callback: types.CallbackQuery):
     if nav_buttons:
         keyboard.append(nav_buttons)
 
-    # Кнопка добавления/удаления рецепта только для синей (сверхредкой) экипировки
     if rarity == 'epic' and recipe_id and user_username:
         owners = await db.get_recipe_owners(recipe_id)
         if user_username in owners:
@@ -767,7 +848,14 @@ async def view_gear(callback: types.CallbackQuery):
             )])
 
     keyboard.append([back_button])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await callback.message.delete()
+    await callback.bot.send_rich_message(
+        chat_id=callback.message.chat.id,
+        rich_message=rich_msg,
+        reply_markup=reply_markup
+    )
     await callback.answer()
 
 # ---------- Карты ----------
@@ -865,8 +953,7 @@ async def recipe_relinquish(callback: types.CallbackQuery):
     await callback.answer("❌ Ты удален из списка владельцев рецепта.")
 
 async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: str, page: int):
-    """Обновляет карточку снаряжения после изменения владельца рецепта."""
-    text = await format_gear_card(gear_id)
+    rich_msg = await format_gear_card_rich(gear_id)
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
 
@@ -906,7 +993,14 @@ async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: 
             )])
 
     keyboard.append([back_button])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    await callback.message.delete()
+    await callback.bot.send_rich_message(
+        chat_id=callback.message.chat.id,
+        rich_message=rich_msg,
+        reply_markup=reply_markup
+    )
 
 # ---------- Ресурсы по категориям ----------
 @dp.callback_query(F.data.startswith("resource_cat_"))
