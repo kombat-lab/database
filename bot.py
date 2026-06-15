@@ -5,8 +5,10 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineQuery, InlineQueryResultArticle, InputTextMessageContent
+    InlineQuery, InlineQueryResultArticle, InputTextMessageContent,
+    InputRichMessage
 )
+
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 
@@ -51,31 +53,76 @@ SLOT_ICONS = {
 }
 
 # ---------- Формирование карточек ----------
-async def format_mob_card(mob_id: int) -> str:
+async def format_mob_card_plain(mob_id: int) -> str:
     data = await db.get_mob_full_card(mob_id)
     if not data:
         return "Моб не найден."
+
     loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
-    
+
     if data['resource_drops']:
         text += "<b>📦 Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
-    
     if data['gear_drops']:
         rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
         text += "\n<b>⚔️ Снаряжение:</b>\n"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
             text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
-    
     if data['card_drops']:
         text += "\n<b>🃏 Карты:</b>\n"
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
             text += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}\n".strip() + "\n"
-    
     return text
+
+async def format_mob_card(mob_id: int) -> InputRichMessage:
+    data = await db.get_mob_full_card(mob_id)
+    if not data:
+        return InputRichMessage(html="Моб не найден.")
+
+    loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
+
+    # Новая таблица 2×2
+    table_html = f"""
+    <table border="1" cellspacing="0" cellpadding="5">
+        <tbody>
+            <tr>
+                <td><b>❤️ HP:</b> {data['hp']}</td>
+                <td><b>⭐ Опыт:</b> {data['exp']}</td>
+            </tr>
+            <tr>
+                <td><b>✨ Пыль:</b> {data['dust_min']}-{data['dust_max']}</td>
+                <td><b>📍 Локация:</b> {loc_str}</td>
+            </tr>
+        </tbody>
+    </table>
+    """
+
+    drops_html = ""
+    if data['resource_drops']:
+        drops_html += "<b>📦 Падает:</b><br>" + "<br>".join(
+            f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']
+        ) + "<br>"
+    if data['gear_drops']:
+        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
+        drops_html += "<br><b>⚔️ Снаряжение:</b><br>"
+        for g in data['gear_drops']:
+            rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
+            drops_html += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}<br>"
+    if data['card_drops']:
+        drops_html += "<br><b>🃏 Карты:</b><br>"
+        for c in data['card_drops']:
+            slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
+            drops_html += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}<br>"
+
+    full_html = f"""
+    <div><b>{data['emoji']} {escape_html(data['name'])}</b></div>
+    {table_html}
+    <div>{drops_html}</div>
+    """
+    return InputRichMessage(html=full_html.strip())
 
 async def format_resource_card(resource_id: int) -> str:
     data = await db.get_resource_card(resource_id)
@@ -477,7 +524,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     inline_results = []
 
     for mob in results.get("mobs", [])[:50]:
-        text = await format_mob_card(mob["id"])
+        text = await format_mob_card_plain(mob["id"])
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
             id=f"mob_{mob['id']}",
@@ -578,9 +625,13 @@ async def view_mob(callback: types.CallbackQuery):
     mob_id = int(parts[2])
     location_id = int(parts[3])
     page = int(parts[4])
-    await log_view_mob(callback.from_user.id, mob_id)
-    text = await format_mob_card(mob_id)
 
+    await log_view_mob(callback.from_user.id, mob_id)
+
+    # Создаём InputRichMessage
+    rich_msg = await format_mob_card(mob_id)
+
+    # Формируем клавиатуру
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
     nav_buttons = []
     if neighbours['prev_id']:
@@ -597,11 +648,20 @@ async def view_mob(callback: types.CallbackQuery):
         text="🔙 Назад к списку",
         callback_data=f"list_mobs_{location_id}_{page}"
     )
+
     keyboard = []
     if nav_buttons:
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+    # Отправляем сообщение
+    await callback.message.delete()
+    await callback.bot.send_rich_message(
+        chat_id=callback.message.chat.id,
+        rich_message=rich_msg,
+        reply_markup=reply_markup
+    )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
