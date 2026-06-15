@@ -8,6 +8,7 @@ from aiogram.types import (
     InlineQuery, InlineQueryResultArticle, InputTextMessageContent,
     InputRichMessage
 )
+from aiogram.enums import ParseMode
 
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -207,7 +208,7 @@ async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
     # Заголовок с именем и эмодзи
     html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
 
-    # Таблица 2×3 (заголовки и значения)
+    # Таблица 2×3 (редкость, слот, крафт)
     html += """
     <table border="1" cellspacing="0" cellpadding="5">
         <tbody>
@@ -243,9 +244,15 @@ async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
         else:
             html += "<i>Рецепт не найден.</i>"
 
-        if data['owners']:
+        # 👇 Владельцы рецепта — сворачиваемый блок (если есть)
+        if data.get('owners'):
             owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
-            html += f"<b>👥 Владельцы рецепта:</b><br>{owners_list}<br>"
+            html += f"""
+            <details>
+                <summary>👥 Владельцы рецепта</summary>
+                {owners_list}
+            </details>
+            """
 
     # Блок с мобами
     if data['mobs']:
@@ -256,7 +263,7 @@ async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
         mobs_list = "<br>".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs'])
         html += mobs_list
 
-    return InputRichMessage(html=html.strip())
+    return InputRichMessage(html=html.strip(), parse_mode=ParseMode.HTML)
 
 async def ormat_gear_card_plain(gear_id: int) -> str:
     data = await db.get_gear_card(gear_id)
