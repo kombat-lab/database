@@ -265,7 +265,7 @@ async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
 
     return InputRichMessage(html=html.strip(), parse_mode=ParseMode.HTML)
 
-async def ormat_gear_card_plain(gear_id: int) -> str:
+async def format_gear_card_plain(gear_id: int) -> str:
     data = await db.get_gear_card(gear_id)
     if not data:
         return "Предмет не найден."
