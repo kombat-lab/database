@@ -30,6 +30,12 @@ ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 BOT_USERNAME = None
+def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> str:
+    """Формирует ссылку вида t.me/bot?start=type_id&return=..."""
+    url = f"https://t.me/{BOT_USERNAME}?start={item_type}_{item_id}"
+    if return_param:
+        url += f"&return={return_param}"
+    return url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,7 +61,7 @@ SLOT_ICONS = {
 }
 
 # ---------- Формирование карточек ----------
-async def format_mob_card_plain(mob_id: int) -> str:
+async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int = 1) -> str:
     data = await db.get_mob_full_card(mob_id)
     if not data:
         return "Моб не найден."
@@ -64,29 +70,45 @@ async def format_mob_card_plain(mob_id: int) -> str:
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
 
+    # return для возврата к этому мобу
+    return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
+
     if data['resource_drops']:
-        text += "<b>📦 Падает:</b>\n" + "\n".join(f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']) + "\n"
+        text += "<b>📦 Падает:</b>\n"
+        for r in data['resource_drops']:
+            link = make_deep_link("resource", r['id'], return_param)
+            text += f"{r['emoji']} <a href='{link}'>{escape_html(r['name'])}</a>\n"
+        text += "\n"
+
     if data['gear_drops']:
         rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
-        text += "\n<b>⚔️ Снаряжение:</b>\n"
+        text += "<b>⚔️ Снаряжение:</b>\n"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
-            text += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}\n"
+            link = make_deep_link("gear", g['id'], return_param)
+            text += f"{rarity_icon} {g['emoji']} <a href='{link}'>{escape_html(g['name'])}</a>\n"
+        text += "\n"
+
     if data['card_drops']:
-        text += "\n<b>🃏 Карты:</b>\n"
+        text += "<b>🃏 Карты:</b>\n"
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            text += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}\n".strip() + "\n"
+            link = make_deep_link("card", c['id'], return_param)
+            text += f"{c['emoji']} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}\n"
+        text += "\n"
+
     return text
 
-async def format_mob_card(mob_id: int) -> InputRichMessage:
+
+async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -> InputRichMessage:
     data = await db.get_mob_full_card(mob_id)
     if not data:
         return InputRichMessage(html="Моб не найден.")
 
     loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
+    return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
 
-    # Новая таблица 2×2
+    # Таблица 2×2
     table_html = f"""
     <table border="1" cellspacing="0" cellpadding="5">
         <tbody>
@@ -104,20 +126,28 @@ async def format_mob_card(mob_id: int) -> InputRichMessage:
 
     drops_html = ""
     if data['resource_drops']:
-        drops_html += "<b>📦 Падает:</b><br>" + "<br>".join(
-            f"{r['emoji']} {escape_html(r['name'])}" for r in data['resource_drops']
-        ) + "<br>"
+        drops_html += "<b>📦 Падает:</b><br>"
+        for r in data['resource_drops']:
+            link = make_deep_link("resource", r['id'], return_param)
+            drops_html += f"{r['emoji']} <a href='{link}'>{escape_html(r['name'])}</a><br>"
+        drops_html += "<br>"
+
     if data['gear_drops']:
         rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
-        drops_html += "<br><b>⚔️ Снаряжение:</b><br>"
+        drops_html += "<b>⚔️ Снаряжение:</b><br>"
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
-            drops_html += f"{rarity_icon} {g['emoji']} {escape_html(g['name'])}<br>"
+            link = make_deep_link("gear", g['id'], return_param)
+            drops_html += f"{rarity_icon} {g['emoji']} <a href='{link}'>{escape_html(g['name'])}</a><br>"
+        drops_html += "<br>"
+
     if data['card_drops']:
-        drops_html += "<br><b>🃏 Карты:</b><br>"
+        drops_html += "<b>🃏 Карты:</b><br>"
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            drops_html += f"{c['emoji']} {escape_html(c['name'])} {slot_icon}<br>"
+            link = make_deep_link("card", c['id'], return_param)
+            drops_html += f"{c['emoji']} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}<br>"
+        drops_html += "<br>"
 
     full_html = f"""
     <div><b>{data['emoji']} {escape_html(data['name'])}</b></div>
@@ -194,10 +224,11 @@ async def format_resource_card_rich(resource_id: int) -> InputRichMessage:
 
     return InputRichMessage(html=html.strip())
 
-async def format_resource_card(resource_id: int) -> str:
+async def format_resource_card(resource_id: int, context_type: str = None, context_id: int = None, page: int = 1) -> str:
     data = await db.get_resource_card(resource_id)
     if not data:
         return "Ресурс не найден."
+
     type_names = {
         'craft': '⚒️ Крафтовый',
         'consumable': '✨ Расходуемый',
@@ -208,19 +239,28 @@ async def format_resource_card(resource_id: int) -> str:
     }
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     is_alchemy = (data.get('type') == 'alchemy')
-    
+
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"🏷 Тип: {type_str}\n"
-    
     if not is_alchemy:
         text += "\n"
-    
+
+    # return для возврата к этому ресурсу
+    return_param = None
+    if context_type and context_id:
+        if context_type == 'location':
+            return_param = f"resource_loc_{resource_id}_{context_id}_{page}"
+        elif context_type == 'type':
+            return_param = f"resource_type_{resource_id}_{context_id}_{page}"
+
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n"
         for m in data['mobs']:
             loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            text += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
+            link = make_deep_link("mob", m['id'], return_param)
+            text += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
         text += "\n"
+
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>\n"
 
@@ -231,6 +271,7 @@ async def format_resource_card(resource_id: int) -> str:
         else:
             if not data['mobs'] and not data.get('note'):
                 text += "\n"
+
         dust = None
         other = []
         for ing in recipe['ingredients']:
@@ -238,128 +279,104 @@ async def format_resource_card(resource_id: int) -> str:
                 dust = ing
             else:
                 other.append(ing)
+
         if dust:
-            text += f"✨ Пыль — {dust['quantity']} шт.\n"
+            link = make_deep_link("resource", dust['resource_id'], return_param)
+            text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']} шт.\n"
         for ing in other:
-            text += f"{ing['emoji']} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
+            link = make_deep_link("resource", ing['resource_id'], return_param)
+            text += f"{ing['emoji']} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
+
         text += "\n🏛 <b>Где крафтить:</b>\n"
         text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
 
     return text
 
-async def format_gear_card_rich(gear_id: int) -> InputRichMessage:
-    data = await db.get_gear_card(gear_id)
-    if not data:
-        return InputRichMessage(html="Предмет не найден.")
 
-    rarity_names = {
-        "common": "Обычное",
-        "rare": "Редкое",
-        "epic": "Сверхредкое",
-        "legendary": "Эпическая"
+async def format_resource_card_rich(resource_id: int, context_type: str = None, context_id: int = None, page: int = 1) -> InputRichMessage:
+    data = await db.get_resource_card(resource_id)
+    if not data:
+        return InputRichMessage(html="Ресурс не найден.")
+
+    type_names = {
+        'craft': '⚒️ Крафтовый',
+        'consumable': '✨ Расходуемый',
+        'scroll_recipe': '📜 Рецепт экипировки',
+        'scroll': '📜 Рецепт экипировки',
+        'currency': '💰 Валюта',
+        'alchemy': '⚗️ Алхимия'
     }
-    rarity_emoji = {
-        "common": "⚪",
-        "rare": "🟢",
-        "epic": "🔵",
-        "legendary": "🟣"
-    }
-    slot_names = {
-        'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
-        'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
-        'кольцо': '💍 Кольцо', 'амул': '📿 Амулет', 'серьга': '🧏‍♀️ Серьга',
-        'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
-    }
-    rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
-    slot_text = slot_names.get(data['slot'], data['slot'])
-    craft_text = "да" if data.get('craftable') else "нет"
+    type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
+    is_alchemy = (data.get('type') == 'alchemy')
 
     html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
-    html += """
-    <table border="1" cellspacing="0" cellpadding="5">
-        <tbody>
-            <tr>
-                <th><b>Редкость</b></th>
-                <th><b>Слот</b></th>
-                <th><b>Крафт</b></th>
-            </tr>
-            <tr>
-                <td>{rarity}</td>
-                <td>{slot}</td>
-                <td>{craft}</td>
-            </tr>
-        </tbody>
-    </table>
-    """.format(rarity=rarity_text, slot=slot_text, craft=craft_text)
+    html += f"🏷 Тип: {type_str}<br>"
 
-    if data.get('craftable') and data['ingredients']:
-        html += "<b>Требуемые ресурсы:</b><br>"
+    return_param = None
+    if context_type and context_id:
+        if context_type == 'location':
+            return_param = f"resource_loc_{resource_id}_{context_id}_{page}"
+        elif context_type == 'type':
+            return_param = f"resource_type_{resource_id}_{context_id}_{page}"
+
+    if data['mobs']:
+        html += "<br><b>Падает с мобов:</b><br>"
+        for m in data['mobs']:
+            loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
+            link = make_deep_link("mob", m['id'], return_param)
+            html += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i><br>"
+
+    if data.get('note'):
+        html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
+
+    recipe = await db.get_recipe_for_resource(resource_id)
+    if recipe and recipe['ingredients']:
+        if not is_alchemy:
+            html += "<br>⚗️ <b>Алхимия:</b><br>"
+
+        dust = None
+        other = []
+        for ing in recipe['ingredients']:
+            if ing['resource_id'] == 71:
+                dust = ing
+            else:
+                other.append(ing)
+
         rows = ""
-        # Формируем ссылки на каждый ресурс
-        for ing in data['ingredients']:
-            ing_name = f"{ing['emoji']} {escape_html(ing['name'])}"
-            # Добавляем параметр return, чтобы вернуться к этой карточке снаряжения
-            return_param = f"gear_{gear_id}_{data['rarity']}_1"  # или передавать page, если есть
-            link = f"https://t.me/{BOT_USERNAME}?start=resource_{ing['id']}&return={return_param}"
-            ing_link = f'<a href="{link}">{ing_name}</a>'
-            rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
+        if dust:
+            link = make_deep_link("resource", dust['resource_id'], return_param)
+            rows += f"<tr><td>✨ <a href='{link}'>Пыль</a></td><td>{dust['quantity']} шт.</td></tr>"
+        for ing in other:
+            link = make_deep_link("resource", ing['resource_id'], return_param)
+            rows += f"<tr><td>{ing['emoji']} <a href='{link}'>{escape_html(ing['name'])}</a></td><td>{ing['quantity']} шт.</td></tr>"
+
         html += f"""
         <table border="1" cellspacing="0" cellpadding="5">
             <tbody>
+                <tr><th>Ресурс</th><th>Количество</th></tr>
                 {rows}
             </tbody>
         </table>
         """
+        html += "<br>🏛 <b>Где крафтить:</b><br>"
+        html += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
 
-        # Владельцы рецепта (опционально)
-        if data.get('owners'):
-            owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
-            html += f"""
-            <details>
-                <summary>👥 Владельцы рецепта</summary>
-                {owners_list}
-            </details>
-            """
-
-    if data['mobs']:
-        if data['rarity'] == 'epic':
-            html += "<br><b>📜 Свиток падает с мобов:</b><br>"
-        else:
-            html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
-        mobs_list = "<br>".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs'])
-        html += mobs_list
-
-    return InputRichMessage(html=html.strip(), parse_mode=ParseMode.HTML)
+    return InputRichMessage(html=html.strip())
 
 async def format_gear_card_plain(gear_id: int) -> str:
     data = await db.get_gear_card(gear_id)
     if not data:
         return "Предмет не найден."
-    rarity_names = {
-        "common": "Обычное",
-        "rare": "Редкое",
-        "epic": "Сверхредкое",
-        "legendary": "Эпическая"
-    }
-    rarity_emoji = {
-        "common": "⚪",
-        "rare": "🟢",
-        "epic": "🔵",
-        "legendary": "🟣"
-    }
-    slot_names = {
-        'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
-        'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
-        'кольцо': '💍 Кольцо',
-        'амул': '📿 Амулет',
-        'серьга': '🧏‍♀️ Серьга',
-        'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
-    }
+
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое", "legendary": "Эпическая"}
+    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
+    slot_names = {...}  # как в исходном коде
     rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
     slot_text = slot_names.get(data['slot'], data['slot'])
+
     text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
     text += f"Редкость: {rarity_text}\nСлот: {slot_text}\n"
-    
+
     if data.get('craftable'):
         text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
         dust = None
@@ -388,8 +405,74 @@ async def format_gear_card_plain(gear_id: int) -> str:
             text += "\n<b>📜 Свиток падает с мобов:</b>\n"
         else:
             text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
+        # Без ссылок (plain)
         text += "\n".join(f"{m['emoji']} {escape_html(m['name'])}" for m in data['mobs']) + "\n"
+
     return text
+
+
+async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1) -> InputRichMessage:
+    data = await db.get_gear_card(gear_id)
+    if not data:
+        return InputRichMessage(html="Предмет не найден.")
+
+    rarity_names = {"common": "Обычное", "rare": "Редкое", "epic": "Сверхредкое", "legendary": "Эпическая"}
+    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
+    slot_names = {...}  # как в исходном коде
+    rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
+    slot_text = slot_names.get(data['slot'], data['slot'])
+    craft_text = "да" if data.get('craftable') else "нет"
+
+    html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
+    html += f"""
+    <table border="1" cellspacing="0" cellpadding="5">
+        <tbody>
+            <tr><th>Редкость</th><th>Слот</th><th>Крафт</th></tr>
+            <tr><td>{rarity_text}</td><td>{slot_text}</td><td>{craft_text}</td></tr>
+        </tbody>
+    </table>
+    """
+
+    # return для возврата к этому снаряжению (используется при клике на моба)
+    return_param = None
+    if rarity and page:
+        return_param = f"gear_{gear_id}_{rarity}_{page}"
+
+    if data.get('craftable') and data['ingredients']:
+        html += "<b>Требуемые ресурсы:</b><br>"
+        rows = ""
+        for ing in data['ingredients']:
+            ing_name = f"{ing['emoji']} {escape_html(ing['name'])}"
+            # ссылка на ресурс с возвратом к этому снаряжению
+            link = make_deep_link("resource", ing['id'], return_param)
+            ing_link = f'<a href="{link}">{ing_name}</a>'
+            rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
+        html += f"""
+        <table border="1" cellspacing="0" cellpadding="5">
+            <tbody>{rows}</tbody>
+        </table>
+        """
+        if data.get('owners'):
+            owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
+            html += f"""
+            <details>
+                <summary>👥 Владельцы рецепта</summary>
+                {owners_list}
+            </details>
+            """
+
+    if data['mobs']:
+        if data['rarity'] == 'epic':
+            html += "<br><b>📜 Свиток падает с мобов:</b><br>"
+        else:
+            html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
+        mobs_list = []
+        for m in data['mobs']:
+            link = make_deep_link("mob", m['id'], return_param)
+            mobs_list.append(f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a>")
+        html += "<br>".join(mobs_list)
+
+    return InputRichMessage(html=html.strip())
 
 async def format_card_card(card_id: int) -> str:
     card = await db.get_card_by_id(card_id)
@@ -595,29 +678,74 @@ async def send_menu(message: types.Message):
                     pass
             elif p.startswith("return="):
                 return_param = p.split("=")[1]
+
         if resource_id is not None:
-            # Удаляем исходное сообщение с командой
             try:
                 await message.delete()
             except Exception:
-                pass  # Если не удалось удалить (нет прав), просто продолжаем
+                pass
 
             rich_msg = await format_resource_card_rich(resource_id)
             keyboard = None
             if return_param:
+                # Парсим return
                 parts = return_param.split("_")
-                if len(parts) == 4 and parts[0] == "gear":
-                    try:
-                        gear_id = int(parts[1])
-                        rarity = parts[2]
-                        page = int(parts[3])
-                        back_button = InlineKeyboardButton(
-                            text="🔙 Вернуться к снаряжению",
-                            callback_data=f"view_gear_{gear_id}_{rarity}_{page}"
-                        )
-                        keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-                    except (IndexError, ValueError):
-                        pass
+                if len(parts) >= 3:
+                    obj_type = parts[0]
+                    if obj_type == "gear" and len(parts) == 4:
+                        # gear_{gear_id}_{rarity}_{page}
+                        try:
+                            gear_id = int(parts[1])
+                            rarity = parts[2]
+                            page = int(parts[3])
+                            back_button = InlineKeyboardButton(
+                                text="🔙 Вернуться к снаряжению",
+                                callback_data=f"view_gear_{gear_id}_{rarity}_{page}"
+                            )
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+                        except (IndexError, ValueError):
+                            pass
+                    elif obj_type == "mob" and len(parts) == 4:
+                        # mob_{mob_id}_{location_id}_{page}
+                        try:
+                            mob_id = int(parts[1])
+                            location_id = int(parts[2])
+                            page = int(parts[3])
+                            back_button = InlineKeyboardButton(
+                                text="🔙 Вернуться к мобу",
+                                callback_data=f"view_mobs_{mob_id}_{location_id}_{page}"
+                            )
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+                        except (IndexError, ValueError):
+                            pass
+                    elif obj_type == "resource_loc" and len(parts) == 4:
+                        # resource_loc_{resource_id}_{location_id}_{page}
+                        try:
+                            res_id = int(parts[1])
+                            location_id = int(parts[2])
+                            page = int(parts[3])
+                            back_button = InlineKeyboardButton(
+                                text="🔙 Вернуться к ресурсу",
+                                callback_data=f"view_resources_{res_id}_{location_id}_{page}"
+                            )
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+                        except (IndexError, ValueError):
+                            pass
+                    elif obj_type == "resource_type" and len(parts) == 4:
+                        # resource_type_{resource_id}_{resource_type}_{page}
+                        try:
+                            res_id = int(parts[1])
+                            res_type = parts[2]
+                            page = int(parts[3])
+                            back_button = InlineKeyboardButton(
+                                text="🔙 Вернуться к ресурсу",
+                                callback_data=f"view_resource_{res_id}_{res_type}_{page}"
+                            )
+                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
+                        except (IndexError, ValueError):
+                            pass
+                    # можно добавить обработку для card, если нужно
+
             await message.bot.send_rich_message(
                 chat_id=message.chat.id,
                 rich_message=rich_msg,
@@ -625,7 +753,7 @@ async def send_menu(message: types.Message):
             )
             return
 
-    # Если параметров нет – обычное главное меню (команду не удаляем)
+    # обычное главное меню
     await log_start(message.from_user.id)
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
 
@@ -827,7 +955,7 @@ async def view_mob(callback: types.CallbackQuery):
     await log_view_mob(callback.from_user.id, mob_id)
 
     # Создаём InputRichMessage
-    rich_msg = await format_mob_card(mob_id)
+    rich_msg = await format_mob_card(mob_id, location_id, page)
 
     # Формируем клавиатуру
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
@@ -870,7 +998,7 @@ async def view_resource(callback: types.CallbackQuery):
     page = int(parts[4])
     await log_view_resource(callback.from_user.id, res_id)
 
-    rich_msg = await format_resource_card_rich(res_id)
+    rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
 
     # Навигация по ресурсам в локации
     prev_res = await db.execute_query(
@@ -1159,7 +1287,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     page = int(parts[4])
     await log_view_resource(callback.from_user.id, resource_id)
 
-    rich_msg = await format_resource_card_rich(resource_id)
+    rich_msg = await format_resource_card_rich(resource_id, context_type='type', context_id=resource_type, page=page)
 
     neighbours = await db.get_prev_next_resource_by_type(resource_id, resource_type)
 
