@@ -692,24 +692,30 @@ async def send_menu(message: types.Message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         params = args[1].split('&')
-        resource_id = None
+        target_type = None
+        target_id = None
         return_param = None
-        for p in params:
-            if p.startswith("resource_"):
-                try:
-                    resource_id = int(p.split("_")[1])
-                except (IndexError, ValueError):
-                    pass
-            elif p.startswith("return="):
-                return_param = p.split("=")[1]
 
-        if resource_id is not None:
+        for p in params:
+            if p.startswith("return="):
+                return_param = p.split("=")[1]
+            else:
+                # Парсим основной параметр вида type_id
+                parts = p.split("_")
+                if len(parts) >= 2:
+                    target_type = parts[0]  # resource, mob, gear, card
+                    try:
+                        target_id = int(parts[1])
+                    except ValueError:
+                        pass
+
+        if target_type and target_id is not None:
             try:
                 await message.delete()
             except Exception:
                 pass
 
-            # Определяем контекст для возврата
+            # Определяем контекст для возврата (если есть)
             context_type = None
             context_id = None
             page = 1
@@ -718,13 +724,12 @@ async def send_menu(message: types.Message):
                 if len(parts) >= 3:
                     obj_type = parts[0]
                     if obj_type == "gear" and len(parts) == 4:
-                        # gear_{gear_id}_{rarity}_{page}
                         context_type = "gear"
-                        context_id = parts[1]  # сохраняем как строку, но потом передадим
+                        context_id = parts[1]   # gear_id
                         page = int(parts[3])
                     elif obj_type == "mob" and len(parts) == 4:
                         context_type = "mob"
-                        context_id = parts[1]
+                        context_id = parts[1]   # mob_id
                         page = int(parts[3])
                     elif obj_type == "resource_loc" and len(parts) == 4:
                         context_type = "location"
@@ -732,19 +737,56 @@ async def send_menu(message: types.Message):
                         page = int(parts[3])
                     elif obj_type == "resource_type" and len(parts) == 4:
                         context_type = "type"
-                        context_id = parts[2]  # resource_type
+                        context_id = parts[2]   # resource_type
                         page = int(parts[3])
                     # можно добавить card и другие
 
-            # Вызываем rich-версию с контекстом (если есть)
-            rich_msg = await format_resource_card_rich(
-                resource_id,
-                context_type=context_type,
-                context_id=context_id,
-                page=page
-            )
+            # Формируем карточку в зависимости от типа
+            if target_type == "resource":
+                rich_msg = await format_resource_card_rich(
+                    target_id,
+                    context_type=context_type,
+                    context_id=context_id,
+                    page=page
+                )
+            elif target_type == "mob":
+                # Для мобов используем rich-формат (если нужно передать location_id и page)
+                # В формате mob_{id} мы не знаем location_id, поэтому передаём None
+                rich_msg = await format_mob_card(target_id, location_id=None, page=page)
+            elif target_type == "gear":
+                # Для снаряжения нужны rarity и page (если они есть в return, иначе используем дефолтные)
+                # Но мы можем получить rarity из return_param, если он есть
+                if context_type == "gear" and context_id:
+                    # context_id содержит gear_id, но мы уже знаем target_id = gear_id
+                    # Нам нужна rarity. Попробуем извлечь из return_param
+                    if return_param:
+                        parts = return_param.split("_")
+                        if len(parts) == 4 and parts[0] == "gear":
+                            rarity = parts[2]
+                            page = int(parts[3])
+                            rich_msg = await format_gear_card_rich(target_id, rarity, page)
+                        else:
+                            rich_msg = await format_gear_card_rich(target_id, None, 1)
+                    else:
+                        rich_msg = await format_gear_card_rich(target_id, None, 1)
+                else:
+                    rich_msg = await format_gear_card_rich(target_id, None, 1)
+            elif target_type == "card":
+                # Для карт используем format_card_card (с контекстом)
+                rich_msg_text = await format_card_card(
+                    target_id,
+                    page=page,
+                    context_type=context_type,
+                    context_id=context_id
+                )
+                # Отправляем как обычное сообщение с HTML (т.к. нет InputRichMessage)
+                await message.answer(rich_msg_text, parse_mode="HTML")
+                return
+            else:
+                await message.answer("Неизвестный тип объекта.")
+                return
 
-            # Строим кнопку возврата на основе return_param
+            # Строим кнопку возврата на основе return_param (если есть)
             keyboard = None
             if return_param:
                 parts = return_param.split("_")
@@ -799,14 +841,16 @@ async def send_menu(message: types.Message):
                         except (IndexError, ValueError):
                             pass
 
-            await message.bot.send_rich_message(
-                chat_id=message.chat.id,
-                rich_message=rich_msg,
-                reply_markup=keyboard
-            )
+            # Отправляем через Rich Message API (кроме карт, уже отправлено)
+            if target_type != "card":
+                await message.bot.send_rich_message(
+                    chat_id=message.chat.id,
+                    rich_message=rich_msg,
+                    reply_markup=keyboard
+                )
             return
 
-    # обычное главное меню
+    # Если нет параметров – главное меню
     await log_start(message.from_user.id)
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
 
