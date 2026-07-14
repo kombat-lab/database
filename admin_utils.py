@@ -2,13 +2,39 @@ import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import StateFilter
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InputRichMessage
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
-from utils import is_valid_emoji
+from utils import is_valid_emoji, escape_html
 
 logger = logging.getLogger(__name__)
 
 ADMIN_ITEMS_PER_PAGE = 10
+
+
+async def edit_admin_rich(callback: types.CallbackQuery, html: str,
+                          reply_markup: InlineKeyboardMarkup = None,
+                          fallback_html: str = None):
+    """Редактирует экран админки как Rich Message с HTML fallback."""
+    try:
+        return await callback.bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            rich_message=InputRichMessage(html=html),
+            reply_markup=reply_markup,
+        )
+    except TelegramAPIError as error:
+        if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
+            return callback.message
+        logger.info("Rich admin screen fallback: %s", error)
+        return await callback.message.edit_text(
+            fallback_html or html,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
 
 class GenericEditStates(StatesGroup):
     select_item = State()
@@ -34,8 +60,8 @@ def get_admin_main_keyboard() -> InlineKeyboardMarkup:
 async def admin_close(callback: types.CallbackQuery):
     try:
         await callback.message.delete()
-    except AttributeError:
-        pass  # InaccessibleMessage не поддерживает delete
+    except (AttributeError, TelegramAPIError):
+        pass
     await callback.answer()
 
 async def admin_cancel_edit(callback: types.CallbackQuery, state: FSMContext):
@@ -98,10 +124,16 @@ async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entit
     fields = entity_config['edit_fields']
     display_mapping = entity_config.get('display_mapping', {})
     keyboard = []
+    rich_rows = []
+    fallback_lines = []
     for field_name, field_label in fields:
         current_value = entity_data.get(field_name, '?')
         if field_name in display_mapping:
             current_value = display_mapping[field_name].get(current_value, current_value)
+        rich_rows.append(
+            f"<tr><td>{escape_html(field_label)}</td><td>{escape_html(current_value)}</td></tr>"
+        )
+        fallback_lines.append(f"{escape_html(field_label)}: {escape_html(current_value)}")
         keyboard.append([InlineKeyboardButton(
             text=f"{field_label}: {current_value}",
             callback_data=f"edit_field_{field_name}"
@@ -113,13 +145,24 @@ async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entit
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
     keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
     
-    formatted = entity_config['display_format'](entity_data)
-    await callback.message.edit_text(
-        f"Редактирование {entity_config['name_ru']} ID {entity_id}:\n{formatted}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    fallback_text = (
+        f"<b>✏️ Редактирование: {escape_html(entity_config['name_ru'])} · ID {entity_id}</b>\n"
+        + "\n".join(fallback_lines)
+    )
+    rich_html = (
+        f"<b>✏️ Редактирование: {escape_html(entity_config['name_ru'])} · ID {entity_id}</b>"
+        "<table><tbody><tr><th>Поле</th><th>Значение</th></tr>"
+        + "".join(rich_rows) + "</tbody></table>"
+    )
+    await edit_admin_rich(
+        callback,
+        rich_html,
+        InlineKeyboardMarkup(inline_keyboard=keyboard),
+        fallback_html=fallback_text,
     )
     await state.update_data(entity_id=entity_id, editing_entity=entity_config['name'])
     await state.set_state(GenericEditStates.select_field)
+    await callback.answer()
 
 def register_generic_handlers(router: Router, get_entity_configs_func):
     """
@@ -179,7 +222,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     async def generic_select_option(callback: types.CallbackQuery, state: FSMContext):
         parts = callback.data.split("_")
         field = parts[2]
-        value = parts[3]
+        value = "_".join(parts[3:])
         
         data = await state.get_data()
         entity_type = data['editing_entity']
@@ -192,7 +235,9 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await config['update_field_func'](entity_id, field, value)
             await callback.message.edit_text(f"✅ Поле <b>{field}</b> обновлено на <code>{value}</code>.", parse_mode="HTML")
         except Exception as e:
+            logger.exception("Не удалось обновить поле %s", field)
             await callback.message.edit_text(f"❌ Ошибка: {e}")
+            await callback.answer()
             return
         
         entity_data = await config['get_by_id_func'](entity_id)
@@ -226,7 +271,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
                 new_value = int(new_value)
                 if new_value < 0:
                     raise ValueError
-            except:
+            except (TypeError, ValueError):
                 await message.answer("❌ Ошибка: введите положительное целое число.")
                 return
     
@@ -314,7 +359,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await callback.message.edit_text(f"❌ Ошибка: {e}")
         await render_entity_list(callback, state, config, 1)
 
-    @router.callback_query(GenericEditStates.select_field, F.data == "back_to_list")
+    @router.callback_query(
+        StateFilter(GenericEditStates.select_field, GenericEditStates.confirm_delete),
+        F.data == "back_to_list"
+    )
     async def generic_back_to_list(callback: types.CallbackQuery, state: FSMContext):
         data = await state.get_data()
         entity_type = data.get('editing_entity')
