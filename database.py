@@ -135,8 +135,13 @@ class Database:
                                           first_name: str = None, last_name: str = None):
         await self.execute_query(
             """
-            INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, first_seen, last_activity)
+            INSERT INTO users (user_id, username, first_name, last_name, first_seen, last_activity)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name,
+                last_activity = CURRENT_TIMESTAMP
             """,
             (user_id, username, first_name, last_name)
         )
