@@ -5,9 +5,9 @@ def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""
     return username.lstrip('@') if username else ''
 
-def escape_html(text: str) -> str:
+def escape_html(text: object) -> str:
     """Экранирует HTML-спецсимволы."""
-    return html.escape(text)
+    return html.escape(str(text or ""), quote=True)
 
 def is_valid_emoji(s: str) -> bool:
     """
