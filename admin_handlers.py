@@ -149,7 +149,7 @@ ENTITY_CONFIGS['resource'] = {
     'delete_func': resource_delete,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
-    'list_title': "📦 Ресурсы:\nВыберите ресурс для редактирования или добавьте новый:",
+    'list_title': "📦 Управление ресурсами:\nВыберите ресурс для редактирования или добавьте новый:",
     'add_button': True,
     'add_button_text': "➕ Добавить ресурс",
     'add_callback': "resource_add_start",
