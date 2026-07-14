@@ -185,6 +185,80 @@ async def get_db_stats() -> dict:
     }
 
 
+async def get_users_page(offset: int = 0, limit: int = 11) -> List[Dict]:
+    """Возвращает пользователей с агрегированной активностью, новые первыми."""
+    return await db.execute_query(
+        """
+        SELECT
+            u.user_id, u.username, u.first_name, u.last_name,
+            u.first_seen, u.last_activity,
+            COUNT(ae.id) AS event_count,
+            COALESCE(SUM(CASE WHEN ae.timestamp >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS events_7d,
+            MAX(ae.timestamp) AS last_event
+        FROM users u
+        LEFT JOIN analytics_events ae ON ae.user_id = u.user_id
+        GROUP BY u.user_id
+        ORDER BY u.last_activity DESC, u.user_id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    )
+
+
+async def get_user_activity(user_id: int) -> Optional[Dict]:
+    users = await db.execute_query(
+        """
+        SELECT user_id, username, first_name, last_name, first_seen, last_activity
+        FROM users WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    if not users:
+        return None
+
+    totals = await db.execute_query(
+        """
+        SELECT
+            COUNT(*) AS total_events,
+            COALESCE(SUM(CASE WHEN timestamp >= datetime('now', '-1 day') THEN 1 ELSE 0 END), 0) AS events_1d,
+            COALESCE(SUM(CASE WHEN timestamp >= datetime('now', '-7 days') THEN 1 ELSE 0 END), 0) AS events_7d,
+            COALESCE(SUM(CASE WHEN timestamp >= datetime('now', '-30 days') THEN 1 ELSE 0 END), 0) AS events_30d,
+            MIN(timestamp) AS first_event,
+            MAX(timestamp) AS last_event
+        FROM analytics_events WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    event_types = await db.execute_query(
+        """
+        SELECT event_type, COUNT(*) AS count
+        FROM analytics_events
+        WHERE user_id = ?
+        GROUP BY event_type
+        ORDER BY count DESC, event_type
+        """,
+        (user_id,),
+    )
+    recent_searches = await db.execute_query(
+        """
+        SELECT json_extract(metadata, '$.query') AS query, timestamp
+        FROM analytics_events
+        WHERE user_id = ?
+          AND event_type IN ('search', 'inline_search')
+          AND metadata IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT 10
+        """,
+        (user_id,),
+    )
+    return {
+        "user": users[0],
+        "totals": totals[0],
+        "event_types": event_types,
+        "recent_searches": recent_searches,
+    }
+
+
 # ========== СБРОС АНАЛИТИКИ ==========
 async def reset_analytics_data():
     global _resetting
