@@ -1,14 +1,16 @@
 import os
 import logging
 import asyncio
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineQuery, InlineQueryResultArticle, InputTextMessageContent,
-    InputRichMessage
+    InlineQuery, InlineQueryResultArticle, InputRichMessage,
+    InputRichMessageContent
 )
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -31,11 +33,13 @@ FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 BOT_USERNAME = None
 def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> str:
-    """Формирует ссылку вида t.me/bot?start=type_id&return=..."""
-    url = f"https://t.me/{BOT_USERNAME}?start={item_type}_{item_id}"
+    """Формирует корректный Telegram start payload длиной до 64 символов."""
+    payload = f"{item_type}_{item_id}"
     if return_param:
-        url += f"&return={return_param}"
-    return url
+        candidate = f"{payload}-r-{return_param}"
+        if len(candidate) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
+            payload = candidate
+    return f"https://t.me/{BOT_USERNAME}?start={payload}"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,8 +86,8 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
     if not data:
         return "Моб не найден."
 
-    loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
-    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
+    loc_str = f"{escape_html(data['loc_emoji'])} {escape_html(data['loc_name'])}"
+    text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
     text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
 
     # return для возврата к этому мобу
@@ -93,7 +97,7 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
         text += "<b>📦 Падает:</b>\n"
         for r in data['resource_drops']:
             link = make_deep_link("resource", r['id'], return_param)
-            text += f"{r['emoji']} <a href='{link}'>{escape_html(r['name'])}</a>\n"
+            text += f"{escape_html(r['emoji'])} <a href='{link}'>{escape_html(r['name'])}</a>\n"
         text += "\n"
 
     if data['gear_drops']:
@@ -102,7 +106,7 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
             link = make_deep_link("gear", g['id'], return_param)
-            text += f"{rarity_icon} {g['emoji']} <a href='{link}'>{escape_html(g['name'])}</a>\n"
+            text += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a>\n"
         text += "\n"
 
     if data['card_drops']:
@@ -110,7 +114,7 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
             link = make_deep_link("card", c['id'], return_param)
-            text += f"{c['emoji']} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}\n"
+            text += f"{escape_html(c['emoji'])} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}\n"
         text += "\n"
 
     return text
@@ -121,7 +125,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
     if not data:
         return InputRichMessage(html="Моб не найден.")
 
-    loc_str = f"{data['loc_emoji']} {escape_html(data['loc_name'])}"
+    loc_str = f"{escape_html(data['loc_emoji'])} {escape_html(data['loc_name'])}"
     return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
 
     # Таблица 2×2
@@ -145,7 +149,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
         drops_html += "<b>📦 Падает:</b><br>"
         for r in data['resource_drops']:
             link = make_deep_link("resource", r['id'], return_param)
-            drops_html += f"{r['emoji']} <a href='{link}'>{escape_html(r['name'])}</a><br>"
+            drops_html += f"{escape_html(r['emoji'])} <a href='{link}'>{escape_html(r['name'])}</a><br>"
         drops_html += "<br>"
 
     if data['gear_drops']:
@@ -154,7 +158,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
         for g in data['gear_drops']:
             rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
             link = make_deep_link("gear", g['id'], return_param)
-            drops_html += f"{rarity_icon} {g['emoji']} <a href='{link}'>{escape_html(g['name'])}</a><br>"
+            drops_html += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a><br>"
         drops_html += "<br>"
 
     if data['card_drops']:
@@ -162,83 +166,15 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
         for c in data['card_drops']:
             slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
             link = make_deep_link("card", c['id'], return_param)
-            drops_html += f"{c['emoji']} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}<br>"
+            drops_html += f"{escape_html(c['emoji'])} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}<br>"
         drops_html += "<br>"
 
     full_html = f"""
-    <div><b>{data['emoji']} {escape_html(data['name'])}</b></div>
+    <div><b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b></div>
     {table_html}
     <div>{drops_html}</div>
     """
     return InputRichMessage(html=full_html.strip())
-
-async def format_resource_card_rich(resource_id: int) -> InputRichMessage:
-    """Формирует Rich-карточку ресурса с таблицей ингредиентов."""
-    data = await db.get_resource_card(resource_id)
-    if not data:
-        return InputRichMessage(html="Ресурс не найден.")
-
-    type_names = {
-        'craft': '⚒️ Крафтовый',
-        'consumable': '✨ Расходуемый',
-        'scroll_recipe': '📜 Рецепт экипировки',
-        'scroll': '📜 Рецепт экипировки',
-        'currency': '💰 Валюта',
-        'alchemy': '⚗️ Алхимия'
-    }
-    type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
-    is_alchemy = (data.get('type') == 'alchemy')
-
-    # Заголовок
-    html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
-    html += f"🏷 Тип: {type_str}<br>"
-
-    # Мобы (если есть)
-    if data['mobs']:
-        html += "<br><b>Падает с мобов:</b><br>"
-        for m in data['mobs']:
-            loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            html += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i><br>"
-
-    # Заметка (если есть)
-    if data.get('note'):
-        html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
-
-    # Алхимия / рецепт — таблица
-    recipe = await db.get_recipe_for_resource(resource_id)
-    if recipe and recipe['ingredients']:
-        if not is_alchemy:
-            html += "<br>⚗️ <b>Алхимия:</b><br>"
-
-        # Сортируем: пыль (id=71) первой, остальные по порядку
-        dust = None
-        other = []
-        for ing in recipe['ingredients']:
-            if ing['resource_id'] == 71:
-                dust = ing
-            else:
-                other.append(ing)
-
-        # Формируем строки таблицы
-        rows = ""
-        if dust:
-            rows += f"<tr><td>✨ Пыль</td><td>{dust['quantity']} шт.</td></tr>"
-        for ing in other:
-            rows += f"<tr><td>{ing['emoji']} {escape_html(ing['name'])}</td><td>{ing['quantity']} шт.</td></tr>"
-
-        html += """
-        <table border="1" cellspacing="0" cellpadding="5">
-            <tbody>
-                <tr><th>Ресурс</th><th>Количество</th></tr>
-                {rows}
-            </tbody>
-        </table>
-        """.format(rows=rows)
-
-        html += "<br>🏛 <b>Где крафтить:</b><br>"
-        html += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
-
-    return InputRichMessage(html=html.strip())
 
 async def format_resource_card(resource_id: int, context_type: str = None, context_id: int = None, page: int = 1) -> str:
     data = await db.get_resource_card(resource_id)
@@ -256,7 +192,7 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     is_alchemy = (data.get('type') == 'alchemy')
 
-    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
+    text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
     text += f"🏷 Тип: {type_str}\n"
     if not is_alchemy:
         text += "\n"
@@ -272,9 +208,9 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n"
         for m in data['mobs']:
-            loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
+            loc_str = f"{escape_html(m.get('location_emoji', ''))} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
             link = make_deep_link("mob", m['id'], return_param)
-            text += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
+            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
         text += "\n"
 
     if data.get('note'):
@@ -301,7 +237,7 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
             text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']} шт.\n"
         for ing in other:
             link = make_deep_link("resource", ing['resource_id'], return_param)
-            text += f"{ing['emoji']} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
+            text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
 
         text += "\n🏛 <b>Где крафтить:</b>\n"
         text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
@@ -325,9 +261,10 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
     type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
     is_alchemy = (data.get('type') == 'alchemy')
 
-    html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
+    html = f"<b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
     html += f"🏷 Тип: {type_str}<br>"
 
+    # Параметр для возврата к текущему ресурсу
     return_param = None
     if context_type and context_id:
         if context_type == 'location':
@@ -335,16 +272,28 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
         elif context_type == 'type':
             return_param = f"resource_type_{resource_id}_{context_id}_{page}"
 
+    # ----- ТАБЛИЦА С МОБАМИ (добавлено) -----
     if data['mobs']:
         html += "<br><b>Падает с мобов:</b><br>"
+        rows = ""
         for m in data['mobs']:
-            loc_str = f"{m.get('location_emoji', '')} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
+            loc_str = f"{escape_html(m.get('location_emoji', ''))} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
             link = make_deep_link("mob", m['id'], return_param)
-            html += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i><br>"
+            mob_name = f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>"
+            rows += f"<tr><td>{mob_name}</td><td>{loc_str}</td></tr>"
+        html += f"""
+        <table border="1" cellspacing="0" cellpadding="5">
+            <tbody>
+                <tr><th>Моб</th><th>Локация</th></tr>
+                {rows}
+            </tbody>
+        </table>
+        """
 
     if data.get('note'):
         html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
 
+    # ----- АЛХИМИЯ / РЕЦЕПТ (таблица ингредиентов) -----
     recipe = await db.get_recipe_for_resource(resource_id)
     if recipe and recipe['ingredients']:
         if not is_alchemy:
@@ -364,7 +313,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
             rows += f"<tr><td>✨ <a href='{link}'>Пыль</a></td><td>{dust['quantity']} шт.</td></tr>"
         for ing in other:
             link = make_deep_link("resource", ing['resource_id'], return_param)
-            rows += f"<tr><td>{ing['emoji']} <a href='{link}'>{escape_html(ing['name'])}</a></td><td>{ing['quantity']} шт.</td></tr>"
+            rows += f"<tr><td>{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a></td><td>{ing['quantity']} шт.</td></tr>"
 
         html += f"""
         <table border="1" cellspacing="0" cellpadding="5">
@@ -389,8 +338,8 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
     rarity_text = f"{rarity_emoji[data['rarity']]} {rarity_names[data['rarity']]}"
     slot_text = SLOT_NAMES.get(data['slot'], data['slot'])
 
-    text = f"{data['emoji']} <b>{escape_html(data['name'])}</b>\n"
-    text += f"Редкость: {rarity_text}\nСлот: {slot_text}\n"
+    text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
+    text += f"Редкость: {rarity_text}\nСлот: {escape_html(slot_text)}\n"
 
     # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
     return_param = None
@@ -411,7 +360,7 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
             text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']}\n"
         for ing in other:
             link = make_deep_link("resource", ing['id'], return_param)
-            text += f"{ing['emoji']} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
+            text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
         if not data['ingredients']:
             text += "<i>Рецепт не найден.</i>\n"
         if data['owners']:
@@ -429,7 +378,7 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
             text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
         for m in data['mobs']:
             link = make_deep_link("mob", m['id'], return_param)
-            text += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a>\n"
+            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>\n"
 
     return text
 
@@ -445,12 +394,12 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
     slot_text = SLOT_NAMES.get(data['slot'], data['slot'])
     craft_text = "да" if data.get('craftable') else "нет"
 
-    html = f"<b>{data['emoji']} {escape_html(data['name'])}</b><br>"
+    html = f"<b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
     html += f"""
     <table border="1" cellspacing="0" cellpadding="5">
         <tbody>
             <tr><th>Редкость</th><th>Слот</th><th>Крафт</th></tr>
-            <tr><td>{rarity_text}</td><td>{slot_text}</td><td>{craft_text}</td></tr>
+            <tr><td>{rarity_text}</td><td>{escape_html(slot_text)}</td><td>{craft_text}</td></tr>
         </tbody>
     </table>
     """
@@ -463,7 +412,7 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
         html += "<b>Требуемые ресурсы:</b><br>"
         rows = ""
         for ing in data['ingredients']:
-            ing_name = f"{ing['emoji']} {escape_html(ing['name'])}"
+            ing_name = f"{escape_html(ing['emoji'])} {escape_html(ing['name'])}"
             link = make_deep_link("resource", ing['id'], return_param)
             ing_link = f'<a href="{link}">{ing_name}</a>'
             rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
@@ -489,7 +438,7 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
         mobs_list = []
         for m in data['mobs']:
             link = make_deep_link("mob", m['id'], return_param)
-            mobs_list.append(f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a>")
+            mobs_list.append(f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>")
         html += "<br>".join(mobs_list)
 
     return InputRichMessage(html=html.strip())
@@ -508,8 +457,8 @@ async def format_card_card(card_id: int, page: int = 1, context_type: str = None
         elif context_type == 'type':
             return_param = f"card_type_{card_id}_{context_id}_{page}"
 
-    text = f"🃏 {card['emoji']} <b>{escape_html(card['name'])}</b>\n"
-    text += f"Слот: {slot_text}\n\n"
+    text = f"🃏 {escape_html(card['emoji'])} <b>{escape_html(card['name'])}</b>\n"
+    text += f"Слот: {escape_html(slot_text)}\n\n"
 
     bonuses = []
     for i in range(1, 5):
@@ -527,13 +476,71 @@ async def format_card_card(card_id: int, page: int = 1, context_type: str = None
     if mobs:
         text += "\n<b>📜 Падает с мобов:</b>\n"
         for m in mobs:
-            loc_str = f"{m['location_emoji']} {escape_html(m['location_name'])}" if m.get('location_name') else ""
+            loc_str = f"{escape_html(m['location_emoji'])} {escape_html(m['location_name'])}" if m.get('location_name') else ""
             link = make_deep_link("mob", m['id'], return_param)
-            text += f"{m['emoji']} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
+            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
     else:
         text += "\n<i>Нет информации</i>"
 
     return text
+
+
+async def format_card_card_rich(card_id: int, page: int = 1, context_type: str = None,
+                                context_id: int = None) -> InputRichMessage:
+    """Формирует Rich-карточку карты, используя проверенный HTML fallback."""
+    plain = await format_card_card(card_id, page, context_type, context_id)
+    return InputRichMessage(html=plain.replace("\n", "<br>"))
+
+
+async def upsert_rich_card(*, bot: Bot, chat_id: int, rich_message: InputRichMessage,
+                           plain_text: str, reply_markup: InlineKeyboardMarkup = None,
+                           current_message: types.Message = None) -> types.Message:
+    """Редактирует карточку на месте и безопасно откатывается к обычному HTML."""
+    if current_message:
+        try:
+            return await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=current_message.message_id,
+                rich_message=rich_message,
+                reply_markup=reply_markup,
+            )
+        except TelegramAPIError as error:
+            if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
+                return current_message
+            logger.info("Rich Message edit failed, using HTML fallback: %s", error)
+
+        try:
+            return await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=current_message.message_id,
+                text=plain_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+        except TelegramAPIError as error:
+            logger.info("HTML edit failed, sending a replacement: %s", error)
+
+    try:
+        sent = await bot.send_rich_message(
+            chat_id=chat_id,
+            rich_message=rich_message,
+            reply_markup=reply_markup,
+        )
+    except TelegramAPIError as error:
+        logger.warning("Rich Message send failed, using HTML fallback: %s", error)
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=plain_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+
+    if current_message:
+        try:
+            await current_message.delete()
+        except TelegramAPIError:
+            logger.debug("Old card could not be deleted", exc_info=True)
+    return sent
 
 # ---------- Клавиатуры ----------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -691,34 +698,25 @@ async def delayed_log_inline_search(user_id: int, query: str, delay: float = 0.8
 async def send_menu(message: types.Message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
-        params = args[1].split('&')
+        payload, separator, return_param = args[1].partition("-r-")
         target_type = None
         target_id = None
-        return_param = None
+        return_param = return_param if separator else None
 
-        for p in params:
-            if p.startswith("return="):
-                return_param = p.split("=")[1]
-            else:
-                # Парсим основной параметр вида type_id
-                parts = p.split("_")
-                if len(parts) >= 2:
-                    target_type = parts[0]  # resource, mob, gear, card
-                    try:
-                        target_id = int(parts[1])
-                    except ValueError:
-                        pass
-
-        if target_type and target_id is not None:
+        parts = payload.split("_")
+        if len(parts) == 2:
+            target_type = parts[0]
             try:
-                await message.delete()
-            except Exception:
+                target_id = int(parts[1])
+            except ValueError:
                 pass
 
+        if target_type and target_id is not None:
             # Определяем контекст для возврата (если есть)
             context_type = None
             context_id = None
             page = 1
+            rarity = None
             if return_param:
                 parts = return_param.split("_")
                 if len(parts) >= 3:
@@ -772,16 +770,12 @@ async def send_menu(message: types.Message):
                 else:
                     rich_msg = await format_gear_card_rich(target_id, None, 1)
             elif target_type == "card":
-                # Для карт используем format_card_card (с контекстом)
-                rich_msg_text = await format_card_card(
+                rich_msg = await format_card_card_rich(
                     target_id,
                     page=page,
                     context_type=context_type,
                     context_id=context_id
                 )
-                # Отправляем как обычное сообщение с HTML (т.к. нет InputRichMessage)
-                await message.answer(rich_msg_text, parse_mode="HTML")
-                return
             else:
                 await message.answer("Неизвестный тип объекта.")
                 return
@@ -841,13 +835,24 @@ async def send_menu(message: types.Message):
                         except (IndexError, ValueError):
                             pass
 
-            # Отправляем через Rich Message API (кроме карт, уже отправлено)
-            if target_type != "card":
-                await message.bot.send_rich_message(
-                    chat_id=message.chat.id,
-                    rich_message=rich_msg,
-                    reply_markup=keyboard
-                )
+            plain_formatters = {
+                "resource": lambda: format_resource_card(target_id, context_type, context_id, page),
+                "mob": lambda: format_mob_card_plain(target_id, page=page),
+                "gear": lambda: format_gear_card_plain(target_id, rarity, page),
+                "card": lambda: format_card_card(target_id, page, context_type, context_id),
+            }
+            plain_text = await plain_formatters[target_type]()
+            await upsert_rich_card(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                rich_message=rich_msg,
+                plain_text=plain_text,
+                reply_markup=keyboard,
+            )
+            try:
+                await message.delete()
+            except TelegramAPIError:
+                logger.debug("Deep-link command could not be deleted", exc_info=True)
             return
 
     # Если нет параметров – главное меню
@@ -947,40 +952,48 @@ async def inline_search_handler(inline_query: InlineQuery):
     inline_results = []
 
     for mob in results.get("mobs", [])[:50]:
-        text = await format_mob_card_plain(mob["id"])
+        if len(inline_results) >= 50:
+            break
+        rich_message = await format_mob_card(mob["id"])
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
             id=f"mob_{mob['id']}",
             title=mob['name'],
             description=desc,
-            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
+            input_message_content=InputRichMessageContent(rich_message=rich_message)
         ))
 
     for res in results.get("resources", [])[:50]:
-        text = await format_resource_card(res["id"])
+        if len(inline_results) >= 50:
+            break
+        rich_message = await format_resource_card_rich(res["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"res_{res['id']}",
             title=res['name'],
             description="Ресурс",
-            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
+            input_message_content=InputRichMessageContent(rich_message=rich_message)
         ))
 
     for gear in results.get("gear", [])[:50]:
-        text = await format_gear_card_plain(gear["id"])
+        if len(inline_results) >= 50:
+            break
+        rich_message = await format_gear_card_rich(gear["id"], gear.get("rarity"))
         inline_results.append(InlineQueryResultArticle(
             id=f"gear_{gear['id']}",
             title=gear['name'],
             description=f"{gear['slot']} | {gear['rarity']}",
-            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
+            input_message_content=InputRichMessageContent(rich_message=rich_message)
         ))
 
     for card in results.get("cards", [])[:50]:
-        text = await format_card_card(card["id"])
+        if len(inline_results) >= 50:
+            break
+        rich_message = await format_card_card_rich(card["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"card_{card['id']}",
             title=card['name'],
             description=f"Слот: {card['slot']}",
-            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
+            input_message_content=InputRichMessageContent(rich_message=rich_message)
         ))
 
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
@@ -1044,6 +1057,7 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
 async def view_mob(callback: types.CallbackQuery):
+    await callback.answer()
     parts = callback.data.split("_")
     mob_id = int(parts[2])
     location_id = int(parts[3])
@@ -1053,6 +1067,7 @@ async def view_mob(callback: types.CallbackQuery):
 
     # Создаём InputRichMessage
     rich_msg = await format_mob_card(mob_id, location_id, page)
+    plain_text = await format_mob_card_plain(mob_id, location_id, page)
 
     # Формируем клавиатуру
     neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
@@ -1078,17 +1093,18 @@ async def view_mob(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # Отправляем сообщение
-    await callback.message.delete()
-    await callback.bot.send_rich_message(
+    await upsert_rich_card(
+        bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
-        reply_markup=reply_markup
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        current_message=callback.message,
     )
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_resources_"))
 async def view_resource(callback: types.CallbackQuery):
+    await callback.answer()
     parts = callback.data.split("_")
     res_id = int(parts[2])
     location_id = int(parts[3])
@@ -1096,6 +1112,7 @@ async def view_resource(callback: types.CallbackQuery):
     await log_view_resource(callback.from_user.id, res_id)
 
     rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
+    plain_text = await format_resource_card(res_id, context_type='location', context_id=location_id, page=page)
 
     # Навигация по ресурсам в локации
     prev_res = await db.execute_query(
@@ -1143,17 +1160,18 @@ async def view_resource(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # Отправляем через Rich Message API
-    await callback.message.delete()
-    await callback.bot.send_rich_message(
+    await upsert_rich_card(
+        bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
-        reply_markup=reply_markup
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        current_message=callback.message,
     )
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_gear_"))
 async def view_gear(callback: types.CallbackQuery):
+    await callback.answer()
     parts = callback.data.split("_")
     gear_id = int(parts[2])
     rarity = parts[3]
@@ -1163,6 +1181,7 @@ async def view_gear(callback: types.CallbackQuery):
 
     # Передаём rarity и page в функцию
     rich_msg = await format_gear_card_rich(gear_id, rarity, page)
+    plain_text = await format_gear_card_plain(gear_id, rarity, page)
 
     # остальной код без изменений (кнопки и т.д.)
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
@@ -1206,13 +1225,14 @@ async def view_gear(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await callback.message.delete()
-    await callback.bot.send_rich_message(
+    await upsert_rich_card(
+        bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
-        reply_markup=reply_markup
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        current_message=callback.message,
     )
-    await callback.answer()
 
 # ---------- Карты ----------
 @dp.callback_query(F.data.startswith("cards_page_"))
@@ -1223,11 +1243,13 @@ async def cards_page_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("view_card_"))
 async def view_card(callback: types.CallbackQuery):
+    await callback.answer()
     parts = callback.data.split("_")
     card_id = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 else 1
     await log_view_card(callback.from_user.id, card_id)
     text = await format_card_card(card_id)
+    rich_msg = await format_card_card_rich(card_id)
 
     neighbours = await db.get_prev_next_card_by_slot(card_id)
 
@@ -1253,8 +1275,14 @@ async def view_card(callback: types.CallbackQuery):
         keyboard.append(nav_buttons)
     keyboard.append([back_button])
 
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-    await callback.answer()
+    await upsert_rich_card(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        rich_message=rich_msg,
+        plain_text=text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        current_message=callback.message,
+    )
 
 @dp.callback_query(F.data.startswith("recipe_claim_"))
 async def recipe_claim(callback: types.CallbackQuery):
@@ -1292,6 +1320,7 @@ async def recipe_relinquish(callback: types.CallbackQuery):
 
 async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: str, page: int):
     rich_msg = await format_gear_card_rich(gear_id, rarity, page)
+    plain_text = await format_gear_card_plain(gear_id, rarity, page)
     # остальной код без изменений (он уже использует rarity и page)
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
@@ -1334,11 +1363,13 @@ async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: 
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await callback.message.delete()
-    await callback.bot.send_rich_message(
+    await upsert_rich_card(
+        bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
-        reply_markup=reply_markup
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        current_message=callback.message,
     )
 
 # ---------- Ресурсы по категориям ----------
@@ -1363,6 +1394,7 @@ async def back_to_resource_categories(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("view_resource_"))
 async def view_resource_by_type(callback: types.CallbackQuery):
+    await callback.answer()
     parts = callback.data.split("_")
     resource_id = int(parts[2])
     resource_type = parts[3]
@@ -1370,6 +1402,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     await log_view_resource(callback.from_user.id, resource_id)
 
     rich_msg = await format_resource_card_rich(resource_id, context_type='type', context_id=resource_type, page=page)
+    plain_text = await format_resource_card(resource_id, context_type='type', context_id=resource_type, page=page)
 
     neighbours = await db.get_prev_next_resource_by_type(resource_id, resource_type)
 
@@ -1396,14 +1429,14 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    # Отправляем через Rich Message API
-    await callback.message.delete()
-    await callback.bot.send_rich_message(
+    await upsert_rich_card(
+        bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
-        reply_markup=reply_markup
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        current_message=callback.message,
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
