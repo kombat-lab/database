@@ -89,6 +89,8 @@ async def get_active_users_count(days: int = 1) -> int:
     return res[0]['cnt'] if res else 0
 
 async def get_retention(cohort_days_ago: int, after_days: int) -> float:
+    if cohort_days_ago < 0 or after_days < 0 or after_days > cohort_days_ago:
+        raise ValueError("Некорректный период retention")
     first_visitors = await db.execute_query(
         "SELECT user_id FROM users WHERE DATE(first_seen) = DATE('now', ?)",
         (f'-{cohort_days_ago} days',)
@@ -104,7 +106,7 @@ async def get_retention(cohort_days_ago: int, after_days: int) -> float:
         WHERE user_id IN ({placeholders})
         AND DATE(timestamp) = DATE('now', ?)
         """,
-        tuple(user_ids) + (f'-{after_days} days',)
+        tuple(user_ids) + (f'-{cohort_days_ago - after_days} days',)
     )
     return (active[0]['cnt'] / len(user_ids)) * 100
 
