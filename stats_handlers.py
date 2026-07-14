@@ -10,6 +10,8 @@ from analytics import (
     get_db_stats,
     reset_analytics_data,
     get_top_search_queries,
+    get_users_page,
+    get_user_activity,
 )
 from admin_utils import edit_admin_rich
 from utils import escape_html
@@ -26,6 +28,7 @@ async def show_stats_menu(target, edit: bool = False):
         [InlineKeyboardButton(text="🃏 Топ-30 карт", callback_data="stats_cards")],
         [InlineKeyboardButton(text="🔍 Топ-30 поисковых запросов", callback_data="stats_searches")],
         [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
+        [InlineKeyboardButton(text="👥 Пользователи", callback_data="stats_users")],
         [InlineKeyboardButton(text="🗑 Сбросить аналитику", callback_data="stats_reset")],
         [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
     ])
@@ -137,6 +140,113 @@ async def show_general_stats(callback: types.CallbackQuery):
     await edit_admin_rich(callback, rich_html.strip(), keyboard, fallback_html=text)
 
 
+def _user_display_name(user: dict) -> str:
+    if user.get('username'):
+        return f"@{user['username']}"
+    full_name = " ".join(filter(None, (user.get('first_name'), user.get('last_name')))).strip()
+    return full_name or f"ID {user['user_id']}"
+
+
+async def show_users(callback: types.CallbackQuery, page: int = 1):
+    await callback.answer()
+    page = max(page, 1)
+    per_page = 10
+    rows = await get_users_page((page - 1) * per_page, per_page + 1)
+    has_next = len(rows) > per_page
+    users = rows[:per_page]
+
+    rich_rows, fallback_lines, keyboard_rows = [], [], []
+    for user in users:
+        display_name = _user_display_name(user)
+        safe_name = escape_html(display_name)
+        activity = escape_html(user.get('last_activity') or '—')
+        events = user.get('event_count', 0)
+        events_7d = user.get('events_7d', 0)
+        rich_rows.append(
+            f"<tr><td>{safe_name}</td><td>{events}</td><td>{events_7d}</td><td>{activity}</td></tr>"
+        )
+        fallback_lines.append(f"{display_name} — {events} событий, за 7 дней: {events_7d}")
+        keyboard_rows.append([InlineKeyboardButton(
+            text=f"👤 {display_name}"[:64],
+            callback_data=f"stats_user_{user['user_id']}_{page}",
+        )])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"stats_users_page_{page - 1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"stats_users_page_{page + 1}"))
+    if nav:
+        keyboard_rows.append(nav)
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    if users:
+        rich_html = (
+            f"<b>👥 Пользователи · страница {page}</b><br>"
+            "<table><tbody><tr><th>Пользователь</th><th>Всего</th><th>7 дней</th><th>Последняя активность</th></tr>"
+            + "".join(rich_rows) + "</tbody></table>"
+        )
+        fallback = f"<b>👥 Пользователи · страница {page}</b>\n\n" + "\n".join(
+            escape_html(line) for line in fallback_lines
+        )
+    else:
+        rich_html = fallback = "👥 Пользователи не найдены."
+    await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
+
+
+async def show_user_details(callback: types.CallbackQuery, user_id: int, return_page: int):
+    await callback.answer()
+    activity = await get_user_activity(user_id)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к пользователям", callback_data=f"stats_users_page_{return_page}")]
+    ])
+    if not activity:
+        await edit_admin_rich(callback, "Пользователь не найден.", keyboard)
+        return
+
+    user = activity['user']
+    totals = activity['totals']
+    display_name = escape_html(_user_display_name(user))
+    full_name = escape_html(" ".join(filter(None, (user.get('first_name'), user.get('last_name')))) or '—')
+    type_rows = "".join(
+        f"<tr><td>{escape_html(row['event_type'])}</td><td>{row['count']}</td></tr>"
+        for row in activity['event_types']
+    ) or "<tr><td>Нет событий</td><td>0</td></tr>"
+    searches = "<br>".join(
+        f"{escape_html(row.get('query') or '—')} · {escape_html(row.get('timestamp') or '')}"
+        for row in activity['recent_searches']
+    ) or "Нет поисковых запросов"
+    rich_html = f"""
+    <b>👤 {display_name}</b>
+    <table><tbody>
+      <tr><th>Поле</th><th>Значение</th></tr>
+      <tr><td>Telegram ID</td><td>{user['user_id']}</td></tr>
+      <tr><td>Имя</td><td>{full_name}</td></tr>
+      <tr><td>Первый визит</td><td>{escape_html(user.get('first_seen') or '—')}</td></tr>
+      <tr><td>Последняя активность</td><td>{escape_html(user.get('last_activity') or '—')}</td></tr>
+      <tr><td>Всего событий</td><td>{totals['total_events']}</td></tr>
+      <tr><td>За сутки</td><td>{totals['events_1d']}</td></tr>
+      <tr><td>За 7 дней</td><td>{totals['events_7d']}</td></tr>
+      <tr><td>За 30 дней</td><td>{totals['events_30d']}</td></tr>
+    </tbody></table>
+    <details><summary>📊 События по типам</summary><table><tbody>{type_rows}</tbody></table></details>
+    <details><summary>🔍 Последние поиски</summary>{searches}</details>
+    """.strip()
+    fallback = (
+        f"<b>👤 {display_name}</b>\n"
+        f"Telegram ID: <code>{user['user_id']}</code>\n"
+        f"Имя: {full_name}\n"
+        f"Первый визит: {escape_html(user.get('first_seen') or '—')}\n"
+        f"Последняя активность: {escape_html(user.get('last_activity') or '—')}\n\n"
+        f"Всего событий: {totals['total_events']}\n"
+        f"За сутки: {totals['events_1d']}\n"
+        f"За 7 дней: {totals['events_7d']}\n"
+        f"За 30 дней: {totals['events_30d']}"
+    )
+    await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
+
+
 @stats_router.callback_query(F.data == "stats_reset")
 async def confirm_reset(callback: types.CallbackQuery):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -187,10 +297,6 @@ async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMCont
 
 @stats_router.message(Command("stats"))
 async def show_stats_command(message: types.Message):
-    from admin_handlers import is_admin
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
-        return
     await show_stats_menu(message)
 
 
@@ -204,6 +310,17 @@ async def admin_stats_callback(callback: types.CallbackQuery):
 async def back_to_stats(callback: types.CallbackQuery):
     await show_stats_menu(callback, edit=True)
     await callback.answer()
+
+
+@stats_router.callback_query(F.data.startswith("stats_users_page_"))
+async def stats_users_page(callback: types.CallbackQuery):
+    await show_users(callback, int(callback.data.rsplit("_", 1)[1]))
+
+
+@stats_router.callback_query(F.data.startswith("stats_user_"))
+async def stats_user_details(callback: types.CallbackQuery):
+    _, _, user_id, return_page = callback.data.split("_")
+    await show_user_details(callback, int(user_id), int(return_page))
 
 
 @stats_router.callback_query(F.data.startswith("stats_"))
@@ -221,6 +338,8 @@ async def stats_router_callback(callback: types.CallbackQuery):
         await show_top_searches(callback)
     elif action == "general":
         await show_general_stats(callback)
+    elif action == "users":
+        await show_users(callback, 1)
     elif action == "reset":
         await confirm_reset(callback)
     else:
