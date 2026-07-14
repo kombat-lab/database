@@ -1,13 +1,14 @@
 import os
 import logging
-from aiogram import Router, types, F
+from aiogram import BaseMiddleware, Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramAPIError
 
 from database import db
-from utils import is_valid_emoji, clean_username
+from utils import is_valid_emoji, clean_username, escape_html
 from admin_utils import (
     ADMIN_ITEMS_PER_PAGE,
     get_admin_main_keyboard,
@@ -15,6 +16,7 @@ from admin_utils import (
     admin_cancel_edit,
     render_entity_list,
     show_edit_menu,
+    edit_admin_rich,
     register_generic_handlers,
 )
 from stats_handlers import stats_router
@@ -28,8 +30,27 @@ def is_admin(user_id: int) -> bool:
 
 admin_router = Router()
 
+
+class AdminOnlyMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user and is_admin(user.id):
+            return await handler(event, data)
+        if isinstance(event, types.CallbackQuery):
+            await event.answer("⛔ Нет доступа.", show_alert=True)
+        elif isinstance(event, types.Message):
+            await event.answer("⛔ Нет доступа.")
+        return None
+
+
+admin_access = AdminOnlyMiddleware()
+admin_router.message.outer_middleware(admin_access)
+admin_router.callback_query.outer_middleware(admin_access)
+
 # Подключаем роутер статистики
 admin_router.include_router(stats_router)
+stats_router.message.outer_middleware(admin_access)
+stats_router.callback_query.outer_middleware(admin_access)
 
 admin_router.callback_query(F.data == "admin_close")(admin_close)
 admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
@@ -338,9 +359,9 @@ async def resource_save(message: types.Message, state: FSMContext):
         await db.add_resource(data['res_name'], data['res_emoji'], data['res_type'], note)
         await message.answer("✅ Ресурс добавлен.")
     except Exception as e:
+        logger.exception("Не удалось добавить ресурс")
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await render_entity_list(message, state, ENTITY_CONFIGS['resource'], 1)
     await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
 
 # ============================================================
@@ -716,7 +737,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
         try:
             await message.delete()
-        except:
+        except TelegramAPIError:
             pass
 
     except Exception as e:
@@ -968,7 +989,7 @@ async def add_mob_hp(message: types.Message, state: FSMContext):
     try:
         hp = int(message.text.strip())
         if hp < 0: raise ValueError
-    except:
+    except (TypeError, ValueError):
         await message.answer("Введите целое положительное число.")
         return
     await state.update_data(hp=hp)
@@ -980,7 +1001,7 @@ async def add_mob_dust_min(message: types.Message, state: FSMContext):
     try:
         dust_min = int(message.text.strip())
         if dust_min < 0: raise ValueError
-    except:
+    except (TypeError, ValueError):
         await message.answer("Введите целое положительное число.")
         return
     await state.update_data(dust_min=dust_min)
@@ -992,7 +1013,7 @@ async def add_mob_dust_max(message: types.Message, state: FSMContext):
     try:
         dust_max = int(message.text.strip())
         if dust_max < 0: raise ValueError
-    except:
+    except (TypeError, ValueError):
         await message.answer("Введите целое положительное число.")
         return
     data = await state.get_data()
@@ -1008,7 +1029,7 @@ async def add_mob_exp(message: types.Message, state: FSMContext):
     try:
         exp = int(message.text.strip())
         if exp < 0: raise ValueError
-    except:
+    except (TypeError, ValueError):
         await message.answer("Введите целое положительное число.")
         return
     await state.update_data(exp=exp)
@@ -1172,21 +1193,21 @@ async def recipe_back_to_type(callback: types.CallbackQuery, state: FSMContext):
 async def show_recipe(target, recipe: dict, state: FSMContext):
     if recipe['result_type'] == 'gear':
         gear = await db.get_gear_by_id(recipe['result_id'])
-        result_info = f"{gear['emoji']} {gear['name']}" if gear else f"ID {recipe['result_id']}"
+        result_info = f"{escape_html(gear['emoji'])} {escape_html(gear['name'])}" if gear else f"ID {recipe['result_id']}"
     else:
         res = await db.get_resource_by_id(recipe['result_id'])
-        result_info = f"{res['emoji']} {res['name']}" if res else f"ID {recipe['result_id']}"
+        result_info = f"{escape_html(res['emoji'])} {escape_html(res['name'])}" if res else f"ID {recipe['result_id']}"
     text = f"📜 Рецепт ID {recipe['id']}\n🎁 Результат: {result_info} (количество: {recipe['quantity']})\n\n"
     text += "<b>Ингредиенты:</b>\n"
     for ing in recipe['ingredients']:
-        text += f"  {ing['emoji']} {ing['name']} — {ing['quantity']} шт.\n"
+        text += f"  {escape_html(ing['emoji'])} {escape_html(ing['name'])} — {ing['quantity']} шт.\n"
     if not recipe['ingredients']:
         text += "<i>Нет ингредиентов</i>\n"
 
     if recipe['result_type'] == 'gear':
         text += "\n👥 <b>Владельцы:</b>\n"
         for owner in recipe['owners']:
-            text += f"  @{clean_username(owner)}\n"
+            text += f"  @{escape_html(clean_username(owner))}\n"
         if not recipe['owners']:
             text += "<i>Нет владельцев</i>\n"
 
@@ -1200,7 +1221,28 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
     keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
 
     if isinstance(target, types.CallbackQuery):
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        ingredient_rows = "".join(
+            f"<tr><td>{escape_html(ing['emoji'])} {escape_html(ing['name'])}</td>"
+            f"<td>{ing['quantity']} шт.</td></tr>"
+            for ing in recipe['ingredients']
+        ) or "<tr><td>Нет ингредиентов</td><td>—</td></tr>"
+        rich_html = (
+            f"<b>📜 Рецепт ID {recipe['id']}</b><br>"
+            f"🎁 Результат: {result_info} · {recipe['quantity']} шт.<br>"
+            "<table><tbody><tr><th>Ингредиент</th><th>Количество</th></tr>"
+            f"{ingredient_rows}</tbody></table>"
+        )
+        if recipe['result_type'] == 'gear':
+            owners = "<br>".join(
+                f"@{escape_html(clean_username(owner))}" for owner in recipe['owners']
+            ) or "Нет владельцев"
+            rich_html += f"<details><summary>👥 Владельцы</summary>{owners}</details>"
+        await edit_admin_rich(
+            target,
+            rich_html,
+            InlineKeyboardMarkup(inline_keyboard=keyboard),
+            fallback_html=text,
+        )
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(RecipeStates.view_recipe)
@@ -1214,6 +1256,7 @@ async def recipe_view(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(recipe_id=recipe_id, recipe_result_type=recipe['result_type'])
     await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_back_to_list")
 async def recipe_back_to_list(callback: types.CallbackQuery, state: FSMContext):
@@ -1257,6 +1300,7 @@ async def recipe_create(callback: types.CallbackQuery, state: FSMContext):
     recipe = await db.get_recipe_details(recipe_id)
     await state.update_data(recipe_id=recipe_id, recipe_result_type=result_type, recipe_page=1)
     await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_ingredient")
 async def recipe_add_ingredient_select(callback: types.CallbackQuery, state: FSMContext):
@@ -1315,7 +1359,7 @@ async def recipe_ing_save_quantity(message: types.Message, state: FSMContext):
     try:
         qty = int(message.text.strip())
         if qty <= 0: raise ValueError
-    except:
+    except (TypeError, ValueError):
         await message.answer("Введите положительное целое число.")
         return
     data = await state.get_data()
@@ -1346,6 +1390,7 @@ async def recipe_finish_adding(callback: types.CallbackQuery, state: FSMContext)
     recipe_id = data['recipe_id']
     recipe = await db.get_recipe_details(recipe_id)
     await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_add_owner")
 async def recipe_add_owner_prompt(callback: types.CallbackQuery, state: FSMContext):
@@ -1426,6 +1471,7 @@ async def recipe_back_to_view(callback: types.CallbackQuery, state: FSMContext):
     recipe_id = data['recipe_id']
     recipe = await db.get_recipe_details(recipe_id)
     await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_delete")
 async def recipe_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
