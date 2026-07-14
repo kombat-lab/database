@@ -6,8 +6,8 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineQuery, InlineQueryResultArticle, InputRichMessage,
-    InputRichMessageContent
+    InlineQuery, InlineQueryResultArticle, InputTextMessageContent,
+    InputRichMessage
 )
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -952,48 +952,40 @@ async def inline_search_handler(inline_query: InlineQuery):
     inline_results = []
 
     for mob in results.get("mobs", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_mob_card(mob["id"])
+        text = await format_mob_card_plain(mob["id"])
         desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
         inline_results.append(InlineQueryResultArticle(
             id=f"mob_{mob['id']}",
             title=mob['name'],
             description=desc,
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
 
     for res in results.get("resources", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_resource_card_rich(res["id"])
+        text = await format_resource_card(res["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"res_{res['id']}",
             title=res['name'],
             description="Ресурс",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
 
     for gear in results.get("gear", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_gear_card_rich(gear["id"], gear.get("rarity"))
+        text = await format_gear_card_plain(gear["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"gear_{gear['id']}",
             title=gear['name'],
             description=f"{gear['slot']} | {gear['rarity']}",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
 
     for card in results.get("cards", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_card_card_rich(card["id"])
+        text = await format_card_card(card["id"])
         inline_results.append(InlineQueryResultArticle(
             id=f"card_{card['id']}",
             title=card['name'],
             description=f"Слот: {card['slot']}",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="HTML")
         ))
 
     await inline_query.answer(inline_results, cache_time=0, is_personal=True)
