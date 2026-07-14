@@ -149,7 +149,7 @@ ENTITY_CONFIGS['resource'] = {
     'delete_func': resource_delete,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
-    'list_title': "⚗️ Алхимия:\nВыберите ресурс для редактирования или добавьте новый:",
+    'list_title': "📦 Ресурсы:\nВыберите ресурс для редактирования или добавьте новый:",
     'add_button': True,
     'add_button_text': "➕ Добавить ресурс",
     'add_callback': "resource_add_start",
@@ -1087,10 +1087,14 @@ class RecipeStates(StatesGroup):
 
 async def get_recipe_type_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚔️ Снаряжение (gear)", callback_data="recipe_type_gear")],
-        [InlineKeyboardButton(text="📦 Ресурсы (resource)", callback_data="recipe_type_resource")],
+        [InlineKeyboardButton(text="⚔️ Снаряжение", callback_data="recipe_type_gear")],
+        [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="recipe_type_resource")],
         [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
     ])
+
+
+def get_recipe_type_title(result_type: str) -> str:
+    return "Снаряжение" if result_type == "gear" else "Алхимия"
 
 @admin_router.callback_query(F.data == "admin_manage_recipes")
 async def manage_recipes_type(callback: types.CallbackQuery, state: FSMContext):
@@ -1126,7 +1130,7 @@ async def recipe_list(callback: types.CallbackQuery, state: FSMContext):
     result_type = callback.data.split("_")[2]
     await state.update_data(recipe_result_type=result_type, recipe_page=1)
     keyboard = await get_recipe_list_keyboard(result_type, 1)
-    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await callback.message.edit_text(f"Рецепты: {get_recipe_type_title(result_type)}", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
 
 @admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_page_"))
@@ -1136,7 +1140,7 @@ async def recipe_list_page(callback: types.CallbackQuery, state: FSMContext):
     page = int(parts[3])
     await state.update_data(recipe_result_type=result_type, recipe_page=page)
     keyboard = await get_recipe_list_keyboard(result_type, page)
-    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await callback.message.edit_text(f"Рецепты: {get_recipe_type_title(result_type)}", reply_markup=keyboard)
 
 @admin_router.callback_query(RecipeStates.list_page, F.data == "recipe_back_to_type")
 async def recipe_back_to_type(callback: types.CallbackQuery, state: FSMContext):
@@ -1218,7 +1222,7 @@ async def recipe_back_to_list(callback: types.CallbackQuery, state: FSMContext):
     result_type = data.get('recipe_result_type', 'gear')
     page = data.get('recipe_page', 1)
     keyboard = await get_recipe_list_keyboard(result_type, page)
-    await callback.message.edit_text(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await callback.message.edit_text(f"Рецепты: {get_recipe_type_title(result_type)}", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
 
 @admin_router.callback_query(RecipeStates.list_page, F.data.startswith("recipe_add_"))
@@ -1514,7 +1518,7 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     await db.delete_recipe(recipe_id)
     await callback.message.edit_text("✅ Рецепт удалён.")
     keyboard = await get_recipe_list_keyboard(result_type, 1)
-    await callback.message.answer(f"Рецепты для {result_type.upper()}:", reply_markup=keyboard)
+    await callback.message.answer(f"Рецепты: {get_recipe_type_title(result_type)}", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
 
 # ============================================================
