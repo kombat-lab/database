@@ -149,7 +149,7 @@ ENTITY_CONFIGS['resource'] = {
     'delete_func': resource_delete,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
-    'list_title': "📦 Управление ресурсами:\nВыберите ресурс для редактирования или добавьте новый:",
+    'list_title': "⚗️ Алхимия:\nВыберите ресурс для редактирования или добавьте новый:",
     'add_button': True,
     'add_button_text': "➕ Добавить ресурс",
     'add_callback': "resource_add_start",
@@ -617,14 +617,14 @@ async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.clear()
     keyboard = await get_mob_list_keyboard(1)
-    await callback.message.edit_text("Выберите моба для редактирования:", reply_markup=keyboard)
+    await callback.message.edit_text("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
 
 @admin_router.callback_query(MobStates.edit_select, F.data.startswith("page_"))
 async def mob_list_page(callback: types.CallbackQuery, state: FSMContext):
     page = int(callback.data.split("_")[1])
     keyboard = await get_mob_list_keyboard(page)
-    await callback.message.edit_text("Выберите моба для редактирования:", reply_markup=keyboard)
+    await callback.message.edit_text("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
     await callback.answer()
 
 @admin_router.callback_query(MobStates.edit_select, F.data.startswith("edit_mob_"))
@@ -749,7 +749,7 @@ async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMCo
     await state.clear()
     keyboard = await get_mob_list_keyboard(1)
     await callback.message.edit_text(
-        "Выберите моба для редактирования:",
+        "🐾 Управление мобами:\nВыберите моба или добавьте нового:",
         reply_markup=keyboard
     )
     await state.set_state(MobStates.edit_select)
@@ -770,6 +770,7 @@ async def mob_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
     ])
     await callback.message.edit_text(f"Удалить моба <b>{mob[0]['name']}</b>?", parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(MobStates.edit_field)
+    await callback.answer()
 
 @admin_router.callback_query(F.data == "confirm_mob_delete")
 async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
@@ -778,8 +779,9 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     await db.delete_mob(mob_id)
     await callback.message.edit_text("✅ Моб удалён.")
     keyboard = await get_mob_list_keyboard(1)
-    await callback.message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
+    await callback.message.answer("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
+    await callback.answer()
 
 # ------------------- Управление дропом -------------------
 async def get_drop_list_keyboard(mob_id: int, category: str, page: int) -> InlineKeyboardMarkup:
@@ -960,13 +962,14 @@ async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMConte
     await callback.answer()
 
 # ---------- Добавление моба ----------
-@admin_router.callback_query(F.data == "admin_add_mob")
+@admin_router.callback_query(MobStates.edit_select, F.data == "mob_add_start")
 async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа")
         return
     await callback.message.edit_text("Введите название моба:")
     await state.set_state(MobStates.add_name)
+    await callback.answer()
 
 @admin_router.message(MobStates.add_name, F.text)
 async def add_mob_name(message: types.Message, state: FSMContext):
@@ -995,7 +998,6 @@ async def add_mob_hp(message: types.Message, state: FSMContext):
     await state.update_data(hp=hp)
     await message.answer("Введите dust_min:")
     await state.set_state(MobStates.add_dust_min)
-
 @admin_router.message(MobStates.add_dust_min, F.text)
 async def add_mob_dust_min(message: types.Message, state: FSMContext):
     try:
@@ -1057,63 +1059,12 @@ async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка: {e}")
     await state.clear()
-    await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
-    await callback.answer()
-
-# ---------- Удаление моба ----------
-class DeleteMobStates(StatesGroup):
-    select = State()
-    confirm = State()
-
-async def get_delete_mob_keyboard(page):
-    from admin_utils import build_paginated_keyboard
-    offset = (page-1)*ADMIN_ITEMS_PER_PAGE
-    mobs = await db.execute_query("SELECT id, name FROM mobs ORDER BY id LIMIT ? OFFSET ?",
-                                  (ADMIN_ITEMS_PER_PAGE+1, offset))
-    has_next = len(mobs) > ADMIN_ITEMS_PER_PAGE
-    mobs = mobs[:ADMIN_ITEMS_PER_PAGE]
-    items = [{'id': m['id'], 'name': m['name']} for m in mobs]
-    return build_paginated_keyboard(items, page, has_next, "del_mob")
-
-@admin_router.callback_query(F.data == "admin_delete_mob")
-async def start_delete_mob(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа")
-        return
-    keyboard = await get_delete_mob_keyboard(1)
-    await callback.message.edit_text("Выберите моба для удаления:", reply_markup=keyboard)
-    await state.set_state(DeleteMobStates.select)
-
-@admin_router.callback_query(DeleteMobStates.select, F.data.startswith("page_"))
-async def delete_mob_page(callback: types.CallbackQuery, state: FSMContext):
-    page = int(callback.data.split("_")[1])
-    keyboard = await get_delete_mob_keyboard(page)
-    await callback.message.edit_text("Выберите моба для удаления:", reply_markup=keyboard)
-
-@admin_router.callback_query(DeleteMobStates.select, F.data.startswith("del_mob_"))
-async def confirm_delete_mob(callback: types.CallbackQuery, state: FSMContext):
-    mob_id = int(callback.data.split("_")[2])
-    mob = await db.execute_query("SELECT name FROM mobs WHERE id = ?", (mob_id,))
-    if not mob:
-        await callback.message.edit_text("Моб не найден.")
-        await callback.answer()
-        return
-    await state.update_data(mob_id=mob_id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="confirm_del_mob")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel_edit")]
-    ])
-    await callback.message.edit_text(f"Удалить моба <b>{mob[0]['name']}</b>?", parse_mode="HTML", reply_markup=keyboard)
-    await state.set_state(DeleteMobStates.confirm)
-
-@admin_router.callback_query(DeleteMobStates.confirm, F.data == "confirm_del_mob")
-async def delete_mob_final(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    mob_id = data['mob_id']
-    await db.delete_mob(mob_id)
-    await callback.message.edit_text("✅ Моб удалён.")
-    await state.clear()
-    await callback.message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    keyboard = await get_mob_list_keyboard(1)
+    await callback.message.answer(
+        "🐾 Управление мобами:\nВыберите моба или добавьте нового:",
+        reply_markup=keyboard,
+    )
+    await state.set_state(MobStates.edit_select)
     await callback.answer()
 
 # ============================================================
