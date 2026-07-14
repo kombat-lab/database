@@ -1128,6 +1128,8 @@ class RecipeStates(StatesGroup):
     add_ingredient = State()
     add_ingredient_page = State()
     add_owner = State()
+    manage_owners = State()
+    delete_owner_confirm = State()
     edit_ingredient = State()
     edit_ingredient_quantity = State()
     delete_confirm = State()
@@ -1214,6 +1216,7 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
     keyboard = []
     if recipe['result_type'] == 'gear':
         keyboard.append([InlineKeyboardButton(text="👤 Добавить владельца", callback_data="recipe_add_owner")])
+        keyboard.append([InlineKeyboardButton(text="👥 Управлять владельцами", callback_data="recipe_manage_owners")])
     keyboard.append([InlineKeyboardButton(text="➕ Добавить ингредиент", callback_data="recipe_add_ingredient")])
     keyboard.append([InlineKeyboardButton(text="✏️ Редактировать ингредиенты", callback_data="recipe_edit_ingredients")])
     keyboard.append([InlineKeyboardButton(text="❌ Удалить рецепт", callback_data="recipe_delete")])
@@ -1418,6 +1421,76 @@ async def recipe_add_owner_save(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
     recipe = await db.get_recipe_details(recipe_id)
     await show_recipe(message, recipe, state)
+
+
+async def show_recipe_owners(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe_id = data['recipe_id']
+    owners = await db.get_recipe_owners(recipe_id)
+    keyboard = [
+        [InlineKeyboardButton(
+            text=f"❌ @{clean_username(owner)}",
+            callback_data=f"recipe_owner_delete_{index}",
+        )]
+        for index, owner in enumerate(owners)
+    ]
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к рецепту", callback_data="recipe_owners_back")])
+    text = "👥 Выберите владельца для удаления:" if owners else "👥 У рецепта пока нет владельцев."
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await state.set_state(RecipeStates.manage_owners)
+
+
+@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_manage_owners")
+async def recipe_manage_owners(callback: types.CallbackQuery, state: FSMContext):
+    await show_recipe_owners(callback, state)
+    await callback.answer()
+
+
+@admin_router.callback_query(RecipeStates.manage_owners, F.data.startswith("recipe_owner_delete_"))
+async def recipe_owner_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
+    index = int(callback.data.rsplit("_", 1)[1])
+    data = await state.get_data()
+    owners = await db.get_recipe_owners(data['recipe_id'])
+    if index < 0 or index >= len(owners):
+        await callback.answer("Список владельцев изменился. Откройте его заново.", show_alert=True)
+        return
+    owner = owners[index]
+    await state.update_data(selected_recipe_owner=owner)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="recipe_owner_delete_yes")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="recipe_owner_delete_cancel")],
+    ])
+    await callback.message.edit_text(
+        f"Удалить владельца <b>@{escape_html(clean_username(owner))}</b> из рецепта?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    await state.set_state(RecipeStates.delete_owner_confirm)
+    await callback.answer()
+
+
+@admin_router.callback_query(RecipeStates.delete_owner_confirm, F.data == "recipe_owner_delete_yes")
+async def recipe_owner_delete_execute(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    owner = data.get('selected_recipe_owner')
+    if owner:
+        await db.remove_recipe_owner(data['recipe_id'], owner)
+    await show_recipe_owners(callback, state)
+    await callback.answer(f"Владелец @{clean_username(owner)} удалён" if owner else "Владелец не найден")
+
+
+@admin_router.callback_query(RecipeStates.delete_owner_confirm, F.data == "recipe_owner_delete_cancel")
+async def recipe_owner_delete_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await show_recipe_owners(callback, state)
+    await callback.answer()
+
+
+@admin_router.callback_query(RecipeStates.manage_owners, F.data == "recipe_owners_back")
+async def recipe_owners_back(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipe = await db.get_recipe_details(data['recipe_id'])
+    await show_recipe(callback, recipe, state)
+    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_edit_ingredients")
 async def recipe_edit_ingredients_list(callback: types.CallbackQuery, state: FSMContext):
