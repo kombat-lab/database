@@ -45,10 +45,8 @@ class GenericEditStates(StatesGroup):
 
 def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="➕ Добавить моба", callback_data="admin_add_mob")],
-        [InlineKeyboardButton(text="✏️ Редактировать моба", callback_data="admin_edit_mob")],
-        [InlineKeyboardButton(text="🗑 Удалить моба", callback_data="admin_delete_mob")],
-        [InlineKeyboardButton(text="📦 Управление ресурсами", callback_data="admin_manage_resources")],
+        [InlineKeyboardButton(text="🐾 Управление мобами", callback_data="admin_edit_mob")],
+        [InlineKeyboardButton(text="⚗️ Алхимия", callback_data="admin_manage_resources")],
         [InlineKeyboardButton(text="⚔️ Управление снаряжением", callback_data="admin_manage_gear")],
         [InlineKeyboardButton(text="🃏 Управление картами", callback_data="admin_manage_cards")],
         [InlineKeyboardButton(text="📜 Управление рецептами", callback_data="admin_manage_recipes")],
