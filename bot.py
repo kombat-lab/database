@@ -1026,12 +1026,21 @@ async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("back_to_locations_"))
+@dp.callback_query(F.data.startswith("back_to_locations:"))
 async def back_to_locations(callback: types.CallbackQuery):
-    category = callback.data.split("_")[3]
-    text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
-    keyboard = await get_locations_keyboard(category)
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    mode = callback.data.split(":", 1)[1]
+    text = "🐾 Выбери локацию мобов:"
+    keyboard = await get_locations_keyboard(mode)
+    if callback.message.text is not None:
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=keyboard,
+        )
+    else:
+        await callback.message.edit_caption(
+            caption=text,
+            reply_markup=keyboard,
+        )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
