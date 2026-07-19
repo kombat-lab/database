@@ -863,7 +863,7 @@ async def send_menu(message: types.Message):
 async def search_command(message: types.Message):
     await message.answer("🔎 Напиши название моба, ресурса, снаряжения или карты.")
 
-@dp.message(F.text == " Мобы")
+@dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
     map_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
