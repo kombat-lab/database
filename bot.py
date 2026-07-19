@@ -868,7 +868,7 @@ async def mobs_button(message: types.Message):
     map_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
-        "world_map.jpg"
+        "world_map.png"
     )
 
     photo = FSInputFile(map_path)
