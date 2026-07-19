@@ -1026,22 +1026,25 @@ async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("back_to_locations:"))
+@dp.callback_query(F.data.startswith("back_to_locations_"))
 async def back_to_locations(callback: types.CallbackQuery):
-    mode = callback.data.split(":", 1)[1]
-    text = "🐾 Выбери локацию мобов:"
-    keyboard = await get_locations_keyboard(mode)
-    if callback.message.text is not None:
-        await callback.message.edit_text(
-            text=text,
+    await callback.answer()
+
+    category = callback.data.removeprefix("back_to_locations_")
+    keyboard = await get_locations_keyboard(category)
+
+    if callback.message.photo:
+        await callback.message.edit_caption(
+            caption="🗺 <b>Выбери локацию мобов:</b>",
             reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
         )
     else:
-        await callback.message.edit_caption(
-            caption=text,
+        await callback.message.edit_text(
+            text="🗺 <b>Выбери локацию мобов:</b>",
             reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
         )
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
 async def list_or_page_callback(callback: types.CallbackQuery):
