@@ -1048,7 +1048,16 @@ async def list_or_page_callback(callback: types.CallbackQuery):
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}"
-    await callback.message.edit_text(title, reply_markup=keyboard)
+    if callback.message.photo:
+        await callback.message.edit_caption(
+            caption=title,
+            reply_markup=keyboard,
+        )
+    else:
+        await callback.message.edit_text(
+            text=title,
+            reply_markup=keyboard,
+        )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
