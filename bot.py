@@ -425,8 +425,16 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
     html += f"""
     <table border="1" cellspacing="0" cellpadding="5">
         <tbody>
-            <tr><th>Уровень</th><th>Класс</th><th>Крафт</th></tr>
-            <tr><td>{data.get('level', 1)}</td><td>{escape_html(data.get('classes') or 'Все классы')}</td><td>{craft_text}</td></tr>
+            <tr>
+                <th align="center">Уровень</th>
+                <th align="center">Класс</th>
+                <th align="center">Крафт</th>
+            </tr>
+            <tr>
+                <td align="center">{data.get('level', 1)}</td>
+                <td align="center">{escape_html(data.get('classes') or 'Все классы')}</td>
+                <td align="center">{craft_text}</td>
+            </tr>
         </tbody>
     </table>
     """
