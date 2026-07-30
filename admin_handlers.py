@@ -18,6 +18,7 @@ from admin_utils import (
     show_edit_menu,
     edit_admin_rich,
     register_generic_handlers,
+    GenericEditStates,
 )
 from stats_handlers import stats_router
 
@@ -111,6 +112,12 @@ async def gear_update_field(gear_id, field, value):
         await db.update_gear(gear_id, rarity=value)
     elif field == 'slot':
         await db.update_gear(gear_id, slot=value)
+    elif field == 'level':
+        await db.update_gear(gear_id, level=value)
+    elif field == 'classes':
+        await db.update_gear(gear_id, classes=value)
+    elif field == 'note':
+        await db.update_gear(gear_id, note=value)
 
 async def gear_get_by_id(gear_id):
     return await db.get_gear_by_id(gear_id)
@@ -149,7 +156,7 @@ ENTITY_CONFIGS['resource'] = {
     'delete_func': resource_delete,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
-    'list_title': "📦 Управление ресурсами:\nВыберите ресурс для редактирования или добавьте новый:",
+    'list_title': "📦 Ресурсы:\nВыберите ресурс для редактирования или добавьте новый:",
     'add_button': True,
     'add_button_text': "➕ Добавить ресурс",
     'add_callback': "resource_add_start",
@@ -192,9 +199,12 @@ ENTITY_CONFIGS['gear'] = {
         ('name', '✏️ Название'),
         ('rarity', '⭐ Редкость'),
         ('slot', '🔧 Слот'),
+        ('level', '📈 Уровень'),
+        ('classes', '🧙 Классы'),
+        ('note', '📝 Примечание'),
         ('emoji', '😀 Эмодзи')
     ],
-    'integer_fields': [],
+    'integer_fields': ['level'],
     'select_options': {
         'rarity': ['common', 'rare', 'epic', 'legendary'],
         'slot': [
@@ -225,7 +235,13 @@ ENTITY_CONFIGS['gear'] = {
             'вторая рука': '🛡 Вторая рука'
         }
     },
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} [{ENTITY_CONFIGS['gear']['display_mapping']['rarity'].get(d.get('rarity','common'), d.get('rarity','common'))}]"
+    'display_format': lambda d: (
+        f"{d.get('emoji','')} {d.get('name','')} "
+        f"[{ENTITY_CONFIGS['gear']['display_mapping']['rarity'].get(d.get('rarity','common'), d.get('rarity','common'))}]"
+        f"\n📈 Уровень: {d.get('level', 1)}"
+        f"\n🧙 Классы: {d.get('classes') or 'Все классы'}"
+        + (f"\n📝 {d.get('note')}" if d.get('note') else '')
+    )
 }
 
 ENTITY_CONFIGS['card'] = {
@@ -398,6 +414,26 @@ class GearAddStates(StatesGroup):
     rarity = State()
     slot = State()
     emoji = State()
+    level = State()
+    classes = State()
+    note = State()
+
+class GearClassEditStates(StatesGroup):
+    selecting = State()
+
+GEAR_CLASSES = ["Аколит", "Бастион", "Маг", "Охотник", "Тень"]
+
+def build_gear_classes_keyboard(selected):
+    selected = set(selected)
+    rows = []
+    for class_name in GEAR_CLASSES:
+        mark = "☑️" if class_name in selected else "⬜"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {class_name}",
+            callback_data=f"gear_class_toggle_{GEAR_CLASSES.index(class_name)}"
+        )])
+    rows.append([InlineKeyboardButton(text="✅ Готово", callback_data="gear_classes_done")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 @admin_router.message(GearAddStates.name, F.text)
 async def gear_add_rarity(message: types.Message, state: FSMContext):
@@ -441,19 +477,86 @@ async def gear_add_emoji(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(GearAddStates.emoji)
 
 @admin_router.message(GearAddStates.emoji, F.text)
-async def gear_save(message: types.Message, state: FSMContext):
+async def gear_add_level_prompt(message: types.Message, state: FSMContext):
     emoji = message.text.strip()
     if not is_valid_emoji(emoji):
         await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
+    await state.update_data(gear_emoji=emoji)
+    await message.answer("Введите минимальный уровень для экипировки (целое число от 1):")
+    await state.set_state(GearAddStates.level)
+
+@admin_router.message(GearAddStates.level, F.text)
+async def gear_add_classes_prompt(message: types.Message, state: FSMContext):
+    try:
+        level = int(message.text.strip())
+        if level < 1:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите целое число не меньше 1.")
+        return
+    await state.update_data(gear_level=level, gear_classes=[])
+    await message.answer(
+        "Выберите один или несколько классов, затем нажмите «Готово»:",
+        reply_markup=build_gear_classes_keyboard([])
+    )
+    await state.set_state(GearAddStates.classes)
+
+@admin_router.callback_query(GearAddStates.classes, F.data.startswith("gear_class_toggle_"))
+async def gear_add_toggle_class(callback: types.CallbackQuery, state: FSMContext):
+    index = int(callback.data.rsplit("_", 1)[1])
+    if index < 0 or index >= len(GEAR_CLASSES):
+        await callback.answer("Неизвестный класс", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = list(data.get('gear_classes', []))
+    class_name = GEAR_CLASSES[index]
+    if class_name in selected:
+        selected.remove(class_name)
+    else:
+        selected.append(class_name)
+    selected.sort(key=GEAR_CLASSES.index)
+    await state.update_data(gear_classes=selected)
+    await callback.message.edit_reply_markup(reply_markup=build_gear_classes_keyboard(selected))
+    await callback.answer()
+
+@admin_router.callback_query(GearAddStates.classes, F.data == "gear_classes_done")
+async def gear_add_note_prompt(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get('gear_classes'):
+        await callback.answer("Выберите хотя бы один класс", show_alert=True)
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ Без примечания", callback_data="gear_note_skip")
+    ]])
+    await callback.message.edit_text(
+        "Введите примечание для снаряжения или нажмите «Без примечания»:",
+        reply_markup=keyboard
+    )
+    await state.set_state(GearAddStates.note)
+    await callback.answer()
+
+async def save_new_gear(target, state: FSMContext, note: str):
     data = await state.get_data()
     try:
-        await db.add_gear(data['gear_name'], data['gear_rarity'], data['gear_slot'], emoji)
-        await message.answer("✅ Снаряжение добавлено.")
+        await db.add_gear(
+            data['gear_name'], data['gear_rarity'], data['gear_slot'], data['gear_emoji'],
+            data['gear_level'], ", ".join(data['gear_classes']), note
+        )
+        await target.answer("✅ Снаряжение добавлено.")
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await target.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    await target.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+
+@admin_router.message(GearAddStates.note, F.text)
+async def gear_save_with_note(message: types.Message, state: FSMContext):
+    await save_new_gear(message, state, message.text.strip())
+
+@admin_router.callback_query(GearAddStates.note, F.data == "gear_note_skip")
+async def gear_save_without_note(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await save_new_gear(callback.message, state, "")
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ КАРТ
@@ -998,6 +1101,7 @@ async def add_mob_hp(message: types.Message, state: FSMContext):
     await state.update_data(hp=hp)
     await message.answer("Введите dust_min:")
     await state.set_state(MobStates.add_dust_min)
+
 @admin_router.message(MobStates.add_dust_min, F.text)
 async def add_mob_dust_min(message: types.Message, state: FSMContext):
     try:
@@ -1520,6 +1624,56 @@ async def recipe_delete_execute(callback: types.CallbackQuery, state: FSMContext
     keyboard = await get_recipe_list_keyboard(result_type, 1)
     await callback.message.answer(f"Рецепты: {get_recipe_type_title(result_type)}", reply_markup=keyboard)
     await state.set_state(RecipeStates.list_page)
+
+# ============================================================
+# МНОЖЕСТВЕННЫЙ ВЫБОР КЛАССОВ ДЛЯ СУЩЕСТВУЮЩЕГО СНАРЯЖЕНИЯ
+# ============================================================
+
+@admin_router.callback_query(GenericEditStates.select_field, F.data == "edit_field_classes")
+async def gear_edit_classes_start(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if data.get('editing_entity') != 'gear':
+        await callback.answer()
+        return
+    gear = await db.get_gear_by_id(data['entity_id'])
+    selected = [v.strip() for v in (gear.get('classes') or '').split(',') if v.strip()]
+    await state.update_data(gear_classes=selected)
+    await callback.message.edit_text(
+        "Выберите один или несколько классов, затем нажмите «Готово»:",
+        reply_markup=build_gear_classes_keyboard(selected)
+    )
+    await state.set_state(GearClassEditStates.selecting)
+    await callback.answer()
+
+@admin_router.callback_query(GearClassEditStates.selecting, F.data.startswith("gear_class_toggle_"))
+async def gear_edit_toggle_class(callback: types.CallbackQuery, state: FSMContext):
+    index = int(callback.data.rsplit("_", 1)[1])
+    if index < 0 or index >= len(GEAR_CLASSES):
+        await callback.answer("Неизвестный класс", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = list(data.get('gear_classes', []))
+    class_name = GEAR_CLASSES[index]
+    if class_name in selected:
+        selected.remove(class_name)
+    else:
+        selected.append(class_name)
+    selected.sort(key=GEAR_CLASSES.index)
+    await state.update_data(gear_classes=selected)
+    await callback.message.edit_reply_markup(reply_markup=build_gear_classes_keyboard(selected))
+    await callback.answer()
+
+@admin_router.callback_query(GearClassEditStates.selecting, F.data == "gear_classes_done")
+async def gear_edit_classes_save(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    selected = data.get('gear_classes', [])
+    if not selected:
+        await callback.answer("Выберите хотя бы один класс", show_alert=True)
+        return
+    gear_id = data['entity_id']
+    await db.update_gear(gear_id, classes=", ".join(selected))
+    gear = await db.get_gear_by_id(gear_id)
+    await show_edit_menu(callback, state, gear_id, ENTITY_CONFIGS['gear'], gear)
 
 # ============================================================
 # Регистрация универсальных обработчиков (CRUD)
