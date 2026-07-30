@@ -364,6 +364,10 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
 
     text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
     text += f"Редкость: {rarity_text}\nСлот: {escape_html(slot_text)}\n"
+    text += f"Уровень: {data.get('level', 1)}\n"
+    text += f"Класс: {escape_html(data.get('classes') or 'Все классы')}\n"
+    if data.get('note'):
+        text += f"\n📝 {escape_html(data['note'])}\n"
 
     # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
     return_param = None
@@ -422,11 +426,13 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
     html += f"""
     <table border="1" cellspacing="0" cellpadding="5">
         <tbody>
-            <tr><th>Редкость</th><th>Слот</th><th>Крафт</th></tr>
-            <tr><td>{rarity_text}</td><td>{escape_html(slot_text)}</td><td>{craft_text}</td></tr>
+            <tr><th>Редкость</th><th>Слот</th><th>Уровень</th><th>Класс</th><th>Крафт</th></tr>
+            <tr><td>{rarity_text}</td><td>{escape_html(slot_text)}</td><td>{data.get('level', 1)}</td><td>{escape_html(data.get('classes') or 'Все классы')}</td><td>{craft_text}</td></tr>
         </tbody>
     </table>
     """
+    if data.get('note'):
+        html += f"<br>📝 <b>Примечание:</b> {escape_html(data['note'])}<br>"
 
     return_param = None
     if rarity and page:
