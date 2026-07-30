@@ -7,7 +7,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputRichMessage,
-    InputRichMessageContent, FSInputFile
+    InputRichMessageContent
 )
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -32,6 +32,30 @@ ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 BOT_USERNAME = None
+
+# Группа вложенных локаций во вкладке «Мобы».
+DEAD_FOREST_LOCATION_ID = 4
+DEAD_FOREST_CHILD_LOCATION_IDS = (8, 9, 10)
+DEAD_FOREST_GROUP_LOCATION_IDS = (
+    DEAD_FOREST_LOCATION_ID,
+    *DEAD_FOREST_CHILD_LOCATION_IDS,
+)
+
+# Значения используются в интерфейсе даже до обновления emoji в БД.
+LOCATION_EMOJI_OVERRIDES = {
+    8: "🪨",   # Пещера
+    9: "⛏️",  # Подземная пещера
+    10: "🦇",  # Темный грот
+}
+
+
+def get_location_emoji(location: dict) -> str:
+    """Возвращает emoji локации с безопасным fallback на значение из БД."""
+    return LOCATION_EMOJI_OVERRIDES.get(location["id"], location.get("emoji") or "📍")
+
+
+def get_location_button_text(location: dict) -> str:
+    return f"{get_location_emoji(location)} {location['name']}"
 def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> str:
     """Формирует корректный Telegram start payload длиной до 64 символов."""
     payload = f"{item_type}_{item_id}"
@@ -554,8 +578,56 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
 
 async def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     locations = await db.get_locations()
-    keyboard = [[InlineKeyboardButton(text=f"{loc['emoji']} {loc['name']}",
-                                      callback_data=f"list_{category}_{loc['id']}_1")] for loc in locations]
+    keyboard = []
+
+    for loc in locations:
+        location_id = loc["id"]
+
+        # Во вкладке «Мобы» пещерные локации доступны только через
+        # подменю «Мертвого леса». Для остальных категорий список не меняется.
+        if category == "mobs" and location_id in DEAD_FOREST_CHILD_LOCATION_IDS:
+            continue
+
+        callback_data = (
+            "mobs_dead_forest_locations"
+            if category == "mobs" and location_id == DEAD_FOREST_LOCATION_ID
+            else f"list_{category}_{location_id}_1"
+        )
+        keyboard.append([
+            InlineKeyboardButton(
+                text=get_location_button_text(loc),
+                callback_data=callback_data,
+            )
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def get_dead_forest_locations_keyboard() -> InlineKeyboardMarkup:
+    """Формирует подменю Мертвого леса для выбора мобов."""
+    locations = await db.get_locations()
+    locations_by_id = {loc["id"]: loc for loc in locations}
+    keyboard = []
+
+    for location_id in DEAD_FOREST_GROUP_LOCATION_IDS:
+        location = locations_by_id.get(location_id)
+        if not location:
+            logger.warning("Локация id=%s отсутствует в списке locations", location_id)
+            continue
+
+        keyboard.append([
+            InlineKeyboardButton(
+                text=get_location_button_text(location),
+                callback_data=f"list_mobs_{location_id}_1",
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            text="🔙 Назад к локациям",
+            callback_data="back_to_locations_mobs",
+        )
+    ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
@@ -591,7 +663,16 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
         nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_{category}_{location_id}_{page+1}"))
     if nav:
         keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="🔙 Назад к локациям", callback_data=f"back_to_locations_{category}")])
+    if category == "mobs" and location_id in DEAD_FOREST_GROUP_LOCATION_IDS:
+        back_text = "🔙 Назад к Мертвому лесу"
+        back_callback = "mobs_dead_forest_locations"
+    else:
+        back_text = "🔙 Назад к локациям"
+        back_callback = f"back_to_locations_{category}"
+
+    keyboard.append([
+        InlineKeyboardButton(text=back_text, callback_data=back_callback)
+    ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
@@ -865,20 +946,7 @@ async def search_command(message: types.Message):
 
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    map_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "assets",
-        "world_map.png"
-    )
-
-    photo = FSInputFile(map_path)
-
-    await message.answer_photo(
-        photo=photo,
-        caption="🗺 <b>Выбери локацию мобов:</b>",
-        reply_markup=await get_locations_keyboard("mobs"),
-        parse_mode="HTML"
-    )
+    await message.answer("Выбери локацию мобов:", reply_markup=await get_locations_keyboard("mobs"))
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
@@ -1026,25 +1094,23 @@ async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("back_to_locations_"))
-async def back_to_locations(callback: types.CallbackQuery):
+@dp.callback_query(F.data == "mobs_dead_forest_locations")
+async def mobs_dead_forest_locations(callback: types.CallbackQuery):
+    keyboard = await get_dead_forest_locations_keyboard()
+    await callback.message.edit_text(
+        "🪾 <b>Мертвый лес</b>\nВыбери локацию мобов:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
     await callback.answer()
 
-    category = callback.data.removeprefix("back_to_locations_")
+@dp.callback_query(F.data.startswith("back_to_locations_"))
+async def back_to_locations(callback: types.CallbackQuery):
+    category = callback.data.split("_")[3]
+    text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
-
-    if callback.message.photo:
-        await callback.message.edit_caption(
-            caption="🗺 <b>Выбери локацию мобов:</b>",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML,
-        )
-    else:
-        await callback.message.edit_text(
-            text="🗺 <b>Выбери локацию мобов:</b>",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.HTML,
-        )
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
 async def list_or_page_callback(callback: types.CallbackQuery):
@@ -1059,17 +1125,8 @@ async def list_or_page_callback(callback: types.CallbackQuery):
         page = int(parts[3])
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
-    title = f"{location['emoji']} {location['name']} - {category.capitalize()}\nСтраница {page}"
-    if callback.message.photo:
-        await callback.message.edit_caption(
-            caption=title,
-            reply_markup=keyboard,
-        )
-    else:
-        await callback.message.edit_text(
-            text=title,
-            reply_markup=keyboard,
-        )
+    title = f"{get_location_emoji(location)} {location['name']} - {category.capitalize()}\nСтраница {page}"
+    await callback.message.edit_text(title, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
