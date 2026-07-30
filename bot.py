@@ -104,6 +104,19 @@ SLOT_ICONS = {
     'вторая рука': '🛡'
 }
 
+
+GEAR_SLOT_ORDER = list(SLOT_NAMES.keys())
+
+def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
+    rows = []
+    for index, slot in enumerate(GEAR_SLOT_ORDER):
+        rows.append([InlineKeyboardButton(
+            text=SLOT_NAMES[slot],
+            callback_data=f"gear_slot_{rarity}_{index}",
+        )])
+    rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 # ---------- Формирование карточек ----------
 async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int = 1) -> str:
     data = await db.get_mob_full_card(mob_id)
@@ -645,10 +658,10 @@ async def get_dead_forest_locations_keyboard() -> InlineKeyboardMarkup:
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚪ Обычное", callback_data="list_gear_common_1")],
-        [InlineKeyboardButton(text="🟢 Редкое", callback_data="list_gear_rare_1")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="list_gear_epic_1")],
-        [InlineKeyboardButton(text="🟣 Эпическая", callback_data="list_gear_legendary_1")]
+        [InlineKeyboardButton(text="⚪ Обычное", callback_data="gear_slots_common")],
+        [InlineKeyboardButton(text="🟢 Редкое", callback_data="gear_slots_rare")],
+        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="gear_slots_epic")],
+        [InlineKeyboardButton(text="🟣 Эпическая", callback_data="gear_slots_legendary")]
     ])
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -688,23 +701,30 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
     ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def get_gear_by_rarity_keyboard(rarity: str, page: int) -> InlineKeyboardMarkup:
+async def get_gear_by_slot_keyboard(rarity: str, slot_index: int, page: int) -> InlineKeyboardMarkup:
+    slot = GEAR_SLOT_ORDER[slot_index]
     offset = (page - 1) * ITEMS_PER_PAGE
-    items = await db.get_gear_by_rarity_sorted_by_slot(rarity, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
+    items = await db.execute_query(
+        "SELECT * FROM gear WHERE rarity = ? AND slot = ? ORDER BY level, name LIMIT ? OFFSET ?",
+        (rarity, slot, ITEMS_PER_PAGE + FETCH_EXTRA, offset),
+    )
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
     keyboard = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback_data = f"view_gear_{item['id']}_{rarity}_{page}"
-        keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
+        keyboard.append([InlineKeyboardButton(
+            text=name,
+            callback_data=f"view_gear_{item['id']}_{rarity}_{slot_index}_{page}",
+        )])
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"page_gear_{rarity}_{page-1}"))
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"page_gear_{rarity}_{slot_index}_{page-1}"))
     if has_next:
-        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_gear_{rarity}_{page+1}"))
+        nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"page_gear_{rarity}_{slot_index}_{page+1}"))
     if nav:
         keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к слотам", callback_data=f"gear_slots_{rarity}")])
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -1142,20 +1162,23 @@ async def list_or_page_callback(callback: types.CallbackQuery):
     await callback.message.edit_text(title, reply_markup=keyboard)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith(("list_gear_", "page_gear_")))
+@dp.callback_query(F.data.startswith("gear_slots_"))
+async def gear_slots_callback(callback: types.CallbackQuery):
+    rarity = callback.data.split("_", 2)[2]
+    await callback.message.edit_text("Выбери слот снаряжения:", reply_markup=get_gear_slots_keyboard(rarity))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith(("gear_slot_", "page_gear_")))
 async def gear_list_or_page_callback(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    rarity = parts[2]
-    page = int(parts[3])
-    rarity_names = {
-        "common": "Обычное",
-        "rare": "Редкое",
-        "epic": "Сверхредкое",
-        "legendary": "Эпическая"
-    }
-    rarity_name = rarity_names.get(rarity, rarity)
-    keyboard = await get_gear_by_rarity_keyboard(rarity, page)
-    text = f"⚔️ <b>Снаряжение — {rarity_name}</b>\nСтраница {page}"
+    if parts[0] == "gear":
+        rarity, slot_index, page = parts[2], int(parts[3]), 1
+    else:
+        rarity, slot_index, page = parts[2], int(parts[3]), int(parts[4])
+    rarity_names = {"common":"Обычное","rare":"Редкое","epic":"Сверхредкое","legendary":"Эпическая"}
+    slot = GEAR_SLOT_ORDER[slot_index]
+    keyboard = await get_gear_by_slot_keyboard(rarity, slot_index, page)
+    text = f"⚔️ <b>{rarity_names.get(rarity, rarity)} · {SLOT_NAMES[slot]}</b>\nСтраница {page}"
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
@@ -1279,7 +1302,8 @@ async def view_gear(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     gear_id = int(parts[2])
     rarity = parts[3]
-    page = int(parts[4])
+    slot_index = int(parts[4]) if len(parts) >= 6 else None
+    page = int(parts[5]) if len(parts) >= 6 else int(parts[4])
 
     await log_view_gear(callback.from_user.id, gear_id)
 
@@ -1291,22 +1315,32 @@ async def view_gear(callback: types.CallbackQuery):
     recipe_id = await db.get_recipe_id_by_gear(gear_id)
     user_username = callback.from_user.username
 
-    neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
+    if slot_index is not None:
+        slot = GEAR_SLOT_ORDER[slot_index]
+        ids = await db.execute_query("SELECT id FROM gear WHERE rarity = ? AND slot = ? ORDER BY level, name, id", (rarity, slot))
+        ordered = [row['id'] for row in ids]
+        pos = ordered.index(gear_id) if gear_id in ordered else -1
+        neighbours = {
+            'prev_id': ordered[pos-1] if pos > 0 else None,
+            'next_id': ordered[pos+1] if 0 <= pos < len(ordered)-1 else None,
+        }
+    else:
+        neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_gear_{neighbours['prev_id']}_{rarity}_{page}"
+            callback_data=(f"view_gear_{neighbours['prev_id']}_{rarity}_{slot_index}_{page}" if slot_index is not None else f"view_gear_{neighbours['prev_id']}_{rarity}_{page}")
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_gear_{neighbours['next_id']}_{rarity}_{page}"
+            callback_data=(f"view_gear_{neighbours['next_id']}_{rarity}_{slot_index}_{page}" if slot_index is not None else f"view_gear_{neighbours['next_id']}_{rarity}_{page}")
         ))
 
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
-        callback_data=f"list_gear_{rarity}_{page}"
+        callback_data=(f"page_gear_{rarity}_{slot_index}_{page}" if slot_index is not None else "gear_rarities")
     )
 
     keyboard = []
