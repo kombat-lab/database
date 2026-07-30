@@ -47,9 +47,25 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
+        await self._ensure_schema_updates()
         await self._ensure_indexes()
         await self._load_locations_cache()
         logger.info(f"Database connected: {DB_PATH}")
+
+
+    async def _ensure_schema_updates(self):
+        """Добавляет новые поля без удаления существующих данных."""
+        columns = await self.execute_query("PRAGMA table_info(gear)")
+        existing = {column["name"] for column in columns}
+        migrations = {
+            "level": "ALTER TABLE gear ADD COLUMN level INTEGER NOT NULL DEFAULT 1",
+            "classes": "ALTER TABLE gear ADD COLUMN classes TEXT NOT NULL DEFAULT ''",
+            "note": "ALTER TABLE gear ADD COLUMN note TEXT NOT NULL DEFAULT ''",
+        }
+        for column, sql in migrations.items():
+            if column not in existing:
+                await self._conn.execute(sql)
+        await self._conn.commit()
 
     async def _ensure_indexes(self):
         indexes = [
@@ -400,7 +416,7 @@ class Database:
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, rarity, slot, emoji FROM gear ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, name, rarity, slot, emoji, level, classes, note FROM gear ORDER BY id LIMIT ? OFFSET ?",
             (limit, offset)
         )
 
@@ -408,15 +424,15 @@ class Database:
         res = await self.execute_query("SELECT * FROM gear WHERE id = ?", (gear_id,))
         return res[0] if res else None
 
-    async def add_gear(self, name: str, rarity: str, slot: str, emoji: str) -> int:
+    async def add_gear(self, name: str, rarity: str, slot: str, emoji: str, level: int = 1, classes: str = "", note: str = "") -> int:
         await self.execute_query(
-            "INSERT INTO gear (name, rarity, slot, emoji) VALUES (?, ?, ?, ?)",
-            (name, rarity, slot, emoji)
+            "INSERT INTO gear (name, rarity, slot, emoji, level, classes, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, rarity, slot, emoji, level, classes, note)
         )
         res = await self.execute_query("SELECT last_insert_rowid() as id")
         return res[0]['id']
 
-    async def update_gear(self, gear_id: int, name: str = None, rarity: str = None, slot: str = None, emoji: str = None):
+    async def update_gear(self, gear_id: int, name: str = None, rarity: str = None, slot: str = None, emoji: str = None, level: int = None, classes: str = None, note: str = None):
         current = await self.get_gear_by_id(gear_id)
         if not current:
             raise ValueError("Gear not found")
@@ -424,9 +440,12 @@ class Database:
         new_rarity = rarity if rarity is not None else current['rarity']
         new_slot = slot if slot is not None else current['slot']
         new_emoji = emoji if emoji is not None else current['emoji']
+        new_level = level if level is not None else current.get('level', 1)
+        new_classes = classes if classes is not None else current.get('classes', '')
+        new_note = note if note is not None else current.get('note', '')
         await self.execute_query(
-            "UPDATE gear SET name=?, rarity=?, slot=?, emoji=? WHERE id=?",
-            (new_name, new_rarity, new_slot, new_emoji, gear_id)
+            "UPDATE gear SET name=?, rarity=?, slot=?, emoji=?, level=?, classes=?, note=? WHERE id=?",
+            (new_name, new_rarity, new_slot, new_emoji, new_level, new_classes, new_note, gear_id)
         )
 
     async def delete_gear(self, gear_id: int):
@@ -443,7 +462,7 @@ class Database:
 
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         query = """
-            SELECT g.id, g.name, g.rarity, g.slot, g.emoji,
+            SELECT g.id, g.name, g.rarity, g.slot, g.emoji, g.level, g.classes, g.note,
                    (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
                     FROM drops d JOIN mobs m ON d.mob_id = m.id
                     WHERE d.item_type = 'gear' AND d.item_id = g.id) as mobs,
