@@ -1169,6 +1169,38 @@ async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult):
         query=chosen_result.query
     )
 
+
+async def replace_callback_message_text(
+    callback: types.CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    """Показывает следующий экран независимо от типа исходного сообщения.
+
+    Telegram не позволяет вызывать edit_text() для сообщения с фотографией.
+    Поэтому пост с картой удаляется и заменяется обычным текстовым сообщением.
+    Обычные текстовые сообщения по-прежнему редактируются на месте.
+    """
+    message = callback.message
+    if message.photo:
+        await message.answer(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            logger.debug("Could not delete world-map message", exc_info=True)
+        return
+
+    await message.edit_text(
+        text,
+        reply_markup=reply_markup,
+        parse_mode=parse_mode,
+    )
+
 # ---------- Callback-обработчики ----------
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
@@ -1178,7 +1210,8 @@ async def gear_rarities_callback(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "mobs_dead_forest_locations")
 async def mobs_dead_forest_locations(callback: types.CallbackQuery):
     keyboard = await get_dead_forest_locations_keyboard()
-    await callback.message.edit_text(
+    await replace_callback_message_text(
+        callback,
         "🪾 <b>Мертвый лес</b>\nВыбери локацию мобов:",
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
@@ -1190,7 +1223,7 @@ async def back_to_locations(callback: types.CallbackQuery):
     category = callback.data.split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    await replace_callback_message_text(callback, text, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
@@ -1207,7 +1240,7 @@ async def list_or_page_callback(callback: types.CallbackQuery):
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = f"{get_location_emoji(location)} {location['name']} - {category.capitalize()}\nСтраница {page}"
-    await callback.message.edit_text(title, reply_markup=keyboard)
+    await replace_callback_message_text(callback, title, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("gear_slots_"))
