@@ -366,7 +366,17 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         entity_type = data.get('editing_entity')
         configs = get_entity_configs_func()
         if entity_type in configs:
-            await render_entity_list(callback, state, configs[entity_type], 1)
+            config = configs[entity_type]
+            back_to_list_func = config.get('back_to_list_func')
+            if back_to_list_func:
+                await back_to_list_func(callback, state, data)
+            else:
+                await render_entity_list(
+                    callback,
+                    state,
+                    config,
+                    data.get('current_page', 1),
+                )
         else:
             await callback.message.edit_text("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
         await callback.answer()
