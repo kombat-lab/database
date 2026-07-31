@@ -33,6 +33,76 @@ FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 BOT_USERNAME = None
 
+RARITY_EMOJIS = {
+    "common": "⚪",
+    "rare": "🟢",
+    "epic": "🔵",
+    "legendary": "🟣",
+}
+
+RARITY_NAMES = {
+    "common": "Обычное",
+    "rare": "Редкое",
+    "epic": "Сверхредкое",
+    "legendary": "Эпическое",
+}
+
+RESOURCE_TYPE_NAMES = {
+    "craft": "⚒️ Крафтовый",
+    "consumable": "✨ Расходуемый",
+    "scroll_recipe": "📜 Рецепт экипировки",
+    "scroll": "📜 Рецепт экипировки",
+    "currency": "💰 Валюта",
+    "alchemy": "⚗️ Алхимия",
+}
+
+RESOURCE_TYPE_PLURAL_NAMES = {
+    "craft": "⚒️ Крафтовые",
+    "consumable": "✨ Расходуемые",
+    "scroll_recipe": "📜 Рецепты экипировки",
+    "scroll": "📜 Рецепты экипировки",
+    "currency": "💰 Валюта",
+    "alchemy": "⚗️ Алхимия",
+}
+
+RESOURCE_TYPE_TITLES = {
+    "craft": "Крафтовые",
+    "consumable": "Расходуемые",
+    "scroll_recipe": "Рецепты экипировки",
+    "scroll": "Рецепты экипировки",
+    "currency": "Валюта",
+    "alchemy": "Алхимия",
+}
+
+RARITY_ORDER = ("common", "rare", "epic", "legendary")
+
+
+def get_rarity_emoji(rarity: str | None) -> str:
+    return RARITY_EMOJIS.get(rarity or "common", RARITY_EMOJIS["common"])
+
+
+def get_resource_type_name(resource_type: str | None) -> str:
+    return RESOURCE_TYPE_NAMES.get(resource_type or "craft", "📦 Крафтовый")
+
+
+def build_resource_return_param(
+    resource_id: int,
+    context_type: str | None,
+    context_id: int | str | None,
+    page: int,
+) -> str | None:
+    if context_id is None:
+        return None
+    if context_type == "location":
+        return f"resource_loc_{resource_id}_{context_id}_{page}"
+    if context_type == "type":
+        return f"resource_type_{resource_id}_{context_id}_{page}"
+    return None
+
+
+def build_gear_return_param(gear_id: int, rarity: str | None, page: int) -> str | None:
+    return f"gear_{gear_id}_{rarity}_{page}" if rarity else None
+
 # Группа вложенных локаций во вкладке «Мобы».
 DEAD_FOREST_LOCATION_ID = 4
 DEAD_FOREST_CHILD_LOCATION_IDS = (8, 9, 10)
@@ -72,40 +142,25 @@ inline_log_tasks = {}
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-SLOT_NAMES = {
-    'шлем': '🪖 Шлем',
-    'плечи': '🪹 Плечи',
-    'тело': '🦺 Тело',
-    'плащ': '🧣 Плащ',
-    'пояс': '⛓ Пояс',
-    'штаны': '🩳 Штаны',
-    'ботинки': '🥾 Ботинки',
-    'перчатки': '🧤 Перчатки',
-    'кольцо': '💍 Кольцо',
-    'амул': '📿 Амулет',
-    'серьга': '🧏‍♀️ Серьга',
-    'основная рука': '🗡 Основная рука',
-    'вторая рука': '🛡 Вторая рука'
-}
+SLOT_DEFINITIONS = (
+    ("шлем", "🪖", "Шлем"),
+    ("плечи", "🪹", "Плечи"),
+    ("тело", "🦺", "Тело"),
+    ("плащ", "🧣", "Плащ"),
+    ("пояс", "⛓", "Пояс"),
+    ("штаны", "🩳", "Штаны"),
+    ("ботинки", "🥾", "Ботинки"),
+    ("перчатки", "🧤", "Перчатки"),
+    ("кольцо", "💍", "Кольцо"),
+    ("амул", "📿", "Амулет"),
+    ("серьга", "🧏‍♀️", "Серьга"),
+    ("основная рука", "🗡", "Основная рука"),
+    ("вторая рука", "🛡", "Вторая рука"),
+)
 
-SLOT_ICONS = {
-    'шлем': '🪖',
-    'плечи': '🪹',
-    'тело': '🦺',
-    'плащ': '🧣',
-    'пояс': '⛓',
-    'штаны': '🩳',
-    'ботинки': '🥾',
-    'перчатки': '🧤',
-    'кольцо': '💍',
-    'амул': '📿',
-    'серьга': '🧏‍♀️',
-    'основная рука': '🗡',
-    'вторая рука': '🛡'
-}
-
-
-GEAR_SLOT_ORDER = list(SLOT_NAMES.keys())
+SLOT_NAMES = {key: f"{icon} {name}" for key, icon, name in SLOT_DEFINITIONS}
+SLOT_ICONS = {key: icon for key, icon, _ in SLOT_DEFINITIONS}
+GEAR_SLOT_ORDER = [key for key, _, _ in SLOT_DEFINITIONS]
 
 async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     counts = await db.execute_query(
@@ -154,10 +209,9 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
         text += "\n"
 
     if data['gear_drops']:
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
         text += "<b>⚔️ Снаряжение:</b>\n"
         for g in data['gear_drops']:
-            rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
+            rarity_icon = get_rarity_emoji(g.get('rarity'))
             link = make_deep_link("gear", g['id'], return_param)
             text += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a>\n"
         text += "\n"
@@ -206,10 +260,9 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
         drops_html += "<br>"
 
     if data['gear_drops']:
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵"}
         drops_html += "<b>⚔️ Снаряжение:</b><br>"
         for g in data['gear_drops']:
-            rarity_icon = rarity_emoji.get(g.get('rarity', 'common'), '⚪')
+            rarity_icon = get_rarity_emoji(g.get('rarity'))
             link = make_deep_link("gear", g['id'], return_param)
             drops_html += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a><br>"
         drops_html += "<br>"
@@ -234,15 +287,7 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
     if not data:
         return "Ресурс не найден."
 
-    type_names = {
-        'craft': '⚒️ Крафтовый',
-        'consumable': '✨ Расходуемый',
-        'scroll_recipe': '📜 Рецепт экипировки',
-        'scroll': '📜 Рецепт экипировки',
-        'currency': '💰 Валюта',
-        'alchemy': '⚗️ Алхимия'
-    }
-    type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
+    type_str = get_resource_type_name(data.get('type'))
     is_alchemy = (data.get('type') == 'alchemy')
 
     text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
@@ -251,12 +296,7 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
         text += "\n"
 
     # return для возврата к этому ресурсу
-    return_param = None
-    if context_type and context_id:
-        if context_type == 'location':
-            return_param = f"resource_loc_{resource_id}_{context_id}_{page}"
-        elif context_type == 'type':
-            return_param = f"resource_type_{resource_id}_{context_id}_{page}"
+    return_param = build_resource_return_param(resource_id, context_type, context_id, page)
 
     if data['mobs']:
         text += "<b>Падает с мобов:</b>\n"
@@ -303,27 +343,14 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
     if not data:
         return InputRichMessage(html="Ресурс не найден.")
 
-    type_names = {
-        'craft': '⚒️ Крафтовый',
-        'consumable': '✨ Расходуемый',
-        'scroll_recipe': '📜 Рецепт экипировки',
-        'scroll': '📜 Рецепт экипировки',
-        'currency': '💰 Валюта',
-        'alchemy': '⚗️ Алхимия'
-    }
-    type_str = type_names.get(data.get('type', 'craft'), '📦 Крафтовый')
+    type_str = get_resource_type_name(data.get('type'))
     is_alchemy = (data.get('type') == 'alchemy')
 
     html = f"<b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
     html += f"🏷 Тип: {type_str}<br>"
 
     # Параметр для возврата к текущему ресурсу
-    return_param = None
-    if context_type and context_id:
-        if context_type == 'location':
-            return_param = f"resource_loc_{resource_id}_{context_id}_{page}"
-        elif context_type == 'type':
-            return_param = f"resource_type_{resource_id}_{context_id}_{page}"
+    return_param = build_resource_return_param(resource_id, context_type, context_id, page)
 
     # ----- ТАБЛИЦА С МОБАМИ (добавлено) -----
     if data['mobs']:
@@ -386,10 +413,8 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
     if not data:
         return "Предмет не найден."
 
-    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
-
     text = (
-        f"{rarity_emoji.get(data['rarity'], '⚪')} "
+        f"{get_rarity_emoji(data.get('rarity'))} "
         f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
     )
     text += f"Уровень: {data.get('level', 1)}\n"
@@ -398,9 +423,7 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
         text += f"\n📝 {escape_html(data['note'])}\n"
 
     # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
-    return_param = None
-    if rarity and page:
-        return_param = f"gear_{gear_id}_{rarity}_{page}"
+    return_param = build_gear_return_param(gear_id, rarity, page)
 
     if data.get('craftable') and data['ingredients']:
         text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
@@ -444,11 +467,10 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
     if not data:
         return InputRichMessage(html="Предмет не найден.")
 
-    rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
     craft_text = "да" if data.get('craftable') else "нет"
 
     html = (
-        f"<b>{rarity_emoji.get(data['rarity'], '⚪')} "
+        f"<b>{get_rarity_emoji(data.get('rarity'))} "
         f"{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
     )
     html += f"""
@@ -470,9 +492,7 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
     if data.get('note'):
         html += f"<br>📝 <b>Примечание:</b> {escape_html(data['note'])}<br>"
 
-    return_param = None
-    if rarity and page:
-        return_param = f"gear_{gear_id}_{rarity}_{page}"
+    return_param = build_gear_return_param(gear_id, rarity, page)
 
     if data.get('craftable') and data['ingredients']:
         html += "<b>Требуемые ресурсы:</b><br>"
@@ -674,10 +694,11 @@ async def get_dead_forest_locations_keyboard() -> InlineKeyboardMarkup:
 
 def get_rarities_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚪ Обычное", callback_data="gear_slots_common")],
-        [InlineKeyboardButton(text="🟢 Редкое", callback_data="gear_slots_rare")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое", callback_data="gear_slots_epic")],
-        [InlineKeyboardButton(text="🟣 Эпическая", callback_data="gear_slots_legendary")]
+        [InlineKeyboardButton(
+            text=f"{get_rarity_emoji(rarity)} {RARITY_NAMES[rarity]}",
+            callback_data=f"gear_slots_{rarity}",
+        )]
+        for rarity in RARITY_ORDER
     ])
 
 def get_inline_search_button() -> InlineKeyboardMarkup:
@@ -787,14 +808,7 @@ async def show_resources_by_type(target, resource_type: str, page: int):
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
 
-    type_names = {
-        'craft': 'Крафтовые',
-        'consumable': 'Расходуемые',
-        'scroll_recipe': 'Рецепты экипировки',
-        'currency': 'Валюта',
-        'alchemy': 'Алхимия'
-    }
-    type_display = type_names.get(resource_type, resource_type)
+    type_display = RESOURCE_TYPE_TITLES.get(resource_type, resource_type)
 
     keyboard = []
     for res in items:
@@ -1052,9 +1066,8 @@ async def handle_search(message: types.Message, state: FSMContext):
         reply += "\n"
     if results["gear"]:
         reply += "<b>Снаряжение:</b>\n"
-        rarity_emoji = {"common": "⚪", "rare": "🟢", "epic": "🔵", "legendary": "🟣"}
         for g in results["gear"]:
-            reply += f"{g['emoji']} {escape_html(g['name'])} {rarity_emoji.get(g['rarity'], '')}\n"
+            reply += f"{g['emoji']} {escape_html(g['name'])} {get_rarity_emoji(g.get('rarity'))}\n"
         reply += "\n"
     if results["cards"]:
         reply += "<b>🃏 Карты:</b>\n"
@@ -1196,10 +1209,9 @@ async def gear_list_or_page_callback(callback: types.CallbackQuery):
         rarity, slot_index, page = parts[2], int(parts[3]), 1
     else:
         rarity, slot_index, page = parts[2], int(parts[3]), int(parts[4])
-    rarity_names = {"common":"Обычное","rare":"Редкое","epic":"Сверхредкое","legendary":"Эпическая"}
     slot = GEAR_SLOT_ORDER[slot_index]
     keyboard = await get_gear_by_slot_keyboard(rarity, slot_index, page)
-    text = f"⚔️ <b>{rarity_names.get(rarity, rarity)} · {SLOT_NAMES[slot]}</b>\nСтраница {page}"
+    text = f"⚔️ <b>{RARITY_NAMES.get(rarity, rarity)} · {SLOT_NAMES[slot]}</b>\nСтраница {page}"
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
