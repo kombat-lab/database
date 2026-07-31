@@ -1045,7 +1045,7 @@ async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, 
         sql = "SELECT id, name, emoji FROM resources WHERE type = ? ORDER BY name LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
     elif category == 'gear':
-        sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE rarity IN ('common','rare') AND slot = ? ORDER BY rarity, level, name LIMIT ? OFFSET ?"
+        sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE slot = ? ORDER BY CASE rarity WHEN 'common' THEN 1 WHEN 'rare' THEN 2 WHEN 'epic' THEN 3 WHEN 'legendary' THEN 4 ELSE 5 END, level, name LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
     else:
         sql = "SELECT id, name, emoji, slot FROM cards WHERE slot = ? ORDER BY name LIMIT ? OFFSET ?"
