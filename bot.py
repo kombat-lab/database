@@ -245,7 +245,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
             </tr>
             <tr>
                 <td><b>✨ Пыль:</b> {data['dust_min']}-{data['dust_max']}</td>
-                <td>{loc_str}</td>
+                <td><b>{loc_str}</b></td>
             </tr>
         </tbody>
     </table>
