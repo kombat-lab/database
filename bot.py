@@ -7,7 +7,7 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineQuery, InlineQueryResultArticle, InputRichMessage,
-    InputRichMessageContent
+    InputRichMessageContent, FSInputFile
 )
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -1009,7 +1009,26 @@ async def search_command(message: types.Message):
 
 @dp.message(F.text == "🐾 Мобы")
 async def mobs_button(message: types.Message):
-    await message.answer("Выбери локацию мобов:", reply_markup=await get_locations_keyboard("mobs"))
+    map_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "world_map.png",
+    )
+
+    if not os.path.isfile(map_path):
+        logger.error("World map image not found: %s", map_path)
+        await message.answer(
+            "Выбери локацию мобов:",
+            reply_markup=await get_locations_keyboard("mobs"),
+        )
+        return
+
+    await message.answer_photo(
+        photo=FSInputFile(map_path),
+        caption="🐾 <b>Выбери локацию мобов:</b>",
+        reply_markup=await get_locations_keyboard("mobs"),
+        parse_mode="HTML",
+    )
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
