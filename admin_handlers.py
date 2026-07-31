@@ -758,16 +758,40 @@ class MobStates(StatesGroup):
     drop_category = State()
     drop_list_page = State()
 
-async def get_mob_list_keyboard(page):
-    from admin_utils import build_paginated_keyboard
-    offset = (page-1)*ADMIN_ITEMS_PER_PAGE
-    mobs = await db.execute_query("SELECT id, name, emoji FROM mobs ORDER BY id LIMIT ? OFFSET ?",
-                                  (ADMIN_ITEMS_PER_PAGE+1, offset))
+async def get_mob_locations_keyboard() -> InlineKeyboardMarkup:
+    locations = await db.get_locations()
+    rows = [[InlineKeyboardButton(
+        text=f"{loc.get('emoji') or '📍'} {loc['name']}",
+        callback_data=f"mob_location_{loc['id']}"
+    )] for loc in locations]
+    rows.append([InlineKeyboardButton(text="➕ Добавить моба", callback_data="mob_add_start")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def get_mob_list_keyboard(location_id: int, page: int = 1) -> InlineKeyboardMarkup:
+    offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
+    mobs = await db.execute_query(
+        "SELECT id, name, emoji FROM mobs WHERE location_id = ? ORDER BY name LIMIT ? OFFSET ?",
+        (location_id, ADMIN_ITEMS_PER_PAGE + 1, offset),
+    )
     has_next = len(mobs) > ADMIN_ITEMS_PER_PAGE
     mobs = mobs[:ADMIN_ITEMS_PER_PAGE]
-    items = [{'id': m['id'], 'name': m['name'], 'emoji': m['emoji']} for m in mobs]
-    return build_paginated_keyboard(items, page, has_next, "edit_mob", 
-                                    extra_buttons=[[InlineKeyboardButton(text="➕ Добавить моба", callback_data="mob_add_start")]])
+    rows = [[InlineKeyboardButton(
+        text=f"{mob['emoji']} {mob['name']}", callback_data=f"edit_mob_{mob['id']}"
+    )] for mob in mobs]
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"mob_page_{location_id}_{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"mob_page_{location_id}_{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="➕ Добавить моба", callback_data="mob_add_start")])
+    rows.append([InlineKeyboardButton(text="🔙 К локациям", callback_data="back_to_mob_locations")])
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 @admin_router.callback_query(F.data == "admin_edit_mob")
 async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
@@ -775,15 +799,51 @@ async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Нет доступа")
         return
     await state.clear()
-    keyboard = await get_mob_list_keyboard(1)
-    await callback.message.edit_text("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
+    await callback.message.edit_text(
+        "🐾 Управление мобами:\nВыберите локацию:",
+        reply_markup=await get_mob_locations_keyboard(),
+    )
     await state.set_state(MobStates.edit_select)
+    await callback.answer()
 
-@admin_router.callback_query(MobStates.edit_select, F.data.startswith("page_"))
+
+@admin_router.callback_query(MobStates.edit_select, F.data.startswith("mob_location_"))
+async def mob_location_select(callback: types.CallbackQuery, state: FSMContext):
+    location_id = int(callback.data.rsplit("_", 1)[1])
+    location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
+    if not location:
+        await callback.answer("Локация не найдена", show_alert=True)
+        return
+    await state.update_data(mob_location_id=location_id)
+    loc = location[0]
+    await callback.message.edit_text(
+        f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
+        reply_markup=await get_mob_list_keyboard(location_id, 1),
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(MobStates.edit_select, F.data.startswith("mob_page_"))
 async def mob_list_page(callback: types.CallbackQuery, state: FSMContext):
-    page = int(callback.data.split("_")[1])
-    keyboard = await get_mob_list_keyboard(page)
-    await callback.message.edit_text("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
+    _, _, location_id, page = callback.data.split("_")
+    location_id, page = int(location_id), int(page)
+    await state.update_data(mob_location_id=location_id)
+    location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
+    loc = location[0] if location else {'name': 'Локация', 'emoji': '📍'}
+    await callback.message.edit_text(
+        f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
+        reply_markup=await get_mob_list_keyboard(location_id, page),
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(MobStates.edit_select, F.data == "back_to_mob_locations")
+async def back_to_mob_locations(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(mob_location_id=None)
+    await callback.message.edit_text(
+        "🐾 Управление мобами:\nВыберите локацию:",
+        reply_markup=await get_mob_locations_keyboard(),
+    )
     await callback.answer()
 
 @admin_router.callback_query(MobStates.edit_select, F.data.startswith("edit_mob_"))
@@ -833,7 +893,7 @@ async def mob_update_field(message: types.Message, state: FSMContext):
             "Выберите моба из списка:"
         )
         await state.clear()
-        keyboard = await get_mob_list_keyboard(1)
+        keyboard = await get_mob_locations_keyboard()
         await message.answer("Выберите моба для редактирования:", reply_markup=keyboard)
         await state.set_state(MobStates.edit_select)
         return
@@ -905,13 +965,26 @@ async def mob_update_field(message: types.Message, state: FSMContext):
 
 @admin_router.callback_query(F.data == "back_to_mob_list")
 async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    location_id = data.get('mob_location_id')
+    if not location_id and data.get('mob_id'):
+        row = await db.execute_query("SELECT location_id FROM mobs WHERE id = ?", (data['mob_id'],))
+        location_id = row[0]['location_id'] if row else None
     await state.clear()
-    keyboard = await get_mob_list_keyboard(1)
-    await callback.message.edit_text(
-        "🐾 Управление мобами:\nВыберите моба или добавьте нового:",
-        reply_markup=keyboard
-    )
     await state.set_state(MobStates.edit_select)
+    if location_id:
+        await state.update_data(mob_location_id=location_id)
+        location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
+        loc = location[0] if location else {'name': 'Локация', 'emoji': '📍'}
+        await callback.message.edit_text(
+            f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
+            reply_markup=await get_mob_list_keyboard(location_id, 1),
+        )
+    else:
+        await callback.message.edit_text(
+            "🐾 Управление мобами:\nВыберите локацию:",
+            reply_markup=await get_mob_locations_keyboard(),
+        )
     await callback.answer()
 
 @admin_router.callback_query(MobStates.edit_field, F.data == "mob_delete")
@@ -937,7 +1010,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
     mob_id = data['mob_id']
     await db.delete_mob(mob_id)
     await callback.message.edit_text("✅ Моб удалён.")
-    keyboard = await get_mob_list_keyboard(1)
+    keyboard = await get_mob_locations_keyboard()
     await callback.message.answer("🐾 Управление мобами:\nВыберите моба или добавьте нового:", reply_markup=keyboard)
     await state.set_state(MobStates.edit_select)
     await callback.answer()
@@ -1044,6 +1117,114 @@ async def back_to_drop_filters(callback: types.CallbackQuery, state: FSMContext)
 @admin_router.callback_query(MobStates.drop_category, F.data == "back_to_drop_categories")
 async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Выберите тип дропа:",reply_markup=build_drop_categories_keyboard()); await callback.answer()
+
+# ---------- Добавление моба ----------
+@admin_router.callback_query(MobStates.edit_select, F.data == "mob_add_start")
+async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа")
+        return
+    await callback.message.edit_text("Введите название моба:")
+    await state.set_state(MobStates.add_name)
+    await callback.answer()
+
+@admin_router.message(MobStates.add_name, F.text)
+async def add_mob_name(message: types.Message, state: FSMContext):
+    await state.update_data(name=message.text.strip())
+    await message.answer("Введите эмодзи моба:")
+    await state.set_state(MobStates.add_emoji)
+
+@admin_router.message(MobStates.add_emoji, F.text)
+async def add_mob_emoji(message: types.Message, state: FSMContext):
+    emoji = message.text.strip()
+    if not is_valid_emoji(emoji):
+        await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
+        return
+    await state.update_data(emoji=emoji)
+    await message.answer("Введите HP:")
+    await state.set_state(MobStates.add_hp)
+
+@admin_router.message(MobStates.add_hp, F.text)
+async def add_mob_hp(message: types.Message, state: FSMContext):
+    try:
+        hp = int(message.text.strip())
+        if hp < 0: raise ValueError
+    except (TypeError, ValueError):
+        await message.answer("Введите целое положительное число.")
+        return
+    await state.update_data(hp=hp)
+    await message.answer("Введите dust_min:")
+    await state.set_state(MobStates.add_dust_min)
+
+@admin_router.message(MobStates.add_dust_min, F.text)
+async def add_mob_dust_min(message: types.Message, state: FSMContext):
+    try:
+        dust_min = int(message.text.strip())
+        if dust_min < 0: raise ValueError
+    except (TypeError, ValueError):
+        await message.answer("Введите целое положительное число.")
+        return
+    await state.update_data(dust_min=dust_min)
+    await message.answer("Введите dust_max:")
+    await state.set_state(MobStates.add_dust_max)
+
+@admin_router.message(MobStates.add_dust_max, F.text)
+async def add_mob_dust_max(message: types.Message, state: FSMContext):
+    try:
+        dust_max = int(message.text.strip())
+        if dust_max < 0: raise ValueError
+    except (TypeError, ValueError):
+        await message.answer("Введите целое положительное число.")
+        return
+    data = await state.get_data()
+    if dust_max < data['dust_min']:
+        await message.answer("dust_max не может быть меньше dust_min")
+        return
+    await state.update_data(dust_max=dust_max)
+    await message.answer("Введите опыт (exp):")
+    await state.set_state(MobStates.add_exp)
+
+@admin_router.message(MobStates.add_exp, F.text)
+async def add_mob_exp(message: types.Message, state: FSMContext):
+    try:
+        exp = int(message.text.strip())
+        if exp < 0: raise ValueError
+    except (TypeError, ValueError):
+        await message.answer("Введите целое положительное число.")
+        return
+    await state.update_data(exp=exp)
+    locations = await db.get_locations()
+    if not locations:
+        await message.answer("Нет локаций.")
+        await state.clear()
+        return
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{loc['emoji']} {loc['name']}", callback_data=f"loc_{loc['id']}")] for loc in locations
+    ])
+    await message.answer("Выберите локацию:", reply_markup=keyboard)
+    await state.set_state(MobStates.add_location)
+
+@admin_router.callback_query(MobStates.add_location, F.data.startswith("loc_"))
+async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
+    location_id = int(callback.data.split("_")[1])
+    data = await state.get_data()
+    try:
+        await db.execute_query(
+            "INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id) VALUES (?,?,?,?,?,?,?)",
+            (data['name'], data['emoji'], data['hp'], data['dust_min'], data['dust_max'], data['exp'], location_id)
+        )
+        await callback.message.edit_text("✅ Моб добавлен.")
+    except Exception as e:
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+    await state.clear()
+    keyboard = await get_mob_locations_keyboard()
+    await callback.message.answer(
+        "🐾 Управление мобами:\nВыберите моба или добавьте нового:",
+        reply_markup=keyboard,
+    )
+    await state.set_state(MobStates.edit_select)
+    await callback.answer()
+
 
 register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
 
