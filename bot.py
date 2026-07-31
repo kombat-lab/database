@@ -188,6 +188,24 @@ async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+GEAR_CLASSES = {"Аколит", "Бастион", "Маг", "Охотник", "Тень"}
+
+def format_gear_classes(classes_value) -> str:
+    """Сокращает полный набор классов до надписи «Все классы»."""
+    selected = {
+        class_name.strip()
+        for class_name in str(classes_value or "").split(",")
+        if class_name.strip()
+    }
+    if not selected or selected == GEAR_CLASSES:
+        return "Все классы"
+    return ", ".join(
+        class_name
+        for class_name in ("Аколит", "Бастион", "Маг", "Охотник", "Тень")
+        if class_name in selected
+    )
+
+
 # ---------- Формирование карточек ----------
 async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int = 1) -> str:
     data = await db.get_mob_full_card(mob_id)
@@ -245,7 +263,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
             </tr>
             <tr>
                 <td><b>✨ Пыль:</b> {data['dust_min']}-{data['dust_max']}</td>
-                <td><b>{loc_str}</b></td>
+                <td><b>📍 Локация:</b> {loc_str}</td>
             </tr>
         </tbody>
     </table>
@@ -418,7 +436,7 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
         f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
     )
     text += f"Уровень: {data.get('level', 1)}\n"
-    text += f"Класс: {escape_html(data.get('classes') or 'Все классы')}\n"
+    text += f"Класс: {escape_html(format_gear_classes(data.get('classes')))}\n"
     if data.get('note'):
         text += f"\n📝 {escape_html(data['note'])}\n"
 
@@ -483,7 +501,7 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
             </tr>
             <tr>
                 <td align="center">{data.get('level', 1)}</td>
-                <td align="center">{escape_html(data.get('classes') or 'Все классы')}</td>
+                <td align="center">{escape_html(format_gear_classes(data.get('classes')))}</td>
                 <td align="center">{craft_text}</td>
             </tr>
         </tbody>
