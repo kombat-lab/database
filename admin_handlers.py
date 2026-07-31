@@ -429,6 +429,25 @@ async def render_admin_gear_slot(callback, state, slot_index: int, page: int = 1
     await state.set_state(GearListStates.list_page)
     await callback.answer()
 
+async def back_to_admin_gear_slot(callback, state, data):
+    """Возвращает из карточки снаряжения в ранее открытую категорию/слот."""
+    slot_index = data.get("gear_slot_index")
+    page = data.get("current_page", 1)
+
+    if slot_index is None:
+        await callback.message.edit_text(
+            "⚔️ Управление снаряжением\nВыберите слот:",
+            reply_markup=build_admin_gear_slots_keyboard(),
+        )
+        await state.set_state(GearListStates.list_page)
+        return
+
+    await render_admin_gear_slot(callback, state, int(slot_index), int(page or 1))
+
+
+ENTITY_CONFIGS['gear']['back_to_list_func'] = back_to_admin_gear_slot
+
+
 @admin_router.callback_query(F.data == "admin_manage_gear")
 async def manage_gear(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
