@@ -107,13 +107,29 @@ SLOT_ICONS = {
 
 GEAR_SLOT_ORDER = list(SLOT_NAMES.keys())
 
-def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
+async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
+    counts = await db.execute_query(
+        "SELECT slot, COUNT(*) AS item_count FROM gear WHERE rarity = ? GROUP BY slot",
+        (rarity,),
+    )
+    count_by_slot = {row["slot"]: int(row["item_count"]) for row in counts}
+
     rows = []
     for index, slot in enumerate(GEAR_SLOT_ORDER):
+        item_count = count_by_slot.get(slot, 0)
+        if item_count <= 0:
+            continue
         rows.append([InlineKeyboardButton(
-            text=SLOT_NAMES[slot],
+            text=f"{SLOT_NAMES[slot]} ({item_count})",
             callback_data=f"gear_slot_{rarity}_{index}",
         )])
+
+    if not rows:
+        rows.append([InlineKeyboardButton(
+            text="В этой категории пока нет предметов",
+            callback_data="gear_empty_category",
+        )])
+
     rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1165,8 +1181,13 @@ async def list_or_page_callback(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("gear_slots_"))
 async def gear_slots_callback(callback: types.CallbackQuery):
     rarity = callback.data.split("_", 2)[2]
-    await callback.message.edit_text("Выбери слот снаряжения:", reply_markup=get_gear_slots_keyboard(rarity))
+    keyboard = await get_gear_slots_keyboard(rarity)
+    await callback.message.edit_text("Выбери слот снаряжения:", reply_markup=keyboard)
     await callback.answer()
+
+@dp.callback_query(F.data == "gear_empty_category")
+async def gear_empty_category_callback(callback: types.CallbackQuery):
+    await callback.answer("В этой категории пока нет предметов.", show_alert=False)
 
 @dp.callback_query(F.data.startswith(("gear_slot_", "page_gear_")))
 async def gear_list_or_page_callback(callback: types.CallbackQuery):
