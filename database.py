@@ -606,12 +606,25 @@ class Database:
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji, g.level, g.classes, g.note,
+                   (SELECT rc.id FROM recipes rc
+                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as recipe_id,
                    (SELECT json_group_array(json_object('id', m.id, 'name', m.name, 'emoji', m.emoji))
                     FROM drops d JOIN mobs m ON d.mob_id = m.id
                     WHERE d.item_type = 'gear' AND d.item_id = g.id) as mobs,
+                   (SELECT json_group_array(DISTINCT json_object(
+                       'id', m.id, 'name', m.name, 'emoji', m.emoji
+                    ))
+                    FROM recipes rc
+                    JOIN recipe_ingredients ri ON ri.recipe_id = rc.id
+                    JOIN resources scroll ON scroll.id = ri.resource_id
+                    JOIN drops d ON d.item_type = 'resource' AND d.item_id = scroll.id
+                    JOIN mobs m ON m.id = d.mob_id
+                    WHERE rc.result_type = 'gear'
+                      AND rc.result_id = g.id
+                      AND scroll.type = 'scroll_recipe') as scroll_mobs,
                    (SELECT json_group_array(json_object(
                        'id', ri.resource_id, 'name', r.name,
-                       'emoji', r.emoji, 'quantity', ri.quantity
+                       'emoji', r.emoji, 'type', r.type, 'quantity', ri.quantity
                     ))
                     FROM recipes rc
                     JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
@@ -628,29 +641,11 @@ class Database:
         if not res:
             return None
         row = res[0]
-        direct_mobs = json.loads(row["mobs"] or "[]")
-        ingredients = json.loads(row["ingredients"] or "[]")
-        if row['rarity'] == 'epic' and not direct_mobs:
-            scroll_resource_id = None
-            for ing in ingredients:
-                if ing['id'] in range(59, 70) or 'свиток' in ing['name'].lower():
-                    scroll_resource_id = ing['id']
-                    break
-            if scroll_resource_id:
-                mobs_data = await self.execute_query(
-                    "SELECT m.id, m.name, m.emoji FROM drops d "
-                    "JOIN mobs m ON d.mob_id = m.id "
-                    "WHERE d.item_type = 'resource' AND d.item_id = ? ORDER BY m.id",
-                    (scroll_resource_id,)
-                )
-                row["mobs"] = mobs_data
-            else:
-                row["mobs"] = []
-        else:
-            row["mobs"] = direct_mobs
-        row["ingredients"] = ingredients
+        row["mobs"] = json.loads(row["mobs"] or "[]")
+        row["scroll_mobs"] = json.loads(row["scroll_mobs"] or "[]")
+        row["ingredients"] = json.loads(row["ingredients"] or "[]")
         row["owners"] = json.loads(row["owners"] or "[]")
-        row["craftable"] = bool(row["ingredients"])
+        row["craftable"] = row["recipe_id"] is not None
         return row
 
     async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:

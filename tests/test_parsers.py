@@ -1,11 +1,14 @@
 import os
 import unittest
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
 from bot import (  # noqa: E402
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
+    format_gear_card_plain,
+    format_gear_card_rich,
     get_alchemy_craft_location,
     parse_resource_page_callback,
     parse_resource_view_callback,
@@ -93,3 +96,35 @@ class AlchemyCraftLocationTests(unittest.TestCase):
             get_alchemy_craft_location("  субстанция  "),
             MEREDITH_ALCHEMY_CRAFT_LOCATION,
         )
+
+
+class GearCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scroll_and_direct_drop_sources_are_rendered_separately(self):
+        gear_data = {
+            "id": 47,
+            "name": "Тлеющий шлем",
+            "rarity": "epic",
+            "slot": "шлем",
+            "emoji": "🔥🪖",
+            "level": 1,
+            "classes": "",
+            "note": "",
+            "recipe_id": 36,
+            "craftable": True,
+            "ingredients": [],
+            "owners": [],
+            "scroll_mobs": [{"id": 43, "name": "Муха-охотник", "emoji": "🪰"}],
+            "mobs": [{"id": 44, "name": "Страж", "emoji": "🛡️"}],
+        }
+
+        with patch("bot.db.get_gear_card", new=AsyncMock(return_value=gear_data)):
+            plain = await format_gear_card_plain(47, "epic", 1)
+            rich = await format_gear_card_rich(47, "epic", 1)
+
+        for card in (plain, rich.html):
+            with self.subTest(card_type=type(card).__name__):
+                self.assertIn("📜 Свиток падает с мобов:", card)
+                self.assertIn("Муха-охотник", card)
+                self.assertIn("⚔️ Выпадает с мобов:", card)
+                self.assertIn("Страж", card)
+                self.assertIn("Рецепт пока не заполнен.", card)

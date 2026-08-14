@@ -147,6 +147,67 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gear["ingredients"][0]["name"], "ore, shard | rare")
         self.assertEqual(gear["owners"], ["owner, with | separators"])
 
+    async def test_gear_card_finds_scroll_drop_by_resource_type(self):
+        location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Пещера", "🕳️"),
+        )
+        scroll_mob_id = await self.db.execute_insert(
+            """
+            INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Хранитель рецепта", "🐛", 10, 1, 2, 3, location_id),
+        )
+        gear_mob_id = await self.db.execute_insert(
+            """
+            INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Хранитель предмета", "🐺", 10, 1, 2, 3, location_id),
+        )
+        gear_id = await self.db.add_gear("Тлеющий шлем", "epic", "шлем", "🪖")
+        scroll_id = await self.db.add_resource(
+            "Рецепт (Тлеющий шлем)", "📜", "scroll_recipe"
+        )
+        misleading_id = await self.db.add_resource("Свиток ткани", "🧵", "craft")
+        recipe_id = await self.db.create_recipe("gear", gear_id)
+        await self.db.add_ingredient(recipe_id, scroll_id, 1)
+        await self.db.add_ingredient(recipe_id, misleading_id, 2)
+        await self.db.add_drop(scroll_mob_id, "resource", scroll_id)
+        await self.db.add_drop(gear_mob_id, "gear", gear_id)
+
+        gear = await self.db.get_gear_card(gear_id)
+
+        self.assertTrue(gear["craftable"])
+        self.assertEqual(gear["recipe_id"], recipe_id)
+        self.assertEqual(
+            {item["name"]: item["type"] for item in gear["ingredients"]},
+            {
+                "Рецепт (Тлеющий шлем)": "scroll_recipe",
+                "Свиток ткани": "craft",
+            },
+        )
+        self.assertEqual(
+            [mob["name"] for mob in gear["scroll_mobs"]],
+            ["Хранитель рецепта"],
+        )
+        self.assertEqual(
+            [mob["name"] for mob in gear["mobs"]],
+            ["Хранитель предмета"],
+        )
+
+    async def test_empty_recipe_is_still_craftable(self):
+        gear_id = await self.db.add_gear("Незавершённый шлем", "epic", "шлем", "🪖")
+        recipe_id = await self.db.create_recipe("gear", gear_id)
+
+        gear = await self.db.get_gear_card(gear_id)
+
+        self.assertEqual(gear["recipe_id"], recipe_id)
+        self.assertTrue(gear["craftable"])
+        self.assertEqual(gear["ingredients"], [])
+        self.assertEqual(gear["scroll_mobs"], [])
+
     async def test_resource_delete_cleans_related_rows_atomically(self):
         await self.db.execute_query(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("location", "📍")

@@ -528,23 +528,25 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
     # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
     return_param = build_gear_return_param(gear_id, rarity, page)
 
-    if data.get('craftable') and data['ingredients']:
-        text += "Крафт: да\n\n<b>Требуемые ресурсы:</b>\n"
-        dust = None
-        other = []
-        for ing in data['ingredients']:
-            if ing['id'] == 71:
-                dust = ing
-            else:
-                other.append(ing)
-        if dust:
-            link = make_deep_link("resource", dust['id'], return_param)
-            text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']}\n"
-        for ing in other:
-            link = make_deep_link("resource", ing['id'], return_param)
-            text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
-        if not data['ingredients']:
-            text += "<i>Рецепт не найден.</i>\n"
+    if data.get('craftable'):
+        text += "Крафт: да\n"
+        if data['ingredients']:
+            text += "\n<b>Требуемые ресурсы:</b>\n"
+            dust = None
+            other = []
+            for ing in data['ingredients']:
+                if ing['id'] == 71:
+                    dust = ing
+                else:
+                    other.append(ing)
+            if dust:
+                link = make_deep_link("resource", dust['id'], return_param)
+                text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']}\n"
+            for ing in other:
+                link = make_deep_link("resource", ing['id'], return_param)
+                text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
+        else:
+            text += "\n<i>Рецепт пока не заполнен.</i>\n"
         if data['owners']:
             text += "\n👥 <b>Владельцы рецепта:</b>\n"
             for username in data['owners']:
@@ -553,11 +555,14 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
     else:
         text += "Крафт: нет\n"
 
+    if data['scroll_mobs']:
+        text += "\n<b>📜 Свиток падает с мобов:</b>\n"
+        for m in data['scroll_mobs']:
+            link = make_deep_link("mob", m['id'], return_param)
+            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>\n"
+
     if data['mobs']:
-        if data['rarity'] == 'epic':
-            text += "\n<b>📜 Свиток падает с мобов:</b>\n"
-        else:
-            text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
+        text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
         for m in data['mobs']:
             link = make_deep_link("mob", m['id'], return_param)
             text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>\n"
@@ -597,19 +602,22 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
 
     return_param = build_gear_return_param(gear_id, rarity, page)
 
-    if data.get('craftable') and data['ingredients']:
-        html += "<b>Требуемые ресурсы:</b><br>"
-        rows = ""
-        for ing in data['ingredients']:
-            ing_name = f"{escape_html(ing['emoji'])} {escape_html(ing['name'])}"
-            link = make_deep_link("resource", ing['id'], return_param)
-            ing_link = f'<a href="{link}">{ing_name}</a>'
-            rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
-        html += f"""
-        <table border="1" cellspacing="0" cellpadding="5">
-            <tbody>{rows}</tbody>
-        </table>
-        """
+    if data.get('craftable'):
+        if data['ingredients']:
+            html += "<b>Требуемые ресурсы:</b><br>"
+            rows = ""
+            for ing in data['ingredients']:
+                ing_name = f"{escape_html(ing['emoji'])} {escape_html(ing['name'])}"
+                link = make_deep_link("resource", ing['id'], return_param)
+                ing_link = f'<a href="{link}">{ing_name}</a>'
+                rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
+            html += f"""
+            <table border="1" cellspacing="0" cellpadding="5">
+                <tbody>{rows}</tbody>
+            </table>
+            """
+        else:
+            html += "<br><i>Рецепт пока не заполнен.</i><br>"
         if data.get('owners'):
             owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
             html += f"""
@@ -619,11 +627,16 @@ async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1)
             </details>
             """
 
+    if data['scroll_mobs']:
+        html += "<br><b>📜 Свиток падает с мобов:</b><br>"
+        mobs_list = []
+        for m in data['scroll_mobs']:
+            link = make_deep_link("mob", m['id'], return_param)
+            mobs_list.append(f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>")
+        html += "<br>".join(mobs_list)
+
     if data['mobs']:
-        if data['rarity'] == 'epic':
-            html += "<br><b>📜 Свиток падает с мобов:</b><br>"
-        else:
-            html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
+        html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
         mobs_list = []
         for m in data['mobs']:
             link = make_deep_link("mob", m['id'], return_param)
