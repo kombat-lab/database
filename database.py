@@ -1,5 +1,6 @@
 import os
 import asyncio
+import json
 import logging
 import aiosqlite
 from typing import List, Dict, Any, Optional
@@ -18,7 +19,6 @@ def _lower_unicode(s: str) -> str:
 
 class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
-    ALLOWED_RESOURCE_FIELDS = {'name', 'emoji', 'type'}
     
     SLOT_ORDER = {
         'шлем': 1,
@@ -36,40 +36,173 @@ class Database:
         'вторая рука': 13,
     }
 
-    def __init__(self):
+    def __init__(self, path: str | None = None):
+        self.path = path or DB_PATH
         self._conn: Optional[aiosqlite.Connection] = None
         self._locations_cache: Dict[int, Dict] = {}
-        self._in_transaction = False
+        self._connection_lock = asyncio.Lock()
+        self._connection_lock_owner = None
+        self._connection_lock_depth = 0
+        self._transaction_depth = 0
+
+    @asynccontextmanager
+    async def _connection_guard(self):
+        """Serialize work on the shared connection while allowing nested DB calls."""
+        task = asyncio.current_task()
+        if self._connection_lock_owner is task:
+            self._connection_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._connection_lock_depth -= 1
+            return
+
+        await self._connection_lock.acquire()
+        self._connection_lock_owner = task
+        self._connection_lock_depth = 1
+        try:
+            yield
+        finally:
+            self._connection_lock_depth = 0
+            self._connection_lock_owner = None
+            self._connection_lock.release()
 
     async def connect(self):
-        self._conn = await aiosqlite.connect(DB_PATH, timeout=30.0)
+        self._conn = await aiosqlite.connect(self.path, timeout=30.0)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
         await self._conn.execute("PRAGMA journal_mode = WAL")
+        await self._conn.execute("PRAGMA busy_timeout = 30000")
         await self._conn.create_function("LOWER_UNICODE", 1, _lower_unicode)
-        await self._ensure_schema_updates()
+        await self._ensure_schema()
         await self._ensure_indexes()
         await self._load_locations_cache()
-        logger.info(f"Database connected: {DB_PATH}")
+        logger.info("Database connected: %s", self.path)
 
-
-    async def _ensure_schema_updates(self):
-        """Добавляет новые поля без удаления существующих данных."""
-        columns = await self.execute_query("PRAGMA table_info(gear)")
-        existing = {column["name"] for column in columns}
-        migrations = {
-            "level": "ALTER TABLE gear ADD COLUMN level INTEGER NOT NULL DEFAULT 1",
-            "classes": "ALTER TABLE gear ADD COLUMN classes TEXT NOT NULL DEFAULT ''",
-            "note": "ALTER TABLE gear ADD COLUMN note TEXT NOT NULL DEFAULT ''",
-        }
-        for column, sql in migrations.items():
-            if column not in existing:
-                await self._conn.execute(sql)
+    async def _ensure_schema(self):
+        """Create a complete empty database without touching existing rows."""
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                emoji TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS mobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                emoji TEXT NOT NULL DEFAULT '',
+                hp INTEGER NOT NULL DEFAULT 0,
+                dust_min INTEGER NOT NULL DEFAULT 0,
+                dust_max INTEGER NOT NULL DEFAULT 0,
+                exp INTEGER NOT NULL DEFAULT 0,
+                location_id INTEGER NOT NULL,
+                FOREIGN KEY (location_id) REFERENCES locations(id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS resources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                emoji TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT 'craft',
+                note TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS gear (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                rarity TEXT NOT NULL DEFAULT 'common',
+                slot TEXT NOT NULL DEFAULT '',
+                emoji TEXT NOT NULL DEFAULT '',
+                level INTEGER NOT NULL DEFAULT 1,
+                classes TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                emoji TEXT NOT NULL DEFAULT '',
+                slot TEXT NOT NULL DEFAULT '',
+                bonus1 TEXT NOT NULL DEFAULT '',
+                bonus2 TEXT NOT NULL DEFAULT '',
+                bonus3 TEXT NOT NULL DEFAULT '',
+                bonus4 TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT ''
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS drops (
+                mob_id INTEGER NOT NULL,
+                item_type TEXT NOT NULL,
+                item_id INTEGER NOT NULL,
+                PRIMARY KEY (mob_id, item_type, item_id),
+                FOREIGN KEY (mob_id) REFERENCES mobs(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                result_type TEXT NOT NULL,
+                result_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 1,
+                UNIQUE (result_type, result_id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS recipe_ingredients (
+                recipe_id INTEGER NOT NULL,
+                resource_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (recipe_id, resource_id),
+                FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE CASCADE,
+                FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS recipe_owners (
+                recipe_id INTEGER NOT NULL,
+                player_username TEXT NOT NULL,
+                PRIMARY KEY (recipe_id, player_username),
+                FOREIGN KEY (recipe_id) REFERENCES recipes(id) ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                target_id INTEGER,
+                target_type TEXT,
+                metadata TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """,
+        ]
+        for statement in statements:
+            await self._conn.execute(statement)
         await self._conn.commit()
 
     async def _ensure_indexes(self):
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_mobs_location ON mobs(location_id)",
+            "CREATE INDEX IF NOT EXISTS idx_mobs_location_hp ON mobs(location_id, hp, id)",
             "CREATE INDEX IF NOT EXISTS idx_mobs_name ON mobs(name)",
             "CREATE INDEX IF NOT EXISTS idx_resources_name ON resources(name)",
             "CREATE INDEX IF NOT EXISTS idx_gear_name ON gear(name)",
@@ -79,6 +212,12 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipe_owners_recipe ON recipe_owners(recipe_id)",
             "CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)",
+            "CREATE INDEX IF NOT EXISTS idx_resources_type_name ON resources(type, name)",
+            "CREATE INDEX IF NOT EXISTS idx_gear_rarity_slot ON gear(rarity, slot)",
+            "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON analytics_events(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_events_type ON analytics_events(event_type)",
+            "CREATE INDEX IF NOT EXISTS idx_events_target ON analytics_events(target_type, target_id)",
+            "CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON analytics_events(user_id, timestamp)",
         ]
         for sql in indexes:
             await self._conn.execute(sql)
@@ -89,15 +228,19 @@ class Database:
         self._locations_cache = {loc["id"]: dict(loc) for loc in locations}
 
     async def close(self):
-        if self._conn:
-            await self._conn.close()
+        async with self._connection_guard():
+            if self._conn:
+                await self._conn.close()
+                self._conn = None
 
     async def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        try:
-            async with self._conn.execute(query, params) as cursor:
-                try:
+        if self._conn is None:
+            raise RuntimeError("Database is not connected")
+        async with self._connection_guard():
+            try:
+                async with self._conn.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
-                    if not query.strip().upper().startswith("SELECT") and not self._in_transaction:
+                    if not query.lstrip().upper().startswith(("SELECT", "PRAGMA")) and self._transaction_depth == 0:
                         await self._conn.commit()
                     if not rows:
                         return []
@@ -105,46 +248,70 @@ class Database:
                         col_names = [desc[0] for desc in cursor.description]
                         return [dict(zip(col_names, row)) for row in rows]
                     return [dict(row) for row in rows]
-                except Exception as e:
-                    if not self._in_transaction:
-                        try:
-                            await self._conn.rollback()
-                        except Exception:
-                            pass
-                    raise
-        except Exception as e:
-            logger.error(f"[DB ERROR] {e}")
-            raise
+            except Exception as e:
+                if self._transaction_depth == 0:
+                    try:
+                        await self._conn.rollback()
+                    except Exception:
+                        pass
+                logger.error("[DB ERROR] %s", e)
+                raise
+
+    async def execute_insert(self, query: str, params: tuple = ()) -> int:
+        """Execute one INSERT and return its row id without a concurrency race."""
+        if self._conn is None:
+            raise RuntimeError("Database is not connected")
+        async with self._connection_guard():
+            try:
+                cursor = await self._conn.execute(query, params)
+                try:
+                    row_id = cursor.lastrowid
+                finally:
+                    await cursor.close()
+                if self._transaction_depth == 0:
+                    await self._conn.commit()
+                return int(row_id)
+            except Exception:
+                if self._transaction_depth == 0:
+                    try:
+                        await self._conn.rollback()
+                    except Exception:
+                        pass
+                raise
 
     @asynccontextmanager
     async def transaction(self):
-        if self._in_transaction:
-            logger.warning("попытка вложенной транзакции – пропущен BEGIN")
-            yield
-            return
-        self._in_transaction = True
-        try:
-            await self._conn.execute("BEGIN")
-            yield
-            await self._conn.commit()
-        except Exception as e:
-            logger.error(f"transaction failed: {e}")
+        """Run DB calls atomically and isolate them from concurrent handlers."""
+        async with self._connection_guard():
+            nested = self._transaction_depth > 0
+            savepoint = f"nested_{self._transaction_depth + 1}"
+            if nested:
+                await self._conn.execute(f"SAVEPOINT {savepoint}")
+            else:
+                await self._conn.execute("BEGIN IMMEDIATE")
+            self._transaction_depth += 1
             try:
-                await self._conn.rollback()
-            except Exception:
-                pass
-            raise
-        finally:
-            self._in_transaction = False
+                yield
+            except BaseException:
+                self._transaction_depth -= 1
+                if nested:
+                    await self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    await self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    await self._conn.rollback()
+                raise
+            else:
+                self._transaction_depth -= 1
+                if nested:
+                    await self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    await self._conn.commit()
 
     async def get_location_by_id(self, location_id: int) -> Optional[Dict]:
         return self._locations_cache.get(location_id)
 
     async def get_locations(self) -> List[Dict]:
         return list(self._locations_cache.values())
-
-    async def invalidate_location_cache(self):
-        await self._load_locations_cache()
 
     # ========== АНАЛИТИКА ==========
     async def register_user_if_not_exists(self, user_id: int, username: str = None,
@@ -161,33 +328,6 @@ class Database:
             """,
             (user_id, username, first_name, last_name)
         )
-
-    async def init_analytics_tables(self):
-        await self.execute_query("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT
-            )
-        """)
-        await self.execute_query("""
-            CREATE TABLE IF NOT EXISTS analytics_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                target_id INTEGER,
-                target_type TEXT,
-                metadata TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        """)
-        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON analytics_events(timestamp)")
-        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_type ON analytics_events(event_type)")
-        await self.execute_query("CREATE INDEX IF NOT EXISTS idx_events_target ON analytics_events(target_type, target_id)")
 
     # ========== ПОИСК ==========
     async def search(self, query: str) -> Dict[str, List[Dict]]:
@@ -240,13 +380,18 @@ class Database:
             SELECT
                 m.id, m.name, m.emoji, m.hp, m.dust_min, m.dust_max, m.exp, m.location_id,
                 l.name as loc_name, l.emoji as loc_emoji,
-                (SELECT GROUP_CONCAT(item_id || '|' || r.name || '|' || r.emoji)
+                (SELECT json_group_array(json_object('id', r.id, 'name', r.name, 'emoji', r.emoji))
                  FROM drops d JOIN resources r ON d.item_id = r.id
                  WHERE d.mob_id = m.id AND d.item_type = 'resource') as resource_drops,
-                (SELECT GROUP_CONCAT(item_id || '|' || g.name || '|' || g.emoji || '|' || g.slot || '|' || g.rarity)
+                (SELECT json_group_array(json_object(
+                    'id', g.id, 'name', g.name, 'emoji', g.emoji,
+                    'slot', g.slot, 'rarity', g.rarity
+                 ))
                  FROM drops d JOIN gear g ON d.item_id = g.id
                  WHERE d.mob_id = m.id AND d.item_type = 'gear') as gear_drops,
-                (SELECT GROUP_CONCAT(item_id || '|' || c.name || '|' || c.emoji || '|' || c.slot)
+                (SELECT json_group_array(json_object(
+                    'id', c.id, 'name', c.name, 'emoji', c.emoji, 'slot', c.slot
+                 ))
                  FROM drops d JOIN cards c ON d.item_id = c.id
                  WHERE d.mob_id = m.id AND d.item_type = 'card') as card_drops
             FROM mobs m
@@ -257,17 +402,10 @@ class Database:
         if not res:
             return None
         row = res[0]
-        row["resource_drops"] = [self._parse_drop_item(s) for s in (row["resource_drops"].split(",") if row["resource_drops"] else [])]
-        row["gear_drops"] = [self._parse_drop_item(s, gear=True) for s in (row["gear_drops"].split(",") if row["gear_drops"] else [])]
-        row["card_drops"] = [self._parse_drop_item(s, card=True) for s in (row["card_drops"].split(",") if row["card_drops"] else [])]
+        row["resource_drops"] = json.loads(row["resource_drops"] or "[]")
+        row["gear_drops"] = json.loads(row["gear_drops"] or "[]")
+        row["card_drops"] = json.loads(row["card_drops"] or "[]")
         return row
-
-    async def get_mobs_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, emoji, hp, dust_min, dust_max, exp FROM mobs "
-            "WHERE location_id = ? ORDER BY id LIMIT ? OFFSET ?",
-            (location_id, limit, offset)
-        )
 
     async def get_mobs_by_location_sorted_by_hp(self, location_id: int, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
@@ -278,18 +416,19 @@ class Database:
 
     async def get_prev_next_mob_by_hp(self, mob_id: int, location_id: int) -> Dict[str, Optional[int]]:
         rows = await self.execute_query(
-            "SELECT id FROM mobs WHERE location_id = ? ORDER BY hp ASC, id",
-            (location_id,)
+            """
+            WITH ordered AS (
+                SELECT id,
+                       LAG(id) OVER (ORDER BY hp ASC, id) AS prev_id,
+                       LEAD(id) OVER (ORDER BY hp ASC, id) AS next_id
+                FROM mobs
+                WHERE location_id = ?
+            )
+            SELECT prev_id, next_id FROM ordered WHERE id = ?
+            """,
+            (location_id, mob_id),
         )
-        ids = [row['id'] for row in rows]
-        try:
-            idx = ids.index(mob_id)
-            return {
-                'prev_id': ids[idx - 1] if idx > 0 else None,
-                'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
-            }
-        except ValueError:
-            return {'prev_id': None, 'next_id': None}
+        return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     async def update_mob_field(self, mob_id: int, field: str, value):
         if field not in self.ALLOWED_MOB_FIELDS:
@@ -298,28 +437,30 @@ class Database:
         await self.execute_query(query, (value, mob_id))
 
     async def delete_mob(self, mob_id: int):
-        await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
+        async with self.transaction():
+            await self.execute_query("DELETE FROM drops WHERE mob_id = ?", (mob_id,))
+            await self.execute_query("DELETE FROM mobs WHERE id = ?", (mob_id,))
 
     # ========== РЕСУРСЫ ==========
     async def get_resource_card(self, resource_id: int) -> Optional[Dict]:
         query = """
             SELECT r.id, r.name, r.emoji, r.type, r.note,
-                   GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji || '|' || l.name || '|' || l.emoji) as mobs
+                   (SELECT json_group_array(json_object(
+                       'id', m.id, 'name', m.name, 'emoji', m.emoji,
+                       'location_name', l.name, 'location_emoji', l.emoji
+                    ))
+                    FROM drops d
+                    JOIN mobs m ON d.mob_id = m.id
+                    JOIN locations l ON m.location_id = l.id
+                    WHERE d.item_type = 'resource' AND d.item_id = r.id) AS mobs
             FROM resources r
-            LEFT JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
-            LEFT JOIN mobs m ON d.mob_id = m.id
-            LEFT JOIN locations l ON m.location_id = l.id
             WHERE r.id = ?
-            GROUP BY r.id
         """
         res = await self.execute_query(query, (resource_id,))
         if not res:
             return None
         row = res[0]
-        if row["mobs"]:
-            row["mobs"] = [self._parse_mob_with_location(s) for s in row["mobs"].split(",")]
-        else:
-            row["mobs"] = []
+        row["mobs"] = json.loads(row["mobs"] or "[]")
         return row
 
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:
@@ -341,31 +482,49 @@ class Database:
         return res[0] if res else None
 
     async def add_resource(self, name: str, emoji: str, resource_type: str = 'craft', note: str = '') -> int:
-        await self.execute_query(
+        return await self.execute_insert(
             "INSERT INTO resources (name, emoji, type, note) VALUES (?, ?, ?, ?)",
             (name, emoji, resource_type, note)
         )
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
 
     async def update_resource(self, resource_id: int, name: str = None, emoji: str = None, resource_type: str = None, note: str = None):
-        current = await self.get_resource_by_id(resource_id)
-        if not current:
-            raise ValueError("Resource not found")
-        new_name = name if name is not None else current['name']
-        new_emoji = emoji if emoji is not None else current['emoji']
-        new_type = resource_type if resource_type is not None else current['type']
-        new_note = note if note is not None else current['note']
+        async with self.transaction():
+            current = await self.get_resource_by_id(resource_id)
+            if not current:
+                raise ValueError("Resource not found")
+            new_name = name if name is not None else current['name']
+            new_emoji = emoji if emoji is not None else current['emoji']
+            new_type = resource_type if resource_type is not None else current['type']
+            new_note = note if note is not None else current['note']
+            await self.execute_query(
+                "UPDATE resources SET name=?, emoji=?, type=?, note=? WHERE id=?",
+                (new_name, new_emoji, new_type, new_note, resource_id)
+            )
+
+    async def _delete_recipes_by_result(self, result_type: str, result_id: int):
+        recipes = await self.execute_query(
+            "SELECT id FROM recipes WHERE result_type = ? AND result_id = ?",
+            (result_type, result_id),
+        )
+        for recipe in recipes:
+            recipe_id = recipe['id']
+            await self.execute_query(
+                "DELETE FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,)
+            )
+            await self.execute_query(
+                "DELETE FROM recipe_owners WHERE recipe_id = ?", (recipe_id,)
+            )
         await self.execute_query(
-            "UPDATE resources SET name=?, emoji=?, type=?, note=? WHERE id=?",
-            (new_name, new_emoji, new_type, new_note, resource_id)
+            "DELETE FROM recipes WHERE result_type = ? AND result_id = ?",
+            (result_type, result_id),
         )
 
     async def delete_resource(self, resource_id: int):
-        await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
-        await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
-        await self.execute_query("DELETE FROM recipes WHERE result_type='resource' AND result_id = ?", (resource_id,))
-        await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
+        async with self.transaction():
+            await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
+            await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
+            await self._delete_recipes_by_result('resource', resource_id)
+            await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
         if resource_type == 'scroll_recipe':
@@ -379,39 +538,39 @@ class Database:
                 (resource_type, limit, offset)
             )
 
-    async def get_resources_by_type_all(self, resource_type: str) -> List[Dict]:
-        if resource_type == 'scroll_recipe':
-            return await self.execute_query(
-                "SELECT id, name, emoji, type FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE"
-            )
-        else:
-            return await self.execute_query(
-                "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE",
-                (resource_type,)
-            )
-
     async def get_all_resources_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
     async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
         if resource_type == 'scroll_recipe':
             rows = await self.execute_query(
-                "SELECT id FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE"
+                """
+                WITH ordered AS (
+                    SELECT id,
+                           LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
+                           LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
+                    FROM resources
+                    WHERE type IN ('scroll_recipe', 'scroll')
+                )
+                SELECT prev_id, next_id FROM ordered WHERE id = ?
+                """,
+                (resource_id,),
             )
         else:
             rows = await self.execute_query(
-                "SELECT id FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE",
-                (resource_type,)
+                """
+                WITH ordered AS (
+                    SELECT id,
+                           LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
+                           LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
+                    FROM resources
+                    WHERE type = ?
+                )
+                SELECT prev_id, next_id FROM ordered WHERE id = ?
+                """,
+                (resource_type, resource_id),
             )
-        ids = [row['id'] for row in rows]
-        try:
-            idx = ids.index(resource_id)
-            return {
-                'prev_id': ids[idx - 1] if idx > 0 else None,
-                'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
-            }
-        except ValueError:
-            return {'prev_id': None, 'next_id': None}
+        return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
@@ -425,55 +584,52 @@ class Database:
         return res[0] if res else None
 
     async def add_gear(self, name: str, rarity: str, slot: str, emoji: str, level: int = 1, classes: str = "", note: str = "") -> int:
-        await self.execute_query(
+        return await self.execute_insert(
             "INSERT INTO gear (name, rarity, slot, emoji, level, classes, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (name, rarity, slot, emoji, level, classes, note)
         )
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
 
     async def update_gear(self, gear_id: int, name: str = None, rarity: str = None, slot: str = None, emoji: str = None, level: int = None, classes: str = None, note: str = None):
-        current = await self.get_gear_by_id(gear_id)
-        if not current:
-            raise ValueError("Gear not found")
-        new_name = name if name is not None else current['name']
-        new_rarity = rarity if rarity is not None else current['rarity']
-        new_slot = slot if slot is not None else current['slot']
-        new_emoji = emoji if emoji is not None else current['emoji']
-        new_level = level if level is not None else current.get('level', 1)
-        new_classes = classes if classes is not None else current.get('classes', '')
-        new_note = note if note is not None else current.get('note', '')
-        await self.execute_query(
-            "UPDATE gear SET name=?, rarity=?, slot=?, emoji=?, level=?, classes=?, note=? WHERE id=?",
-            (new_name, new_rarity, new_slot, new_emoji, new_level, new_classes, new_note, gear_id)
-        )
+        async with self.transaction():
+            current = await self.get_gear_by_id(gear_id)
+            if not current:
+                raise ValueError("Gear not found")
+            new_name = name if name is not None else current['name']
+            new_rarity = rarity if rarity is not None else current['rarity']
+            new_slot = slot if slot is not None else current['slot']
+            new_emoji = emoji if emoji is not None else current['emoji']
+            new_level = level if level is not None else current.get('level', 1)
+            new_classes = classes if classes is not None else current.get('classes', '')
+            new_note = note if note is not None else current.get('note', '')
+            await self.execute_query(
+                "UPDATE gear SET name=?, rarity=?, slot=?, emoji=?, level=?, classes=?, note=? WHERE id=?",
+                (new_name, new_rarity, new_slot, new_emoji, new_level, new_classes, new_note, gear_id)
+            )
 
     async def delete_gear(self, gear_id: int):
-        await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (gear_id,))
-        recipe = await self.execute_query(
-            "SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear_id,)
-        )
-        if recipe:
-            recipe_id = recipe[0]['id']
-            await self.execute_query("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
-            await self.execute_query("DELETE FROM recipe_owners WHERE recipe_id=?", (recipe_id,))
-            await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
-        await self.execute_query("DELETE FROM gear WHERE id=?", (gear_id,))
+        async with self.transaction():
+            await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (gear_id,))
+            await self._delete_recipes_by_result('gear', gear_id)
+            await self.execute_query("DELETE FROM gear WHERE id=?", (gear_id,))
 
     async def get_gear_card(self, gear_id: int) -> Optional[Dict]:
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji, g.level, g.classes, g.note,
-                   (SELECT GROUP_CONCAT(m.id || '|' || m.name || '|' || m.emoji)
+                   (SELECT json_group_array(json_object('id', m.id, 'name', m.name, 'emoji', m.emoji))
                     FROM drops d JOIN mobs m ON d.mob_id = m.id
                     WHERE d.item_type = 'gear' AND d.item_id = g.id) as mobs,
-                   (SELECT GROUP_CONCAT(ri.resource_id || '|' || r.name || '|' || r.emoji || '|' || ri.quantity)
+                   (SELECT json_group_array(json_object(
+                       'id', ri.resource_id, 'name', r.name,
+                       'emoji', r.emoji, 'quantity', ri.quantity
+                    ))
                     FROM recipes rc
                     JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
                     JOIN resources r ON ri.resource_id = r.id
                     WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
-                   (SELECT GROUP_CONCAT(player_username)
+                   (SELECT json_group_array(ro.player_username)
                     FROM recipe_owners ro
-                    WHERE ro.recipe_id = (SELECT id FROM recipes WHERE result_type='gear' AND result_id=g.id)) as owners
+                    JOIN recipes rc ON ro.recipe_id = rc.id
+                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as owners
             FROM gear g
             WHERE g.id = ?
         """
@@ -481,9 +637,9 @@ class Database:
         if not res:
             return None
         row = res[0]
-        direct_mobs = [self._parse_drop_item(s) for s in (row["mobs"].split(",") if row["mobs"] else [])]
+        direct_mobs = json.loads(row["mobs"] or "[]")
+        ingredients = json.loads(row["ingredients"] or "[]")
         if row['rarity'] == 'epic' and not direct_mobs:
-            ingredients = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
             scroll_resource_id = None
             for ing in ingredients:
                 if ing['id'] in range(59, 70) or 'свиток' in ing['name'].lower():
@@ -501,31 +657,10 @@ class Database:
                 row["mobs"] = []
         else:
             row["mobs"] = direct_mobs
-        row["ingredients"] = [self._parse_ingredient(s) for s in (row["ingredients"].split(",") if row["ingredients"] else [])]
-        row["owners"] = row["owners"].split(",") if row["owners"] else []
+        row["ingredients"] = ingredients
+        row["owners"] = json.loads(row["owners"] or "[]")
         row["craftable"] = bool(row["ingredients"])
         return row
-
-    async def get_gear_by_rarity(self, rarity: str, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, rarity, slot, emoji FROM gear WHERE rarity = ? ORDER BY id LIMIT ? OFFSET ?",
-            (rarity, limit, offset)
-        )
-
-    async def get_gear_by_rarity_sorted_by_slot(self, rarity: str, offset: int, limit: int) -> List[Dict]:
-        case_expression = "CASE slot "
-        for slot, order in self.SLOT_ORDER.items():
-            case_expression += f" WHEN '{slot}' THEN {order}"
-        case_expression += " ELSE 99 END"
-        
-        query = f"""
-            SELECT id, name, rarity, slot, emoji
-            FROM gear
-            WHERE rarity = ?
-            ORDER BY {case_expression}, name COLLATE NOCASE
-            LIMIT ? OFFSET ?
-        """
-        return await self.execute_query(query, (rarity, limit, offset))
 
     async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:
         case_expression = "CASE slot "
@@ -535,21 +670,18 @@ class Database:
         
         rows = await self.execute_query(
             f"""
-            SELECT id FROM gear
-            WHERE rarity = ?
-            ORDER BY {case_expression}, name COLLATE NOCASE
+            WITH ordered AS (
+                SELECT id,
+                       LAG(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS prev_id,
+                       LEAD(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS next_id
+                FROM gear
+                WHERE rarity = ?
+            )
+            SELECT prev_id, next_id FROM ordered WHERE id = ?
             """,
-            (rarity,)
+            (rarity, gear_id),
         )
-        ids = [row['id'] for row in rows]
-        try:
-            idx = ids.index(gear_id)
-            return {
-                'prev_id': ids[idx - 1] if idx > 0 else None,
-                'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
-            }
-        except ValueError:
-            return {'prev_id': None, 'next_id': None}
+        return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     async def get_all_gear_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM gear ORDER BY id")
@@ -611,15 +743,16 @@ class Database:
         }
 
     async def create_recipe(self, result_type: str, result_id: int, quantity: int = 1) -> int:
-        await self.execute_query(
+        return await self.execute_insert(
             "INSERT INTO recipes (result_type, result_id, quantity) VALUES (?, ?, ?)",
             (result_type, result_id, quantity)
         )
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
 
     async def delete_recipe(self, recipe_id: int):
-        await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
+        async with self.transaction():
+            await self.execute_query("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+            await self.execute_query("DELETE FROM recipe_owners WHERE recipe_id=?", (recipe_id,))
+            await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
 
     async def add_ingredient(self, recipe_id: int, resource_id: int, quantity: int):
         await self.execute_query(
@@ -695,24 +828,26 @@ class Database:
     async def add_card(self, name: str, emoji: str, slot: str,
                        bonus1: str = '', bonus2: str = '', bonus3: str = '', bonus4: str = '',
                        note: str = '') -> int:
-        await self.execute_query(
+        return await self.execute_insert(
             """INSERT INTO cards (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
         )
-        res = await self.execute_query("SELECT last_insert_rowid() as id")
-        return res[0]['id']
 
     async def update_card(self, card_id: int, **kwargs):
         allowed = {'name', 'emoji', 'slot', 'bonus1', 'bonus2', 'bonus3', 'bonus4', 'note'}
-        for field, value in kwargs.items():
-            if field in allowed:
-                await self.execute_query(f"UPDATE cards SET {field}=? WHERE id=?", (value, card_id))
+        updates = [(field, value) for field, value in kwargs.items() if field in allowed]
+        if not updates:
+            return
+        assignments = ", ".join(f"{field} = ?" for field, _ in updates)
+        params = tuple(value for _, value in updates) + (card_id,)
+        await self.execute_query(f"UPDATE cards SET {assignments} WHERE id = ?", params)
 
     async def delete_card(self, card_id: int):
-        await self.execute_query("DELETE FROM drops WHERE item_type='card' AND item_id=?", (card_id,))
-        await self.execute_query("DELETE FROM recipes WHERE result_type='card' AND result_id=?", (card_id,))
-        await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
+        async with self.transaction():
+            await self.execute_query("DELETE FROM drops WHERE item_type='card' AND item_id=?", (card_id,))
+            await self._delete_recipes_by_result('card', card_id)
+            await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
 
     async def get_card_drop_mobs(self, card_id: int) -> List[Dict]:
         return await self.execute_query(
@@ -725,15 +860,6 @@ class Database:
             (card_id,)
         )
 
-    async def get_all_cards_simple(self) -> List[Dict]:
-        return await self.execute_query("SELECT id, name, emoji FROM cards ORDER BY id")
-
-    async def get_all_cards(self, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4 FROM cards ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
-
     async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
         case_expression = "CASE slot "
         for slot, order in self.SLOT_ORDER.items():
@@ -742,19 +868,17 @@ class Database:
         
         rows = await self.execute_query(
             f"""
-            SELECT id FROM cards
-            ORDER BY {case_expression}, name COLLATE NOCASE
-            """
+            WITH ordered AS (
+                SELECT id,
+                       LAG(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS prev_id,
+                       LEAD(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS next_id
+                FROM cards
+            )
+            SELECT prev_id, next_id FROM ordered WHERE id = ?
+            """,
+            (card_id,),
         )
-        ids = [row['id'] for row in rows]
-        try:
-            idx = ids.index(card_id)
-            return {
-                'prev_id': ids[idx - 1] if idx > 0 else None,
-                'next_id': ids[idx + 1] if idx < len(ids) - 1 else None
-            }
-        except ValueError:
-            return {'prev_id': None, 'next_id': None}
+        return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     # ========== ДРОПЫ ==========
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
@@ -766,22 +890,26 @@ class Database:
 
     async def add_drop(self, mob_id: int, item_type: str, item_id: int):
         try:
-            if item_type == 'resource':
-                check = await self.execute_query("SELECT 1 FROM resources WHERE id = ?", (item_id,))
-            elif item_type == 'gear':
-                check = await self.execute_query("SELECT 1 FROM gear WHERE id = ?", (item_id,))
-            elif item_type == 'card':
-                check = await self.execute_query("SELECT 1 FROM cards WHERE id = ?", (item_id,))
-            else:
-                raise ValueError(f"Unknown item_type: {item_type}")
+            async with self.transaction():
+                if item_type == 'resource':
+                    check = await self.execute_query("SELECT 1 FROM resources WHERE id = ?", (item_id,))
+                elif item_type == 'gear':
+                    check = await self.execute_query("SELECT 1 FROM gear WHERE id = ?", (item_id,))
+                elif item_type == 'card':
+                    check = await self.execute_query("SELECT 1 FROM cards WHERE id = ?", (item_id,))
+                else:
+                    raise ValueError(f"Unknown item_type: {item_type}")
 
-            if not check:
-                raise ValueError(f"{item_type} with id {item_id} does not exist")
+                mob = await self.execute_query("SELECT 1 FROM mobs WHERE id = ?", (mob_id,))
+                if not mob:
+                    raise ValueError(f"mob with id {mob_id} does not exist")
+                if not check:
+                    raise ValueError(f"{item_type} with id {item_id} does not exist")
 
-            await self.execute_query(
-                "INSERT INTO drops (mob_id, item_type, item_id) VALUES (?, ?, ?)",
-                (mob_id, item_type, item_id)
-            )
+                await self.execute_query(
+                    "INSERT OR IGNORE INTO drops (mob_id, item_type, item_id) VALUES (?, ?, ?)",
+                    (mob_id, item_type, item_id)
+                )
         except Exception as e:
             logger.error(f"Failed to add drop: {e}")
             raise
@@ -794,64 +922,16 @@ class Database:
 
     # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
     async def vacuum(self):
-        await self._conn.execute("VACUUM")
-        await self._conn.commit()
+        async with self._connection_guard():
+            if self._transaction_depth:
+                raise RuntimeError("VACUUM cannot run inside a transaction")
+            await self._conn.execute("VACUUM")
+            await self._conn.commit()
     
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",
             (limit, offset)
         )
-
-    async def get_common_gear_page(self, offset: int, limit: int) -> List[Dict]:
-        return await self.execute_query(
-            "SELECT id, name, emoji, slot FROM gear WHERE rarity = 'common' ORDER BY id LIMIT ? OFFSET ?",
-            (limit, offset)
-        )
-
-    async def get_all_resources(self):
-        return await self.execute_query("SELECT id, name, emoji, type FROM resources")
-
-    # ========== ПАРСЕРЫ ==========
-    @staticmethod
-    def _parse_drop_item(s: str, gear: bool = False, card: bool = False) -> Dict:
-        parts = s.split("|")
-        if gear:
-            if len(parts) >= 5:
-                return {
-                    "id": int(parts[0]),
-                    "name": parts[1],
-                    "emoji": parts[2],
-                    "slot": parts[3],
-                    "rarity": parts[4]
-                }
-            else:
-                return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "slot": parts[3], "rarity": "common"}
-        elif card:
-            return {
-                "id": int(parts[0]),
-                "name": parts[1],
-                "emoji": parts[2],
-                "slot": parts[3] if len(parts) > 3 else "?"
-            }
-        else:
-            return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2]}
-
-    @staticmethod
-    def _parse_ingredient(s: str) -> Dict:
-        parts = s.split("|")
-        return {"id": int(parts[0]), "name": parts[1], "emoji": parts[2], "quantity": int(parts[3])}
-
-    @staticmethod
-    def _parse_mob_with_location(s: str) -> Dict:
-        parts = s.split("|")
-        return {
-            "id": int(parts[0]),
-            "name": parts[1],
-            "emoji": parts[2],
-            "location_name": parts[3] if len(parts) > 3 else None,
-            "location_emoji": parts[4] if len(parts) > 4 else None
-        }
-
 
 db = Database()

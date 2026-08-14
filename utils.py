@@ -1,5 +1,4 @@
 import html
-import re
 
 def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""

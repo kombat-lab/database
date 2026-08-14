@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.coverage
+.pytest_cache/
+.ruff_cache/
+
+# Runtime SQLite data and sidecar files
+*.db
+*.db-shm
+*.db-wal
+
+# Local database backups contain production data
+backups/
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

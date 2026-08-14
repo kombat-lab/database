@@ -231,7 +231,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         
         try:
             await config['update_field_func'](entity_id, field, value)
-            await callback.message.edit_text(f"✅ Поле <b>{field}</b> обновлено на <code>{value}</code>.", parse_mode="HTML")
+            await callback.message.edit_text(
+                f"✅ Поле <b>{escape_html(field)}</b> обновлено на <code>{escape_html(value)}</code>.",
+                parse_mode="HTML",
+            )
         except Exception as e:
             logger.exception("Не удалось обновить поле %s", field)
             await callback.message.edit_text(f"❌ Ошибка: {e}")
@@ -283,7 +286,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     
         try:
             await config['update_field_func'](entity_id, field, new_value)
-            await message.answer(f"✅ Поле <b>{field}</b> обновлено на <code>{new_value}</code>.", parse_mode="HTML")
+            await message.answer(
+                f"✅ Поле <b>{escape_html(field)}</b> обновлено на <code>{escape_html(new_value)}</code>.",
+                parse_mode="HTML",
+            )
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}")
             return
@@ -291,7 +297,6 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         entity_data = await config['get_by_id_func'](entity_id)
         if not entity_data:
             await message.answer("❌ Сущность не найдена. Возврат в админку.")
-            # FIXED: вместо вызова render_entity_list с message (который не поддерживается) просто показываем главное меню
             await state.clear()
             await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
             return
@@ -337,7 +342,9 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_list")]
         ])
         await callback.message.edit_text(
-            f"⚠️ Удалить {config['name_ru']} <b>{entity['name']}</b> (ID {entity_id})?\nЭто действие необратимо.",
+            f"⚠️ Удалить {escape_html(config['name_ru'])} "
+            f"<b>{escape_html(entity['name'])}</b> (ID {entity_id})?\n"
+            "Это действие необратимо.",
             parse_mode="HTML", reply_markup=keyboard
         )
         await state.set_state(GenericEditStates.confirm_delete)

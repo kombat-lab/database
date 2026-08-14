@@ -374,7 +374,7 @@ async def resource_add_note(callback: types.CallbackQuery, state: FSMContext):
         "currency": "currency",
         "alchemy": "alchemy"
     }
-    resource_type = type_map.get(callback.data.split("_")[2], "craft")
+    resource_type = type_map.get(callback.data.removeprefix("res_type_"), "craft")
     await state.update_data(res_type=resource_type)
     await callback.message.edit_text(
         "Введите примечание для ресурса (например, «Продаётся у торговца в городе»).\n"
@@ -473,11 +473,6 @@ async def gear_edit_item(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     await show_edit_menu(callback, state, gear_id, ENTITY_CONFIGS['gear'], gear)
-
-@admin_router.callback_query(GearListStates.list_page, F.data.startswith("legacy_gear_page_"))
-async def gear_page_nav(callback: types.CallbackQuery, state: FSMContext):
-    page = int(callback.data.split("_")[1])
-    await render_entity_list(callback, state, ENTITY_CONFIGS['gear'], page)
 
 @admin_router.callback_query(GearListStates.list_page, F.data == "gear_add_start")
 async def gear_add_name(callback: types.CallbackQuery, state: FSMContext):
@@ -1019,7 +1014,11 @@ async def mob_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="✅ Да, удалить", callback_data="confirm_mob_delete")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_mob_list")]
     ])
-    await callback.message.edit_text(f"Удалить моба <b>{mob[0]['name']}</b>?", parse_mode="HTML", reply_markup=keyboard)
+    await callback.message.edit_text(
+        f"Удалить моба <b>{escape_html(mob[0]['name'])}</b>?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
     await state.set_state(MobStates.edit_field)
     await callback.answer()
 

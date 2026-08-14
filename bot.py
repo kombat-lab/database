@@ -56,15 +56,6 @@ RESOURCE_TYPE_NAMES = {
     "alchemy": "⚗️ Алхимия",
 }
 
-RESOURCE_TYPE_PLURAL_NAMES = {
-    "craft": "⚒️ Крафтовые",
-    "consumable": "✨ Расходуемые",
-    "scroll_recipe": "📜 Рецепты экипировки",
-    "scroll": "📜 Рецепты экипировки",
-    "currency": "💰 Валюта",
-    "alchemy": "⚗️ Алхимия",
-}
-
 RESOURCE_TYPE_TITLES = {
     "craft": "Крафтовые",
     "consumable": "Расходуемые",
@@ -102,6 +93,77 @@ def build_resource_return_param(
 
 def build_gear_return_param(gear_id: int, rarity: str | None, page: int) -> str | None:
     return f"gear_{gear_id}_{rarity}_{page}" if rarity else None
+
+
+def parse_return_param(value: str | None) -> dict | None:
+    """Parse and validate the optional navigation context in a start payload."""
+    if not value:
+        return None
+
+    patterns = (
+        ("gear", r"gear_(\d+)_(common|rare|epic|legendary)_(\d+)"),
+        ("mob", r"mob_(\d+)_(\d+)_(\d+)"),
+        ("resource_loc", r"resource_loc_(\d+)_(\d+)_(\d+)"),
+        ("resource_type", r"resource_type_(\d+)_(craft|consumable|scroll_recipe|scroll|currency|alchemy)_(\d+)"),
+    )
+    for kind, pattern in patterns:
+        match = re.fullmatch(pattern, value)
+        if not match:
+            continue
+        groups = match.groups()
+        page = int(groups[-1])
+        if page < 1:
+            return None
+        item_id = int(groups[0])
+        if item_id < 1:
+            return None
+
+        result = {"kind": kind, "item_id": item_id, "page": page}
+        if kind == "gear":
+            result.update(context_type="gear", context_id=item_id, rarity=groups[1])
+        elif kind == "mob":
+            location_id = int(groups[1])
+            if location_id < 1:
+                return None
+            result.update(context_type="mob", context_id=item_id, location_id=location_id)
+        elif kind == "resource_loc":
+            location_id = int(groups[1])
+            if location_id < 1:
+                return None
+            result.update(context_type="location", context_id=location_id)
+        else:
+            result.update(context_type="type", context_id=groups[1])
+        return result
+    return None
+
+
+def parse_resource_page_callback(data: str, prefix: str) -> tuple[str, int] | None:
+    """Parse callbacks whose resource type may itself contain underscores."""
+    if not data.startswith(prefix):
+        return None
+    try:
+        resource_type, raw_page = data[len(prefix):].rsplit("_", 1)
+        page = int(raw_page)
+    except (ValueError, AttributeError):
+        return None
+    if resource_type not in RESOURCE_TYPE_NAMES or page < 1:
+        return None
+    return resource_type, page
+
+
+def parse_resource_view_callback(data: str) -> tuple[int, str, int] | None:
+    if not data.startswith("view_resource_"):
+        return None
+    try:
+        raw_id, remainder = data[len("view_resource_"):].split("_", 1)
+        resource_type, raw_page = remainder.rsplit("_", 1)
+        resource_id = int(raw_id)
+        page = int(raw_page)
+    except (ValueError, AttributeError):
+        return None
+    if resource_id < 1 or page < 1 or resource_type not in RESOURCE_TYPE_NAMES:
+        return None
+    return resource_id, resource_type, page
 
 # Группа вложенных локаций во вкладке «Мобы».
 DEAD_FOREST_LOCATION_ID = 4
@@ -861,45 +923,19 @@ async def send_menu(message: types.Message):
     args = message.text.split(maxsplit=1)
     if len(args) > 1:
         payload, separator, return_param = args[1].partition("-r-")
-        target_type = None
-        target_id = None
-        return_param = return_param if separator else None
-
-        parts = payload.split("_")
-        if len(parts) == 2:
-            target_type = parts[0]
-            try:
-                target_id = int(parts[1])
-            except ValueError:
-                pass
+        payload_match = re.fullmatch(r"(resource|mob|gear|card)_(\d+)", payload)
+        target_type = payload_match.group(1) if payload_match else None
+        target_id = int(payload_match.group(2)) if payload_match else None
+        if target_id is not None and target_id < 1:
+            target_type = target_id = None
+        return_context = parse_return_param(return_param if separator else None)
 
         if target_type and target_id is not None:
             # Определяем контекст для возврата (если есть)
-            context_type = None
-            context_id = None
-            page = 1
-            rarity = None
-            if return_param:
-                parts = return_param.split("_")
-                if len(parts) >= 3:
-                    obj_type = parts[0]
-                    if obj_type == "gear" and len(parts) == 4:
-                        context_type = "gear"
-                        context_id = parts[1]   # gear_id
-                        page = int(parts[3])
-                    elif obj_type == "mob" and len(parts) == 4:
-                        context_type = "mob"
-                        context_id = parts[1]   # mob_id
-                        page = int(parts[3])
-                    elif obj_type == "resource_loc" and len(parts) == 4:
-                        context_type = "location"
-                        context_id = int(parts[2])  # location_id
-                        page = int(parts[3])
-                    elif obj_type == "resource_type" and len(parts) == 4:
-                        context_type = "type"
-                        context_id = parts[2]   # resource_type
-                        page = int(parts[3])
-                    # можно добавить card и другие
+            context_type = return_context.get("context_type") if return_context else None
+            context_id = return_context.get("context_id") if return_context else None
+            page = return_context.get("page", 1) if return_context else 1
+            rarity = return_context.get("rarity") if return_context else None
 
             # Формируем карточку в зависимости от типа
             if target_type == "resource":
@@ -914,23 +950,7 @@ async def send_menu(message: types.Message):
                 # В формате mob_{id} мы не знаем location_id, поэтому передаём None
                 rich_msg = await format_mob_card(target_id, location_id=None, page=page)
             elif target_type == "gear":
-                # Для снаряжения нужны rarity и page (если они есть в return, иначе используем дефолтные)
-                # Но мы можем получить rarity из return_param, если он есть
-                if context_type == "gear" and context_id:
-                    # context_id содержит gear_id, но мы уже знаем target_id = gear_id
-                    # Нам нужна rarity. Попробуем извлечь из return_param
-                    if return_param:
-                        parts = return_param.split("_")
-                        if len(parts) == 4 and parts[0] == "gear":
-                            rarity = parts[2]
-                            page = int(parts[3])
-                            rich_msg = await format_gear_card_rich(target_id, rarity, page)
-                        else:
-                            rich_msg = await format_gear_card_rich(target_id, None, 1)
-                    else:
-                        rich_msg = await format_gear_card_rich(target_id, None, 1)
-                else:
-                    rich_msg = await format_gear_card_rich(target_id, None, 1)
+                rich_msg = await format_gear_card_rich(target_id, rarity, page)
             elif target_type == "card":
                 rich_msg = await format_card_card_rich(
                     target_id,
@@ -942,60 +962,26 @@ async def send_menu(message: types.Message):
                 await message.answer("Неизвестный тип объекта.")
                 return
 
-            # Строим кнопку возврата на основе return_param (если есть)
+            # Строим кнопку возврата на основе проверенного контекста.
             keyboard = None
-            if return_param:
-                parts = return_param.split("_")
-                if len(parts) >= 3:
-                    obj_type = parts[0]
-                    if obj_type == "gear" and len(parts) == 4:
-                        try:
-                            gear_id = int(parts[1])
-                            rarity = parts[2]
-                            page = int(parts[3])
-                            back_button = InlineKeyboardButton(
-                                text="🔙 Вернуться к снаряжению",
-                                callback_data=f"view_gear_{gear_id}_{rarity}_{page}"
-                            )
-                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-                        except (IndexError, ValueError):
-                            pass
-                    elif obj_type == "mob" and len(parts) == 4:
-                        try:
-                            mob_id = int(parts[1])
-                            location_id = int(parts[2])
-                            page = int(parts[3])
-                            back_button = InlineKeyboardButton(
-                                text="🔙 Вернуться к мобу",
-                                callback_data=f"view_mobs_{mob_id}_{location_id}_{page}"
-                            )
-                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-                        except (IndexError, ValueError):
-                            pass
-                    elif obj_type == "resource_loc" and len(parts) == 4:
-                        try:
-                            res_id = int(parts[1])
-                            location_id = int(parts[2])
-                            page = int(parts[3])
-                            back_button = InlineKeyboardButton(
-                                text="🔙 Вернуться к ресурсу",
-                                callback_data=f"view_resources_{res_id}_{location_id}_{page}"
-                            )
-                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-                        except (IndexError, ValueError):
-                            pass
-                    elif obj_type == "resource_type" and len(parts) == 4:
-                        try:
-                            res_id = int(parts[1])
-                            res_type = parts[2]
-                            page = int(parts[3])
-                            back_button = InlineKeyboardButton(
-                                text="🔙 Вернуться к ресурсу",
-                                callback_data=f"view_resource_{res_id}_{res_type}_{page}"
-                            )
-                            keyboard = InlineKeyboardMarkup(inline_keyboard=[[back_button]])
-                        except (IndexError, ValueError):
-                            pass
+            if return_context:
+                kind = return_context["kind"]
+                item_id = return_context["item_id"]
+                if kind == "gear":
+                    callback_data = f"view_gear_{item_id}_{return_context['rarity']}_{page}"
+                    button_text = "🔙 Вернуться к снаряжению"
+                elif kind == "mob":
+                    callback_data = f"view_mobs_{item_id}_{return_context['location_id']}_{page}"
+                    button_text = "🔙 Вернуться к мобу"
+                elif kind == "resource_loc":
+                    callback_data = f"view_resources_{item_id}_{return_context['context_id']}_{page}"
+                    button_text = "🔙 Вернуться к ресурсу"
+                else:
+                    callback_data = f"view_resource_{item_id}_{return_context['context_id']}_{page}"
+                    button_text = "🔙 Вернуться к ресурсу"
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=button_text, callback_data=callback_data)
+                ]])
 
             plain_formatters = {
                 "resource": lambda: format_resource_card(target_id, context_type, context_id, page),
@@ -1616,15 +1602,20 @@ async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: 
 # ---------- Ресурсы по категориям ----------
 @dp.callback_query(F.data.startswith("resource_cat_"))
 async def resource_category_callback(callback: types.CallbackQuery):
-    resource_type = callback.data.split("_")[2]
+    resource_type = callback.data.removeprefix("resource_cat_")
+    if resource_type not in RESOURCE_TYPE_NAMES:
+        await callback.answer("Неверная категория.", show_alert=True)
+        return
     await show_resources_by_type(callback, resource_type, 1)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("res_page_"))
 async def resource_page_callback(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    resource_type = parts[2]
-    page = int(parts[3])
+    parsed = parse_resource_page_callback(callback.data, "res_page_")
+    if not parsed:
+        await callback.answer("Неверная страница.", show_alert=True)
+        return
+    resource_type, page = parsed
     await show_resources_by_type(callback, resource_type, page)
     await callback.answer()
 
@@ -1635,11 +1626,12 @@ async def back_to_resource_categories(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("view_resource_"))
 async def view_resource_by_type(callback: types.CallbackQuery):
+    parsed = parse_resource_view_callback(callback.data)
+    if not parsed:
+        await callback.answer("Неверная ссылка на ресурс.", show_alert=True)
+        return
+    resource_id, resource_type, page = parsed
     await callback.answer()
-    parts = callback.data.split("_")
-    resource_id = int(parts[2])
-    resource_type = parts[3]
-    page = int(parts[4])
     await log_view_resource(callback.from_user.id, resource_id)
 
     rich_msg = await format_resource_card_rich(resource_id, context_type='type', context_id=resource_type, page=page)
@@ -1687,19 +1679,20 @@ async def back_to_main_menu(callback: types.CallbackQuery):
 
 # ---------- Запуск ----------
 async def main():
-    await db.connect()
-    await db.init_analytics_tables()
-
-    global BOT_USERNAME
-    me = await bot.me()
-    BOT_USERNAME = me.username
-    
-    dp.update.middleware(AnalyticsMiddleware())
-    dp.include_router(admin_router)
     try:
-        await dp.start_polling(bot, skip_updates=True)
+        await db.connect()
+
+        global BOT_USERNAME
+        me = await bot.me()
+        BOT_USERNAME = me.username
+
+        dp.update.middleware(AnalyticsMiddleware())
+        dp.include_router(admin_router)
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot, close_bot_session=False)
     finally:
         await db.close()
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

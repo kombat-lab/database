@@ -55,9 +55,6 @@ async def _log_event(user_id: int, event_type: str, target_id: int = None,
 async def log_start(user_id: int):
     await _log_event(user_id, 'start')
 
-async def log_open_section(user_id: int, section: str):
-    await _log_event(user_id, 'open_section', target_type=section)
-
 async def log_view_mob(user_id: int, mob_id: int):
     await _log_event(user_id, 'view_mob', target_id=mob_id, target_type='mob')
 
@@ -265,9 +262,10 @@ async def reset_analytics_data():
     logger.warning("=== СБРОС АНАЛИТИКИ ===")
     _resetting = True
     try:
-        await db.execute_query("DELETE FROM users")          # каскадно удалит analytics_events
-        await db.execute_query("DELETE FROM sqlite_sequence WHERE name = 'analytics_events'")
-        await db.vacuum()                                   # метод vacuum() должен быть в Database
+        async with db.transaction():
+            await db.execute_query("DELETE FROM users")      # каскадно удалит analytics_events
+            await db.execute_query("DELETE FROM sqlite_sequence WHERE name = 'analytics_events'")
+        await db.vacuum()
         logger.info("Таблицы очищены, VACUUM выполнен")
     except Exception as e:
         logger.exception(f"Ошибка при сбросе: {e}")
