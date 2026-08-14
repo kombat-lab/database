@@ -59,7 +59,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["name"] for row in rows], ["first", "last"])
 
     async def test_window_navigation_returns_adjacent_items(self):
-        first = await self.db.add_resource("alpha", "1", "scroll")
+        first = await self.db.add_resource("alpha", "1", "scroll_recipe")
         middle = await self.db.add_resource("bravo", "2", "scroll_recipe")
         last = await self.db.add_resource("charlie", "3", "scroll_recipe")
 

@@ -21,14 +21,14 @@ $env:DATABASE_PATH = "game.db"
 python bot.py
 ```
 
-При первом запуске актуальная схема и все индексы создаются автоматически. Legacy-миграций в runtime нет: при смене схемы база сбрасывается через команду ниже.
+При первом запуске актуальная схема и все индексы создаются автоматически. Legacy-миграций в runtime нет: перенос выполняется отдельной проверяемой командой.
 
-## Backup и чистая миграция
+## Backup и миграция данных
 
 Остановите бота, затем выполните:
 
 ```powershell
-python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --keep 10 --yes
+python scripts/migrate_database.py "C:\path\to\game.db" --backup-dir backups --keep 10 --yes
 ```
 
 Команда:
@@ -36,8 +36,21 @@ python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --kee
 1. отказывается работать, если база не найдена или занята;
 2. создаёт SQLite-backup с timestamp, SHA-256 и JSON-манифестом;
 3. проверяет backup через `PRAGMA integrity_check`;
-4. создаёт новую пустую базу с текущей схемой;
-5. атомарно заменяет рабочий файл и хранит последние 10 backup-копий.
+4. создаёт новую базу с текущей схемой и переносит в неё все строки;
+5. проверяет строки, внешние ключи и целостность;
+6. атомарно заменяет рабочий файл и хранит последние 10 backup-копий.
+
+Для восстановления из существующей копии используйте:
+
+```powershell
+python scripts/migrate_database.py "C:\path\to\game.db" --source-backup "C:\path\to\backup.db" --yes
+```
+
+Полная очистка данных доступна отдельно и не используется для обычной миграции:
+
+```powershell
+python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --keep 10 --yes
+```
 
 Каталог `backups/` и SQLite-файлы исключены из Git, так как могут содержать production-данные.
 
@@ -57,4 +70,4 @@ python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --kee
 python -m unittest discover -s tests -v
 ```
 
-Тесты проверяют чистое создание схемы, backup/reset, транзакции, конкурентные вставки, каскадную очистку и разбор callback/deep-link данных.
+Тесты проверяют создание схемы, перенос данных, backup/reset, транзакции, конкурентные вставки, каскадную очистку и разбор callback/deep-link данных.

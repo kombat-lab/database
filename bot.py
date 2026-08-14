@@ -51,7 +51,6 @@ RESOURCE_TYPE_NAMES = {
     "craft": "⚒️ Крафтовый",
     "consumable": "✨ Расходуемый",
     "scroll_recipe": "📜 Рецепт экипировки",
-    "scroll": "📜 Рецепт экипировки",
     "currency": "💰 Валюта",
     "alchemy": "⚗️ Алхимия",
 }
@@ -60,7 +59,6 @@ RESOURCE_TYPE_TITLES = {
     "craft": "Крафтовые",
     "consumable": "Расходуемые",
     "scroll_recipe": "Рецепты экипировки",
-    "scroll": "Рецепты экипировки",
     "currency": "Валюта",
     "alchemy": "Алхимия",
 }
@@ -104,7 +102,7 @@ def parse_return_param(value: str | None) -> dict | None:
         ("gear", r"gear_(\d+)_(common|rare|epic|legendary)_(\d+)"),
         ("mob", r"mob_(\d+)_(\d+)_(\d+)"),
         ("resource_loc", r"resource_loc_(\d+)_(\d+)_(\d+)"),
-        ("resource_type", r"resource_type_(\d+)_(craft|consumable|scroll_recipe|scroll|currency|alchemy)_(\d+)"),
+        ("resource_type", r"resource_type_(\d+)_(craft|consumable|scroll_recipe|currency|alchemy)_(\d+)"),
     )
     for kind, pattern in patterns:
         match = re.fullmatch(pattern, value)

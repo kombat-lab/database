@@ -527,49 +527,28 @@ class Database:
             await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
-        if resource_type == 'scroll_recipe':
-            return await self.execute_query(
-                "SELECT id, name, emoji, type FROM resources WHERE type IN ('scroll_recipe', 'scroll') ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
-                (limit, offset)
-            )
-        else:
-            return await self.execute_query(
-                "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
-                (resource_type, limit, offset)
-            )
+        return await self.execute_query(
+            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+            (resource_type, limit, offset)
+        )
 
     async def get_all_resources_simple(self) -> List[Dict]:
         return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
 
     async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
-        if resource_type == 'scroll_recipe':
-            rows = await self.execute_query(
-                """
-                WITH ordered AS (
-                    SELECT id,
-                           LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
-                           LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
-                    FROM resources
-                    WHERE type IN ('scroll_recipe', 'scroll')
-                )
-                SELECT prev_id, next_id FROM ordered WHERE id = ?
-                """,
-                (resource_id,),
+        rows = await self.execute_query(
+            """
+            WITH ordered AS (
+                SELECT id,
+                       LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
+                       LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
+                FROM resources
+                WHERE type = ?
             )
-        else:
-            rows = await self.execute_query(
-                """
-                WITH ordered AS (
-                    SELECT id,
-                           LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
-                           LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
-                    FROM resources
-                    WHERE type = ?
-                )
-                SELECT prev_id, next_id FROM ordered WHERE id = ?
-                """,
-                (resource_type, resource_id),
-            )
+            SELECT prev_id, next_id FROM ordered WHERE id = ?
+            """,
+            (resource_type, resource_id),
+        )
         return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     # ========== СНАРЯЖЕНИЕ ==========
