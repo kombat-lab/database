@@ -37,6 +37,14 @@ class Database:
         'вторая рука': 13,
     }
 
+    @classmethod
+    def _slot_order_case(cls, column: str = "slot") -> str:
+        branches = " ".join(
+            f"WHEN '{slot}' THEN {order}"
+            for slot, order in cls.SLOT_ORDER.items()
+        )
+        return f"CASE {column} {branches} ELSE 99 END"
+
     def __init__(self, path: str | None = None):
         self.path = path or DB_PATH
         self._conn: Optional[aiosqlite.Connection] = None
@@ -649,10 +657,7 @@ class Database:
         return row
 
     async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:
-        case_expression = "CASE slot "
-        for slot, order in self.SLOT_ORDER.items():
-            case_expression += f" WHEN '{slot}' THEN {order}"
-        case_expression += " ELSE 99 END"
+        case_expression = self._slot_order_case()
         
         rows = await self.execute_query(
             f"""
@@ -674,6 +679,11 @@ class Database:
 
     # ========== РЕЦЕПТЫ ==========
     async def get_all_recipes(self, result_type: str, offset: int, limit: int) -> List[Dict]:
+        if result_type == 'gear':
+            order_by = f"{self._slot_order_case('g.slot')}, g.name COLLATE NOCASE, r.id"
+        else:
+            order_by = "r.id"
+
         query = f"""
             SELECT r.id, r.result_type, r.result_id,
                    CASE WHEN r.result_type='gear' THEN g.name ELSE res.name END as result_name,
@@ -684,7 +694,7 @@ class Database:
             LEFT JOIN gear g ON r.result_type='gear' AND r.result_id=g.id
             LEFT JOIN resources res ON r.result_type='resource' AND r.result_id=res.id
             WHERE r.result_type=?
-            ORDER BY r.id LIMIT ? OFFSET ?
+            ORDER BY {order_by} LIMIT ? OFFSET ?
         """
         return await self.execute_query(query, (result_type, limit, offset))
 
@@ -794,10 +804,7 @@ class Database:
         )
 
     async def get_all_cards_sorted_by_slot(self, offset: int, limit: int) -> List[Dict]:
-        case_expression = "CASE slot "
-        for slot, order in self.SLOT_ORDER.items():
-            case_expression += f" WHEN '{slot}' THEN {order}"
-        case_expression += " ELSE 99 END"
+        case_expression = self._slot_order_case()
         
         query = f"""
             SELECT id, name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note
@@ -847,10 +854,7 @@ class Database:
         )
 
     async def get_prev_next_card_by_slot(self, card_id: int) -> Dict[str, Optional[int]]:
-        case_expression = "CASE slot "
-        for slot, order in self.SLOT_ORDER.items():
-            case_expression += f" WHEN '{slot}' THEN {order}"
-        case_expression += " ELSE 99 END"
+        case_expression = self._slot_order_case()
         
         rows = await self.execute_query(
             f"""

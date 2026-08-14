@@ -115,6 +115,25 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             {"prev_id": None, "next_id": middle},
         )
 
+    async def test_gear_recipes_are_sorted_by_slot_across_pages(self):
+        gear_specs = (
+            ("Щит", "вторая рука", "🛡️"),
+            ("Шлем Ястреба", "шлем", "🪖"),
+            ("Броня", "тело", "🦺"),
+            ("Шлем Альфа", "шлем", "⛑️"),
+        )
+        for name, slot, emoji in gear_specs:
+            gear_id = await self.db.add_gear(name, "epic", slot, emoji)
+            await self.db.create_recipe("gear", gear_id)
+
+        first_page = await self.db.get_all_recipes("gear", 0, 2)
+        second_page = await self.db.get_all_recipes("gear", 2, 2)
+
+        self.assertEqual(
+            [row["result_name"] for row in first_page + second_page],
+            ["Шлем Альфа", "Шлем Ястреба", "Броня", "Щит"],
+        )
+
     async def test_card_aggregates_preserve_commas_and_pipes(self):
         await self.db.execute_query(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("forest, cave | level", "📍")
