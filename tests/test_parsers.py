@@ -4,6 +4,9 @@ import unittest
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
 from bot import (  # noqa: E402
+    DEFAULT_ALCHEMY_CRAFT_LOCATION,
+    MEREDITH_ALCHEMY_CRAFT_LOCATION,
+    get_alchemy_craft_location,
     parse_resource_page_callback,
     parse_resource_view_callback,
     parse_return_param,
@@ -58,3 +61,36 @@ class CallbackParserTests(unittest.TestCase):
 
         self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
         self.assertIsNone(parse_resource_view_callback("view_resource_0_craft_1"))
+
+
+class AlchemyCraftLocationTests(unittest.TestCase):
+    def test_meredith_resources_use_trading_outpost(self):
+        resource_names = (
+            "Дубленая кожа",
+            "Костяной куб",
+            "Пепельный материал",
+            "Поручение Славика",
+            "Прочная бечевка",
+            "Субстанция",
+            "Ядро земель",
+        )
+
+        for resource_name in resource_names:
+            with self.subTest(resource_name=resource_name):
+                self.assertEqual(
+                    get_alchemy_craft_location(resource_name),
+                    MEREDITH_ALCHEMY_CRAFT_LOCATION,
+                )
+
+    def test_other_resources_use_alcazar(self):
+        self.assertEqual(
+            get_alchemy_craft_location("Укрепляющий состав"),
+            DEFAULT_ALCHEMY_CRAFT_LOCATION,
+        )
+        self.assertIn("Алькасар", DEFAULT_ALCHEMY_CRAFT_LOCATION)
+
+    def test_matching_ignores_case_and_outer_spaces(self):
+        self.assertEqual(
+            get_alchemy_craft_location("  субстанция  "),
+            MEREDITH_ALCHEMY_CRAFT_LOCATION,
+        )

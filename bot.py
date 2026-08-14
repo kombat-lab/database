@@ -64,6 +64,25 @@ RESOURCE_TYPE_TITLES = {
     "alchemy": "Алхимия",
 }
 
+DEFAULT_ALCHEMY_CRAFT_LOCATION = (
+    "🏛 Алькасар - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+)
+MEREDITH_ALCHEMY_CRAFT_LOCATION = (
+    "🏰 Торговый аванпост - 🛣 Центральная Аллея - 👤 Ученая Мередит - ⚗️ Алхимия"
+)
+MEREDITH_ALCHEMY_RESOURCES = frozenset(
+    name.casefold()
+    for name in (
+        "Дубленая кожа",
+        "Костяной куб",
+        "Пепельный материал",
+        "Поручение Славика",
+        "Прочная бечевка",
+        "Субстанция",
+        "Ядро земель",
+    )
+)
+
 RARITY_ORDER = ("common", "rare", "epic", "legendary")
 
 
@@ -73,6 +92,12 @@ def get_rarity_emoji(rarity: str | None) -> str:
 
 def get_resource_type_name(resource_type: str | None) -> str:
     return RESOURCE_TYPE_NAMES.get(resource_type or "craft", "📦 Крафтовый")
+
+
+def get_alchemy_craft_location(resource_name: str) -> str:
+    if resource_name.strip().casefold() in MEREDITH_ALCHEMY_RESOURCES:
+        return MEREDITH_ALCHEMY_CRAFT_LOCATION
+    return DEFAULT_ALCHEMY_CRAFT_LOCATION
 
 
 def build_resource_return_param(
@@ -412,7 +437,7 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
             text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
 
         text += "\n🏛 <b>Где крафтить:</b>\n"
-        text += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+        text += get_alchemy_craft_location(data['name'])
 
     return text
 
@@ -483,7 +508,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
         </table>
         """
         html += "<br>🏛 <b>Где крафтить:</b><br>"
-        html += "🏛 Город - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+        html += get_alchemy_craft_location(data['name'])
 
     return InputRichMessage(html=html.strip())
 
