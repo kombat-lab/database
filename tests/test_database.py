@@ -40,17 +40,21 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.db.execute_query("SELECT COUNT(*) AS count FROM resources")
         self.assertEqual(rows[0]["count"], 25)
 
-    async def test_admin_resources_are_sorted_alphabetically(self):
-        await self.db.add_resource("яблоко", "🍎")
-        await self.db.add_resource("Арбуз", "🍉")
-        await self.db.add_resource("банан", "🍌")
+    async def test_resource_lists_are_sorted_alphabetically(self):
+        await self.db.add_resource("яблоко", "🍎", "craft")
+        await self.db.add_resource("Арбуз", "🍉", "craft")
+        await self.db.add_resource("банан", "🍌", "craft")
 
-        rows = await self.db.get_resources_page(0, 10)
+        admin_rows = await self.db.get_resources_page(0, 10)
+        ingredient_rows = await self.db.get_all_resources_simple()
+        category_rows = await self.db.get_resources_by_type("craft", 0, 10)
 
-        self.assertEqual(
-            [row["name"] for row in rows],
-            ["Арбуз", "банан", "яблоко"],
-        )
+        for rows in (admin_rows, ingredient_rows, category_rows):
+            with self.subTest(list_size=len(rows)):
+                self.assertEqual(
+                    [row["name"] for row in rows],
+                    ["Арбуз", "банан", "яблоко"],
+                )
 
     async def test_drop_search_matches_all_item_types_and_reports_status(self):
         location_id = await self.db.execute_insert(

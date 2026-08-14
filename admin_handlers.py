@@ -1081,15 +1081,19 @@ def resolve_drop_filter(category: str, filter_index: int) -> str:
 async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     if category == 'resource':
-        sql = "SELECT id, name, emoji FROM resources WHERE type = ? ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
-        params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
+        items = await db.get_resources_by_type(
+            filter_value,
+            offset,
+            ADMIN_ITEMS_PER_PAGE + 1,
+        )
     elif category == 'gear':
         sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE slot = ? ORDER BY CASE rarity WHEN 'common' THEN 1 WHEN 'rare' THEN 2 WHEN 'epic' THEN 3 WHEN 'legendary' THEN 4 ELSE 5 END, level, LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
+        items = await db.execute_query(sql, params)
     else:
         sql = "SELECT id, name, emoji, slot FROM cards WHERE slot = ? ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
-    items = await db.execute_query(sql, params)
+        items = await db.execute_query(sql, params)
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
     items = items[:ADMIN_ITEMS_PER_PAGE]
     rows=[]

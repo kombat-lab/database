@@ -20,6 +20,7 @@ def _lower_unicode(s: str) -> str:
 
 class Database:
     ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
+    RESOURCE_NAME_ORDER = "LOWER_UNICODE(name), id"
     
     SLOT_ORDER = {
         'шлем': 1,
@@ -548,20 +549,24 @@ class Database:
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources WHERE type = ? ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?",
+            "SELECT id, name, emoji, type FROM resources WHERE type = ? "
+            f"ORDER BY {self.RESOURCE_NAME_ORDER} LIMIT ? OFFSET ?",
             (resource_type, limit, offset)
         )
 
     async def get_all_resources_simple(self) -> List[Dict]:
-        return await self.execute_query("SELECT id, name, emoji FROM resources ORDER BY id")
+        return await self.execute_query(
+            "SELECT id, name, emoji FROM resources "
+            f"ORDER BY {self.RESOURCE_NAME_ORDER}"
+        )
 
     async def get_prev_next_resource_by_type(self, resource_id: int, resource_type: str) -> Dict[str, Optional[int]]:
         rows = await self.execute_query(
-            """
+            f"""
             WITH ordered AS (
                 SELECT id,
-                       LAG(id) OVER (ORDER BY name COLLATE NOCASE, id) AS prev_id,
-                       LEAD(id) OVER (ORDER BY name COLLATE NOCASE, id) AS next_id
+                       LAG(id) OVER (ORDER BY {self.RESOURCE_NAME_ORDER}) AS prev_id,
+                       LEAD(id) OVER (ORDER BY {self.RESOURCE_NAME_ORDER}) AS next_id
                 FROM resources
                 WHERE type = ?
             )
@@ -976,7 +981,7 @@ class Database:
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, type FROM resources "
-            "ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?",
+            f"ORDER BY {self.RESOURCE_NAME_ORDER} LIMIT ? OFFSET ?",
             (limit, offset)
         )
 
