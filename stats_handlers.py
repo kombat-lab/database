@@ -1,14 +1,11 @@
-import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from analytics import (
     get_active_users_count,
     get_retention,
     get_top_items_with_names,
     get_db_stats,
-    reset_analytics_data,
     get_top_search_queries,
     get_users_page,
     get_user_activity,
@@ -16,7 +13,6 @@ from analytics import (
 from admin_utils import edit_admin_rich
 from utils import escape_html
 
-logger = logging.getLogger(__name__)
 stats_router = Router()
 
 
@@ -29,7 +25,6 @@ async def show_stats_menu(target, edit: bool = False):
         [InlineKeyboardButton(text="🔍 Топ-30 поисковых запросов", callback_data="stats_searches")],
         [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
         [InlineKeyboardButton(text="👥 Пользователи", callback_data="stats_users")],
-        [InlineKeyboardButton(text="🗑 Сбросить аналитику", callback_data="stats_reset")],
         [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
     ])
     text = "📈 Выберите раздел статистики:"
@@ -247,54 +242,6 @@ async def show_user_details(callback: types.CallbackQuery, user_id: int, return_
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
 
 
-@stats_router.callback_query(F.data == "stats_reset")
-async def confirm_reset(callback: types.CallbackQuery):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ ДА, СБРОСИТЬ ВСЁ", callback_data="stats_reset_confirm")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_stats")]
-    ])
-    await callback.message.edit_text(
-        "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
-        "Вы собираетесь полностью удалить ВСЮ аналитику:\n"
-        "- историю просмотров карточек\n"
-        "- данные о пользователях\n"
-        "- все события\n\n"
-        "<b>Это действие необратимо!</b>\n\n"
-        "Уверены?",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
-    await callback.answer()
-
-
-@stats_router.callback_query(F.data == "stats_reset_confirm")
-async def reset_analytics_callback(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    status_msg = callback.message
-    await status_msg.edit_text("⏳ Сбрасываю аналитику...")
-    back_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
-    ])
-
-    try:
-        # Очищаем состояние FSM, чтобы избежать блокировок
-        await state.clear()
-
-        # Вызываем функцию сброса (она сама управляет транзакциями)
-        await reset_analytics_data()
-
-        await status_msg.edit_text("✅ Аналитика полностью сброшена.", reply_markup=back_keyboard)
-    except Exception as e:
-        logger.exception("Сброс аналитики не удался")
-        await status_msg.edit_text(
-            f"❌ Ошибка при сбросе: {e}\n\n"
-            "Возможные причины:\n"
-            "• База данных временно заблокирована (попробуйте позже)\n"
-            "• Недостаточно прав на выполнение VACUUM",
-            reply_markup=back_keyboard,
-        )
-
-
 @stats_router.message(Command("stats"))
 async def show_stats_command(message: types.Message):
     await show_stats_menu(message)
@@ -340,7 +287,5 @@ async def stats_router_callback(callback: types.CallbackQuery):
         await show_general_stats(callback)
     elif action == "users":
         await show_users(callback, 1)
-    elif action == "reset":
-        await confirm_reset(callback)
     else:
         await callback.answer("Неизвестная команда")

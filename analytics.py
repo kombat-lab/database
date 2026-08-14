@@ -7,10 +7,6 @@ from database import db
 
 logger = logging.getLogger(__name__)
 
-# Флаг, что идёт сброс – запрещаем запись в БД
-_resetting = False
-
-
 # ========== MIDDLEWARE ==========
 class AnalyticsMiddleware(BaseMiddleware):
     async def __call__(
@@ -20,7 +16,7 @@ class AnalyticsMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         user: User = data.get('event_from_user')
-        if user and not user.is_bot and not _resetting:
+        if user and not user.is_bot:
             try:
                 await db.register_user_if_not_exists(
                     user_id=user.id,
@@ -36,8 +32,6 @@ class AnalyticsMiddleware(BaseMiddleware):
 # ========== ЛОГИРОВАНИЕ СОБЫТИЙ ==========
 async def _log_event(user_id: int, event_type: str, target_id: int = None,
                      target_type: str = None, metadata: dict = None):
-    if _resetting:
-        return
     try:
         await db.execute_query(
             """
@@ -254,21 +248,3 @@ async def get_user_activity(user_id: int) -> Optional[Dict]:
         "event_types": event_types,
         "recent_searches": recent_searches,
     }
-
-
-# ========== СБРОС АНАЛИТИКИ ==========
-async def reset_analytics_data():
-    global _resetting
-    logger.warning("=== СБРОС АНАЛИТИКИ ===")
-    _resetting = True
-    try:
-        async with db.transaction():
-            await db.execute_query("DELETE FROM users")      # каскадно удалит analytics_events
-            await db.execute_query("DELETE FROM sqlite_sequence WHERE name = 'analytics_events'")
-        await db.vacuum()
-        logger.info("Таблицы очищены, VACUUM выполнен")
-    except Exception as e:
-        logger.exception(f"Ошибка при сбросе: {e}")
-        raise
-    finally:
-        _resetting = False

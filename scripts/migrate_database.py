@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
@@ -15,17 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.reset_database import (  # noqa: E402
-    EXPECTED_TABLES,
-    create_backup,
-    create_clean_database,
-    ensure_database_is_idle,
-    inspect_database,
-    prune_backups,
-    remove_sqlite_files,
-    remove_sqlite_sidecars,
-    sha256,
-)
+from database import Database  # noqa: E402
 
 
 TABLE_ORDER = (
@@ -41,6 +32,119 @@ TABLE_ORDER = (
     "users",
     "analytics_events",
 )
+EXPECTED_TABLES = set(TABLE_ORDER)
+
+
+def remove_sqlite_sidecars(path: Path):
+    Path(f"{path}-wal").unlink(missing_ok=True)
+    Path(f"{path}-shm").unlink(missing_ok=True)
+
+
+def remove_sqlite_files(path: Path):
+    path.unlink(missing_ok=True)
+    remove_sqlite_sidecars(path)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def inspect_database(path: Path) -> dict:
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        row_counts = {
+            table: connection.execute(
+                f"SELECT COUNT(*) FROM {quote_identifier(table)}"
+            ).fetchone()[0]
+            for table in sorted(tables & EXPECTED_TABLES)
+        }
+        return {"integrity": integrity, "tables": sorted(tables), "row_counts": row_counts}
+    finally:
+        connection.close()
+
+
+def create_backup(source: Path, backup_dir: Path) -> tuple[Path, dict]:
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f%z")
+    backup_path = backup_dir / f"{source.stem}-{timestamp}.db"
+
+    source_connection = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)
+    backup_connection = sqlite3.connect(backup_path)
+    try:
+        source_connection.backup(backup_connection)
+    finally:
+        backup_connection.close()
+        source_connection.close()
+
+    try:
+        snapshot = inspect_database(backup_path)
+    finally:
+        remove_sqlite_sidecars(backup_path)
+    if snapshot["integrity"] != "ok":
+        remove_sqlite_files(backup_path)
+        raise RuntimeError(f"Backup integrity check failed: {snapshot['integrity']}")
+
+    metadata = {
+        "created_at": datetime.now().astimezone().isoformat(),
+        "source": str(source),
+        "backup": str(backup_path),
+        "sha256": sha256(backup_path),
+        **snapshot,
+    }
+    backup_path.with_suffix(".json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return backup_path, metadata
+
+
+async def create_clean_database(path: Path):
+    database = Database(str(path))
+    try:
+        await database.connect()
+    finally:
+        await database.close()
+
+
+def ensure_database_is_idle(path: Path):
+    try:
+        connection = sqlite3.connect(path, timeout=1)
+        try:
+            connection.execute("BEGIN EXCLUSIVE")
+            connection.rollback()
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if checkpoint and checkpoint[0] != 0:
+                raise RuntimeError(
+                    "Database WAL is busy. Stop all processes using it before migration."
+                )
+        finally:
+            connection.close()
+    except sqlite3.OperationalError as error:
+        raise RuntimeError(
+            "Database is busy. Stop all processes using it before migration."
+        ) from error
+
+
+def prune_backups(backup_dir: Path, source_stem: str, keep: int):
+    backups = sorted(
+        backup_dir.glob(f"{source_stem}-*.db"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale in backups[keep:]:
+        stale.unlink()
+        stale.with_suffix(".json").unlink(missing_ok=True)
+        stale.with_name(f"{stale.stem}.migration.json").unlink(missing_ok=True)
 
 
 def quote_identifier(value: str) -> str:

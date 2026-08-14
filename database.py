@@ -899,14 +899,6 @@ class Database:
             (mob_id, item_type, item_id)
         )
 
-    # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
-    async def vacuum(self):
-        async with self._connection_guard():
-            if self._transaction_depth:
-                raise RuntimeError("VACUUM cannot run inside a transaction")
-            await self._conn.execute("VACUUM")
-            await self._conn.commit()
-    
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
             "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",

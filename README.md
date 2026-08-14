@@ -46,12 +46,6 @@ python scripts/migrate_database.py "C:\path\to\game.db" --backup-dir backups --k
 python scripts/migrate_database.py "C:\path\to\game.db" --source-backup "C:\path\to\backup.db" --yes
 ```
 
-Полная очистка данных доступна отдельно и не используется для обычной миграции:
-
-```powershell
-python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --keep 10 --yes
-```
-
 Каталог `backups/` и SQLite-файлы исключены из Git, так как могут содержать production-данные.
 
 ## Переменные окружения
@@ -70,4 +64,4 @@ python scripts/reset_database.py "C:\path\to\game.db" --backup-dir backups --kee
 python -m unittest discover -s tests -v
 ```
 
-Тесты проверяют создание схемы, перенос данных, backup/reset, транзакции, конкурентные вставки, каскадную очистку и разбор callback/deep-link данных.
+Тесты проверяют создание схемы, перенос данных и backup, транзакции, конкурентные вставки, каскадную очистку и разбор callback/deep-link данных.
