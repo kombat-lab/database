@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from database import Database  # noqa: E402
+from database import CURRENT_SCHEMA_VERSION, Database  # noqa: E402
 
 
 TABLE_ORDER = (
@@ -70,6 +70,34 @@ def inspect_database(path: Path) -> dict:
             for table in sorted(tables & EXPECTED_TABLES)
         }
         return {"integrity": integrity, "tables": sorted(tables), "row_counts": row_counts}
+    finally:
+        connection.close()
+
+
+def get_schema_version(path: Path) -> int | None:
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if not tables:
+            return None
+        if "schema_metadata" not in tables:
+            return 0
+        row = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row[0])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"Invalid database schema version: {row[0]!r}") from error
     finally:
         connection.close()
 
@@ -297,6 +325,7 @@ def migrate_database(source: Path, target: Path) -> dict:
         "foreign_key_violations": 0,
         "row_counts": source_snapshot["row_counts"],
         "normalized_resource_types": {"scroll_to_scroll_recipe": normalized_scroll_rows},
+        "schema_version": CURRENT_SCHEMA_VERSION,
     }
 
 
@@ -320,6 +349,41 @@ def migrate_working_database(
     report = migrate_database(source, database)
     prune_backups(backup_dir, database.stem, keep)
     return source, report
+
+
+def auto_migrate_database(
+    database: Path,
+    backup_dir: Path | None = None,
+    keep: int = 10,
+) -> dict | None:
+    database = database.expanduser().resolve()
+    if not database.exists() or database.stat().st_size == 0:
+        return None
+
+    ensure_database_is_idle(database)
+    installed_version = get_schema_version(database)
+    if installed_version is None:
+        return None
+    if installed_version > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Database schema version {installed_version} is newer than "
+            f"application version {CURRENT_SCHEMA_VERSION}"
+        )
+    if installed_version == CURRENT_SCHEMA_VERSION:
+        return None
+
+    resolved_backup_dir = (
+        backup_dir.expanduser().resolve()
+        if backup_dir is not None
+        else database.parent / "backups"
+    )
+    source, report = migrate_working_database(database, resolved_backup_dir, keep)
+    report["previous_schema_version"] = installed_version
+    report_path = source.with_name(f"{source.stem}.migration.json")
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return report
 
 
 def parse_args() -> argparse.Namespace:

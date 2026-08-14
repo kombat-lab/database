@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
+CURRENT_SCHEMA_VERSION = 1
 
 
 def _lower_unicode(s: str) -> str:
@@ -82,6 +83,17 @@ class Database:
     async def _ensure_schema(self):
         """Create a complete empty database without touching existing rows."""
         statements = [
+            """
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """,
+            f"""
+            INSERT INTO schema_metadata (key, value)
+            VALUES ('schema_version', '{CURRENT_SCHEMA_VERSION}')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
             """
             CREATE TABLE IF NOT EXISTS locations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

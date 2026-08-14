@@ -4,11 +4,52 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from database import Database
-from scripts.migrate_database import TABLE_ORDER, migrate_database
+from database import CURRENT_SCHEMA_VERSION, Database
+from scripts.migrate_database import TABLE_ORDER, auto_migrate_database, migrate_database
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_automatic_migration_runs_once_for_unversioned_database(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "game.db"
+            backup_dir = root / "backups"
+
+            async def create_legacy_database():
+                database = Database(str(database_path))
+                await database.connect()
+                try:
+                    await database.add_resource("Legacy scroll", "📜", "scroll")
+                    await database.execute_query("DROP TABLE schema_metadata")
+                finally:
+                    await database.close()
+
+            asyncio.run(create_legacy_database())
+
+            report = auto_migrate_database(database_path, backup_dir, keep=3)
+            self.assertIsNotNone(report)
+            self.assertEqual(report["previous_schema_version"], 0)
+            self.assertEqual(report["schema_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(len(list(backup_dir.glob("*.db"))), 1)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+                    ).fetchone()[0],
+                    str(CURRENT_SCHEMA_VERSION),
+                )
+                self.assertEqual(
+                    connection.execute("SELECT type FROM resources").fetchone()[0],
+                    "scroll_recipe",
+                )
+            finally:
+                connection.close()
+
+            self.assertIsNone(auto_migrate_database(database_path, backup_dir, keep=3))
+            self.assertEqual(len(list(backup_dir.glob("*.db"))), 1)
+
     def test_migration_preserves_rows_and_normalizes_legacy_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
