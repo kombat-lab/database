@@ -29,6 +29,8 @@ class DatabaseResetTests(unittest.TestCase):
 
             self.assertEqual(list(root.glob(".game.db.*.new*")), [])
             self.assertTrue(backup_path.is_file())
+            self.assertFalse(Path(f"{backup_path}-wal").exists())
+            self.assertFalse(Path(f"{backup_path}-shm").exists())
             self.assertEqual(metadata["integrity"], "ok")
             self.assertEqual(metadata["row_counts"]["resources"], 1)
             manifest = json.loads(backup_path.with_suffix(".json").read_text(encoding="utf-8"))
