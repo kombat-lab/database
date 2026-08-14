@@ -14,6 +14,11 @@ from bot import (  # noqa: E402
     parse_resource_view_callback,
     parse_return_param,
 )
+from admin_utils import (  # noqa: E402
+    OPTIONAL_NOTE_SKIP_CALLBACK,
+    build_optional_note_keyboard,
+    normalize_optional_note,
+)
 
 
 class CallbackParserTests(unittest.TestCase):
@@ -64,6 +69,19 @@ class CallbackParserTests(unittest.TestCase):
 
         self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
         self.assertIsNone(parse_resource_view_callback("view_resource_0_craft_1"))
+
+
+class OptionalNoteTests(unittest.TestCase):
+    def test_skip_keyboard_uses_shared_callback(self):
+        keyboard = build_optional_note_keyboard()
+        button = keyboard.inline_keyboard[0][0]
+
+        self.assertEqual(button.text, "⏭ Без примечания")
+        self.assertEqual(button.callback_data, OPTIONAL_NOTE_SKIP_CALLBACK)
+
+    def test_legacy_dash_and_whitespace_are_normalized(self):
+        self.assertEqual(normalize_optional_note(" - "), "")
+        self.assertEqual(normalize_optional_note("  заметка  "), "заметка")
 
 
 class AlchemyCraftLocationTests(unittest.TestCase):

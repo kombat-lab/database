@@ -1,7 +1,7 @@
 import os
 import logging
 from aiogram import BaseMiddleware, Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,6 +19,10 @@ from admin_utils import (
     edit_admin_rich,
     register_generic_handlers,
     GenericEditStates,
+    OPTIONAL_NOTE_PROMPT,
+    OPTIONAL_NOTE_SKIP_CALLBACK,
+    build_optional_note_keyboard,
+    normalize_optional_note,
 )
 from stats_handlers import stats_router
 
@@ -377,25 +381,27 @@ async def resource_add_note(callback: types.CallbackQuery, state: FSMContext):
     resource_type = type_map.get(callback.data.removeprefix("res_type_"), "craft")
     await state.update_data(res_type=resource_type)
     await callback.message.edit_text(
-        "Введите примечание для ресурса (например, «Продаётся у торговца в городе»).\n"
-        "Если не нужно, отправьте «-» или оставьте пустым:"
+        OPTIONAL_NOTE_PROMPT,
+        reply_markup=build_optional_note_keyboard(),
     )
     await state.set_state(ResourceAddStates.note)
 
-@admin_router.message(ResourceAddStates.note, F.text)
-async def resource_save(message: types.Message, state: FSMContext):
-    note = message.text.strip()
-    if note == "-":
-        note = ""
+
+async def save_new_resource(target: types.Message, state: FSMContext, note: str):
     data = await state.get_data()
     try:
         await db.add_resource(data['res_name'], data['res_emoji'], data['res_type'], note)
-        await message.answer("✅ Ресурс добавлен.")
-    except Exception as e:
+        await target.answer("✅ Ресурс добавлен.")
+    except Exception as error:
         logger.exception("Не удалось добавить ресурс")
-        await message.answer(f"❌ Ошибка: {e}")
+        await target.answer(f"❌ Ошибка: {error}")
     await state.clear()
-    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    await target.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+
+
+@admin_router.message(ResourceAddStates.note, F.text)
+async def resource_save(message: types.Message, state: FSMContext):
+    await save_new_resource(message, state, normalize_optional_note(message.text))
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ СНАРЯЖЕНИЯ
@@ -596,12 +602,9 @@ async def gear_add_note_prompt(callback: types.CallbackQuery, state: FSMContext)
     if not data.get('gear_classes'):
         await callback.answer("Выберите хотя бы один класс", show_alert=True)
         return
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⏭ Без примечания", callback_data="gear_note_skip")
-    ]])
     await callback.message.edit_text(
-        "Введите примечание для снаряжения или нажмите «Без примечания»:",
-        reply_markup=keyboard
+        OPTIONAL_NOTE_PROMPT,
+        reply_markup=build_optional_note_keyboard(),
     )
     await state.set_state(GearAddStates.note)
     await callback.answer()
@@ -621,12 +624,7 @@ async def save_new_gear(target, state: FSMContext, note: str):
 
 @admin_router.message(GearAddStates.note, F.text)
 async def gear_save_with_note(message: types.Message, state: FSMContext):
-    await save_new_gear(message, state, message.text.strip())
-
-@admin_router.callback_query(GearAddStates.note, F.data == "gear_note_skip")
-async def gear_save_without_note(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await save_new_gear(callback.message, state, "")
+    await save_new_gear(message, state, normalize_optional_note(message.text))
 
 # ============================================================
 # ОБРАБОТЧИКИ ДЛЯ КАРТ
@@ -728,14 +726,14 @@ async def card_add_note(message: types.Message, state: FSMContext):
     if bonus4 == "-":
         bonus4 = ""
     await state.update_data(card_bonus4=bonus4)
-    await message.answer("Введите примечание (или «-»):")
+    await message.answer(
+        OPTIONAL_NOTE_PROMPT,
+        reply_markup=build_optional_note_keyboard(),
+    )
     await state.set_state(CardAddStates.note)
 
-@admin_router.message(CardAddStates.note, F.text)
-async def card_save(message: types.Message, state: FSMContext):
-    note = message.text.strip()
-    if note == "-":
-        note = ""
+
+async def save_new_card(target: types.Message, state: FSMContext, note: str):
     data = await state.get_data()
     try:
         await db.add_card(
@@ -746,13 +744,34 @@ async def card_save(message: types.Message, state: FSMContext):
             bonus2=data.get('card_bonus2', ''),
             bonus3=data.get('card_bonus3', ''),
             bonus4=data.get('card_bonus4', ''),
-            note=note
+            note=note,
         )
-        await message.answer("✅ Карта добавлена.")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await target.answer("✅ Карта добавлена.")
+    except Exception as error:
+        logger.exception("Не удалось добавить карту")
+        await target.answer(f"❌ Ошибка: {error}")
     await state.clear()
-    await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    await target.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+
+
+@admin_router.message(CardAddStates.note, F.text)
+async def card_save(message: types.Message, state: FSMContext):
+    await save_new_card(message, state, normalize_optional_note(message.text))
+
+
+@admin_router.callback_query(
+    StateFilter(ResourceAddStates.note, GearAddStates.note, CardAddStates.note),
+    F.data == OPTIONAL_NOTE_SKIP_CALLBACK,
+)
+async def skip_new_entity_note(callback: types.CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    await callback.answer()
+    if current_state == ResourceAddStates.note.state:
+        await save_new_resource(callback.message, state, "")
+    elif current_state == GearAddStates.note.state:
+        await save_new_gear(callback.message, state, "")
+    elif current_state == CardAddStates.note.state:
+        await save_new_card(callback.message, state, "")
 
 # ============================================================
 # УПРАВЛЕНИЕ МОБАМИ

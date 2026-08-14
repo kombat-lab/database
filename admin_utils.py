@@ -13,6 +13,22 @@ from utils import is_valid_emoji, escape_html
 logger = logging.getLogger(__name__)
 
 ADMIN_ITEMS_PER_PAGE = 10
+OPTIONAL_NOTE_SKIP_CALLBACK = "optional_note_skip"
+OPTIONAL_NOTE_PROMPT = "Введите примечание или нажмите «Без примечания»:"
+
+
+def build_optional_note_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="⏭ Без примечания",
+            callback_data=OPTIONAL_NOTE_SKIP_CALLBACK,
+        )
+    ]])
+
+
+def normalize_optional_note(value: str) -> str:
+    value = value.strip()
+    return "" if value == "-" else value
 
 
 async def edit_admin_rich(callback: types.CallbackQuery, html: str,
@@ -192,10 +208,58 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await state.update_data(edit_field=field)
             await state.set_state(GenericEditStates.select_option)
         else:
-            await callback.message.edit_text(f"Введите новое значение для поля <b>{field}</b>:", parse_mode="HTML")
+            if field == 'note':
+                await callback.message.edit_text(
+                    OPTIONAL_NOTE_PROMPT,
+                    reply_markup=build_optional_note_keyboard(),
+                )
+            else:
+                await callback.message.edit_text(
+                    f"Введите новое значение для поля <b>{field}</b>:",
+                    parse_mode="HTML",
+                )
             await state.update_data(edit_field=field)
             await state.set_state(GenericEditStates.new_value)
         await callback.answer()
+
+    @router.callback_query(
+        GenericEditStates.new_value,
+        F.data == OPTIONAL_NOTE_SKIP_CALLBACK,
+    )
+    async def generic_skip_optional_note(callback: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
+        if data.get('edit_field') != 'note':
+            await callback.answer("Эта кнопка доступна только для примечания.", show_alert=True)
+            return
+
+        entity_type = data.get('editing_entity')
+        entity_id = data.get('entity_id')
+        configs = get_entity_configs_func()
+        config = configs.get(entity_type)
+        if not config or not entity_id:
+            await callback.message.edit_text(
+                "🔧 Админ-панель",
+                reply_markup=get_admin_main_keyboard(),
+            )
+            await state.clear()
+            await callback.answer()
+            return
+
+        try:
+            await config['update_field_func'](entity_id, 'note', '')
+        except Exception as error:
+            logger.exception("Не удалось очистить примечание")
+            await callback.answer(f"Ошибка: {error}", show_alert=True)
+            return
+
+        entity_data = await config['get_by_id_func'](entity_id)
+        if not entity_data:
+            await callback.message.edit_text("❌ Сущность не найдена.")
+            await state.clear()
+            await callback.answer()
+            return
+
+        await show_edit_menu(callback, state, entity_id, config, entity_data)
 
     @router.callback_query(GenericEditStates.select_option, F.data == "back_to_edit_menu")
     async def back_to_edit_menu_from_options(callback: types.CallbackQuery, state: FSMContext):
@@ -266,6 +330,9 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     
         configs = get_entity_configs_func()
         config = configs[entity_type]
+
+        if field == 'note':
+            new_value = normalize_optional_note(new_value)
     
         if field in config.get('integer_fields', []):
             try:
