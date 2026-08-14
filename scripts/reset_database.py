@@ -132,6 +132,12 @@ def prune_backups(backup_dir: Path, source_stem: str, keep: int):
         stale.with_suffix(".json").unlink(missing_ok=True)
 
 
+def remove_sqlite_files(path: Path):
+    path.unlink(missing_ok=True)
+    Path(f"{path}-wal").unlink(missing_ok=True)
+    Path(f"{path}-shm").unlink(missing_ok=True)
+
+
 def reset_database(source: Path, backup_dir: Path, keep: int = 10) -> tuple[Path, dict]:
     source = source.expanduser().resolve()
     backup_dir = backup_dir.expanduser().resolve()
@@ -159,11 +165,11 @@ def reset_database(source: Path, backup_dir: Path, keep: int = 10) -> tuple[Path
         if any(clean_snapshot["row_counts"].values()):
             raise RuntimeError("New database unexpectedly contains application data")
 
-        for sidecar in (Path(f"{source}-wal"), Path(f"{source}-shm")):
-            sidecar.unlink(missing_ok=True)
+        Path(f"{source}-wal").unlink(missing_ok=True)
+        Path(f"{source}-shm").unlink(missing_ok=True)
         os.replace(temporary_path, source)
     finally:
-        temporary_path.unlink(missing_ok=True)
+        remove_sqlite_files(temporary_path)
 
     prune_backups(backup_dir, source.stem, keep)
     return backup_path, metadata

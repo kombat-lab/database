@@ -27,6 +27,7 @@ class DatabaseResetTests(unittest.TestCase):
             asyncio.run(create_source())
             backup_path, metadata = reset_database(source, backup_dir, keep=3)
 
+            self.assertEqual(list(root.glob(".game.db.*.new*")), [])
             self.assertTrue(backup_path.is_file())
             self.assertEqual(metadata["integrity"], "ok")
             self.assertEqual(metadata["row_counts"]["resources"], 1)
