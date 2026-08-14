@@ -102,6 +102,24 @@ def get_schema_version(path: Path) -> int | None:
         connection.close()
 
 
+def count_legacy_resource_types(path: Path) -> int:
+    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "resources" not in tables:
+            return 0
+        return connection.execute(
+            "SELECT COUNT(*) FROM resources WHERE type = 'scroll'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+
 def create_backup(source: Path, backup_dir: Path) -> tuple[Path, dict]:
     backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f%z")
@@ -369,7 +387,8 @@ def auto_migrate_database(
             f"Database schema version {installed_version} is newer than "
             f"application version {CURRENT_SCHEMA_VERSION}"
         )
-    if installed_version == CURRENT_SCHEMA_VERSION:
+    legacy_resource_rows = count_legacy_resource_types(database)
+    if installed_version == CURRENT_SCHEMA_VERSION and legacy_resource_rows == 0:
         return None
 
     resolved_backup_dir = (
@@ -379,6 +398,7 @@ def auto_migrate_database(
     )
     source, report = migrate_working_database(database, resolved_backup_dir, keep)
     report["previous_schema_version"] = installed_version
+    report["detected_legacy_resource_types"] = legacy_resource_rows
     report_path = source.with_name(f"{source.stem}.migration.json")
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

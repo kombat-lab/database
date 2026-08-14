@@ -9,6 +9,36 @@ from scripts.migrate_database import TABLE_ORDER, auto_migrate_database, migrate
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_current_schema_still_normalizes_legacy_resource_type(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "game.db"
+
+            async def create_database():
+                database = Database(str(database_path))
+                await database.connect()
+                try:
+                    await database.add_resource("Legacy scroll", "📜", "scroll")
+                finally:
+                    await database.close()
+
+            asyncio.run(create_database())
+            report = auto_migrate_database(database_path, root / "backups", keep=3)
+
+            self.assertIsNotNone(report)
+            self.assertEqual(
+                report["previous_schema_version"], CURRENT_SCHEMA_VERSION
+            )
+            self.assertEqual(report["detected_legacy_resource_types"], 1)
+            connection = sqlite3.connect(database_path)
+            try:
+                self.assertEqual(
+                    connection.execute("SELECT type FROM resources").fetchone()[0],
+                    "scroll_recipe",
+                )
+            finally:
+                connection.close()
+
     def test_automatic_migration_runs_once_for_unversioned_database(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

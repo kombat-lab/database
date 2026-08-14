@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _lower_unicode(s: str) -> str:
