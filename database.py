@@ -872,6 +872,69 @@ class Database:
         return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     # ========== ДРОПЫ ==========
+    async def search_drop_items(self, mob_id: int, query: str, limit: int = 20) -> List[Dict]:
+        limit = max(1, min(limit, 50))
+        sql = """
+            WITH matching AS (
+                SELECT
+                    'resource' AS item_type,
+                    r.id,
+                    r.name,
+                    r.emoji,
+                    NULL AS rarity,
+                    EXISTS (
+                        SELECT 1 FROM drops d
+                        WHERE d.mob_id = ?
+                          AND d.item_type = 'resource'
+                          AND d.item_id = r.id
+                    ) AS enabled
+                FROM resources r
+                WHERE INSTR(LOWER_UNICODE(r.name), LOWER_UNICODE(?)) > 0
+
+                UNION ALL
+
+                SELECT
+                    'gear' AS item_type,
+                    g.id,
+                    g.name,
+                    g.emoji,
+                    g.rarity,
+                    EXISTS (
+                        SELECT 1 FROM drops d
+                        WHERE d.mob_id = ?
+                          AND d.item_type = 'gear'
+                          AND d.item_id = g.id
+                    ) AS enabled
+                FROM gear g
+                WHERE INSTR(LOWER_UNICODE(g.name), LOWER_UNICODE(?)) > 0
+
+                UNION ALL
+
+                SELECT
+                    'card' AS item_type,
+                    c.id,
+                    c.name,
+                    c.emoji,
+                    NULL AS rarity,
+                    EXISTS (
+                        SELECT 1 FROM drops d
+                        WHERE d.mob_id = ?
+                          AND d.item_type = 'card'
+                          AND d.item_id = c.id
+                    ) AS enabled
+                FROM cards c
+                WHERE INSTR(LOWER_UNICODE(c.name), LOWER_UNICODE(?)) > 0
+            )
+            SELECT item_type, id, name, emoji, rarity, enabled
+            FROM matching
+            ORDER BY LOWER_UNICODE(name), item_type, id
+            LIMIT ?
+        """
+        return await self.execute_query(
+            sql,
+            (mob_id, query, mob_id, query, mob_id, query, limit),
+        )
+
     async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
         res = await self.execute_query(
             "SELECT 1 FROM drops WHERE mob_id = ? AND item_type = ? AND item_id = ?",
@@ -913,7 +976,8 @@ class Database:
 
     async def get_resources_page(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
-            "SELECT id, name, emoji, type FROM resources ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, name, emoji, type FROM resources "
+            "ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?",
             (limit, offset)
         )
 

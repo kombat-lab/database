@@ -771,6 +771,7 @@ class MobStates(StatesGroup):
     edit_new_value = State()
     drop_category = State()
     drop_list_page = State()
+    drop_search = State()
 
 async def get_mob_locations_keyboard() -> InlineKeyboardMarkup:
     locations = await db.get_locations()
@@ -1036,6 +1037,7 @@ async def mob_delete_execute(callback: types.CallbackQuery, state: FSMContext):
 # ------------------- Управление дропом -------------------
 def build_drop_categories_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 Поиск лута по названию", callback_data="drop_search_start")],
         [InlineKeyboardButton(text="📦 Ресурсы", callback_data="drop_category_resource")],
         [InlineKeyboardButton(text="⚔️ Экипировка", callback_data="drop_category_gear")],
         [InlineKeyboardButton(text="🃏 Карты", callback_data="drop_category_card")],
@@ -1060,13 +1062,13 @@ def resolve_drop_filter(category: str, filter_index: int) -> str:
 async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
     if category == 'resource':
-        sql = "SELECT id, name, emoji FROM resources WHERE type = ? ORDER BY name LIMIT ? OFFSET ?"
+        sql = "SELECT id, name, emoji FROM resources WHERE type = ? ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
     elif category == 'gear':
-        sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE slot = ? ORDER BY CASE rarity WHEN 'common' THEN 1 WHEN 'rare' THEN 2 WHEN 'epic' THEN 3 WHEN 'legendary' THEN 4 ELSE 5 END, level, name LIMIT ? OFFSET ?"
+        sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE slot = ? ORDER BY CASE rarity WHEN 'common' THEN 1 WHEN 'rare' THEN 2 WHEN 'epic' THEN 3 WHEN 'legendary' THEN 4 ELSE 5 END, level, LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
     else:
-        sql = "SELECT id, name, emoji, slot FROM cards WHERE slot = ? ORDER BY name LIMIT ? OFFSET ?"
+        sql = "SELECT id, name, emoji, slot FROM cards WHERE slot = ? ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
     items = await db.execute_query(sql, params)
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
@@ -1085,9 +1087,120 @@ async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, 
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def build_drop_search_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
+    category_icons = {'resource': '📦', 'gear': '⚔️', 'card': '🃏'}
+    rarity_icons = {'common': '⚪', 'rare': '🟢', 'epic': '🔵', 'legendary': '🟣'}
+    rows = []
+    for item in items:
+        status = '✅' if item['enabled'] else '❌'
+        category_icon = category_icons[item['item_type']]
+        rarity_icon = rarity_icons.get(item.get('rarity'), '')
+        label = (
+            f"{status} {category_icon} {rarity_icon} "
+            f"{item.get('emoji') or ''} {item['name']}"
+        ).replace('  ', ' ').strip()
+        if len(label) > 60:
+            label = f"{label[:57]}…"
+        rows.append([
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"drop_search_toggle_{item['item_type']}_{item['id']}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(text="🔎 Другой запрос", callback_data="drop_search_again")
+    ])
+    rows.append([
+        InlineKeyboardButton(text="🔙 Назад к типам дропа", callback_data="drop_search_back")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 @admin_router.callback_query(MobStates.edit_field, F.data == "mob_drop_menu")
 async def mob_drop_category(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Выберите тип дропа:", reply_markup=build_drop_categories_keyboard())
+    await state.set_state(MobStates.drop_category)
+    await callback.answer()
+
+
+@admin_router.callback_query(MobStates.drop_category, F.data == "drop_search_start")
+async def start_drop_search(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(drop_search_query=None)
+    await callback.message.edit_text(
+        "🔎 Введите часть названия ресурса, экипировки или карты:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="drop_search_back")]
+        ]),
+    )
+    await state.set_state(MobStates.drop_search)
+    await callback.answer()
+
+
+@admin_router.message(MobStates.drop_search, F.text)
+async def show_drop_search_results(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+    if not query:
+        await message.answer("Введите хотя бы один символ для поиска.")
+        return
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
+    if not mob_id:
+        await state.clear()
+        await message.answer("Моб не выбран. Откройте управление дропом заново.")
+        return
+    items = await db.search_drop_items(mob_id, query, limit=20)
+    await state.update_data(drop_search_query=query)
+    text = (
+        f"🔎 Результаты по запросу «{query}»:\n"
+        "✅ — уже падает, ❌ — не падает. Нажмите на предмет для переключения."
+        if items
+        else f"По запросу «{query}» ничего не найдено."
+    )
+    await message.answer(text, reply_markup=build_drop_search_keyboard(items))
+
+
+@admin_router.callback_query(MobStates.drop_search, F.data == "drop_search_again")
+async def repeat_drop_search(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(drop_search_query=None)
+    await callback.message.edit_text(
+        "🔎 Введите новый поисковый запрос:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="drop_search_back")]
+        ]),
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(MobStates.drop_search, F.data.startswith("drop_search_toggle_"))
+async def toggle_drop_from_search(callback: types.CallbackQuery, state: FSMContext):
+    _, _, _, category, item_id = callback.data.split("_")
+    item_id = int(item_id)
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
+    query = data.get('drop_search_query')
+    if not mob_id or not query:
+        await callback.answer("Поиск устарел. Введите запрос заново.", show_alert=True)
+        return
+
+    if await db.get_drop_status(mob_id, category, item_id):
+        await db.remove_drop(mob_id, category, item_id)
+        await callback.answer("❌ Дроп убран")
+    else:
+        await db.add_drop(mob_id, category, item_id)
+        await callback.answer("✅ Дроп добавлен")
+
+    items = await db.search_drop_items(mob_id, query, limit=20)
+    await callback.message.edit_reply_markup(
+        reply_markup=build_drop_search_keyboard(items)
+    )
+
+
+@admin_router.callback_query(MobStates.drop_search, F.data == "drop_search_back")
+async def back_from_drop_search(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(drop_search_query=None)
+    await callback.message.edit_text(
+        "Выберите тип дропа:", reply_markup=build_drop_categories_keyboard()
+    )
     await state.set_state(MobStates.drop_category)
     await callback.answer()
 

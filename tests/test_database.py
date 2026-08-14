@@ -40,6 +40,49 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.db.execute_query("SELECT COUNT(*) AS count FROM resources")
         self.assertEqual(rows[0]["count"], 25)
 
+    async def test_admin_resources_are_sorted_alphabetically(self):
+        await self.db.add_resource("яблоко", "🍎")
+        await self.db.add_resource("Арбуз", "🍉")
+        await self.db.add_resource("банан", "🍌")
+
+        rows = await self.db.get_resources_page(0, 10)
+
+        self.assertEqual(
+            [row["name"] for row in rows],
+            ["Арбуз", "банан", "яблоко"],
+        )
+
+    async def test_drop_search_matches_all_item_types_and_reports_status(self):
+        location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Лес", "🌲"),
+        )
+        mob_id = await self.db.execute_insert(
+            """
+            INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Волк", "🐺", 10, 1, 2, 3, location_id),
+        )
+        resource_id = await self.db.add_resource("Сияющий кристалл", "💎")
+        await self.db.add_resource("Древесина", "🪵")
+        gear_id = await self.db.add_gear(
+            "Кристальный меч", "rare", "основная рука", "⚔️"
+        )
+        card_id = await self.db.add_card("Карта кристалла", "🃏", "основная рука")
+        await self.db.add_drop(mob_id, "resource", resource_id)
+
+        rows = await self.db.search_drop_items(mob_id, "КРИСТ", limit=20)
+
+        self.assertEqual(
+            [(row["item_type"], row["id"]) for row in rows],
+            [("card", card_id), ("gear", gear_id), ("resource", resource_id)],
+        )
+        self.assertEqual(
+            {row["item_type"]: bool(row["enabled"]) for row in rows},
+            {"card": False, "gear": False, "resource": True},
+        )
+
     async def test_nested_transaction_rollback_isolated_by_savepoint(self):
         async with self.db.transaction():
             await self.db.execute_query(
