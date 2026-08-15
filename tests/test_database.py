@@ -28,6 +28,17 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         actual = {row["name"] for row in rows}
         self.assertTrue(expected.issubset(actual))
+        self.assertNotIn("schema_metadata", actual)
+
+    async def test_reconnect_preserves_current_database_rows(self):
+        resource_id = await self.db.add_resource("Сохранённый ресурс", "📦")
+        await self.db.close()
+
+        await self.db.connect()
+
+        resource = await self.db.get_resource_by_id(resource_id)
+        self.assertIsNotNone(resource)
+        self.assertEqual(resource["name"], "Сохранённый ресурс")
 
     async def test_concurrent_inserts_return_their_own_ids(self):
         ids = await asyncio.gather(*(

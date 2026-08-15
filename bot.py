@@ -2,7 +2,6 @@ import os
 import logging
 import asyncio
 import re
-from pathlib import Path
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -1716,29 +1715,6 @@ async def back_to_main_menu(callback: types.CallbackQuery):
 # ---------- Запуск ----------
 async def main():
     try:
-        from scripts.migrate_database import auto_migrate_database
-
-        backup_dir_value = os.getenv("DATABASE_BACKUP_DIR")
-        backup_dir = Path(backup_dir_value) if backup_dir_value else None
-        try:
-            backup_keep = int(os.getenv("DATABASE_BACKUP_KEEP", "10"))
-        except ValueError as error:
-            raise ValueError("DATABASE_BACKUP_KEEP must be an integer") from error
-
-        migration_report = await asyncio.to_thread(
-            auto_migrate_database,
-            Path(db.path),
-            backup_dir,
-            backup_keep,
-        )
-        if migration_report:
-            logging.info(
-                "Database migrated automatically: schema %s -> %s, rows=%s",
-                migration_report["previous_schema_version"],
-                migration_report["schema_version"],
-                sum(migration_report["row_counts"].values()),
-            )
-
         await db.connect()
 
         global BOT_USERNAME
