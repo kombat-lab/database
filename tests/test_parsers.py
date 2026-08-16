@@ -18,6 +18,7 @@ from bot import (
     format_resource_card,
     format_resource_card_rich,
     get_alchemy_craft_location,
+    get_location_list_title,
     parse_resource_page_callback,
     parse_resource_view_callback,
     parse_return_param,
@@ -77,6 +78,18 @@ class CallbackParserTests(unittest.TestCase):
 
         self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
         self.assertIsNone(parse_resource_view_callback("view_resource_0_craft_1"))
+
+    def test_location_list_titles_are_in_russian(self):
+        location = {"id": 5, "name": "Поляна", "emoji": "🏕"}
+
+        self.assertEqual(
+            get_location_list_title(location, "mobs", 1),
+            "🏕 Поляна - Мобы\nСтраница 1",
+        )
+        self.assertEqual(
+            get_location_list_title(location, "resources", 2),
+            "🏕 Поляна - Ресурсы\nСтраница 2",
+        )
 
 
 class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):

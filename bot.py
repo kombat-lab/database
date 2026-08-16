@@ -239,6 +239,10 @@ LOCATION_EMOJI_OVERRIDES = {
     9: "⛏️",  # Подземная пещера
     10: "🦇",  # Темный грот
 }
+LOCATION_CONTENT_TITLES = {
+    "mobs": "Мобы",
+    "resources": "Ресурсы",
+}
 
 
 def get_location_emoji(location: dict) -> str:
@@ -248,6 +252,13 @@ def get_location_emoji(location: dict) -> str:
 
 def get_location_button_text(location: dict) -> str:
     return f"{get_location_emoji(location)} {location['name']}"
+
+
+def get_location_list_title(location: dict, category: str, page: int) -> str:
+    category_title = LOCATION_CONTENT_TITLES.get(category, category)
+    return f"{get_location_emoji(location)} {location['name']} - {category_title}\nСтраница {page}"
+
+
 def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> str:
     """Формирует корректный Telegram start payload длиной до 64 символов."""
     payload = f"{item_type}_{item_id}"
@@ -1332,18 +1343,12 @@ async def back_to_locations(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
 async def list_or_page_callback(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    if parts[0] in ("list", "page"):
-        category = parts[1]
-        loc_id = int(parts[2])
-        page = int(parts[3])
-    else:
-        category = parts[1]
-        loc_id = int(parts[2])
-        page = int(parts[3])
+    _, category, raw_location_id, raw_page = callback.data.split("_")
+    loc_id = int(raw_location_id)
+    page = int(raw_page)
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
-    title = f"{get_location_emoji(location)} {location['name']} - {category.capitalize()}\nСтраница {page}"
+    title = get_location_list_title(location, category, page)
     await replace_callback_message_text(callback, title, reply_markup=keyboard)
     await callback.answer()
 
