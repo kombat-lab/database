@@ -201,10 +201,14 @@ def parse_resource_page_callback(data: str, prefix: str) -> tuple[str, int] | No
 
 
 def parse_resource_view_callback(data: str) -> tuple[int, str, int] | None:
-    if not data.startswith("view_resource_"):
+    prefix = next(
+        (candidate for candidate in ("view_resource_", "nav_resource_") if data.startswith(candidate)),
+        None,
+    )
+    if prefix is None:
         return None
     try:
-        raw_id, remainder = data[len("view_resource_"):].split("_", 1)
+        raw_id, remainder = data[len(prefix):].split("_", 1)
         resource_type, raw_page = remainder.rsplit("_", 1)
         resource_id = int(raw_id)
         page = int(raw_page)
@@ -771,6 +775,29 @@ async def upsert_rich_card(*, bot: Bot, chat_id: int, rich_message: InputRichMes
         except TelegramAPIError:
             logger.debug("Old card could not be deleted", exc_info=True)
     return sent
+
+
+async def replace_rich_card(*, bot: Bot, chat_id: int, rich_message: InputRichMessage,
+                            plain_text: str, reply_markup: InlineKeyboardMarkup,
+                            current_message: types.Message) -> types.Message:
+    """Заменяет Rich-карточку новым сообщением без редактирования старой.
+
+    Telegram на iOS может сохранять высоту предыдущей Rich-карточки после edit,
+    из-за чего таблицы исчезают, растягиваются или накладываются друг на друга.
+    Удаление исходного сообщения до отправки новой карточки сбрасывает её layout.
+    """
+    try:
+        await current_message.delete()
+    except TelegramAPIError:
+        logger.warning("Old Rich Message could not be deleted before replacement", exc_info=True)
+
+    return await upsert_rich_card(
+        bot=bot,
+        chat_id=chat_id,
+        rich_message=rich_message,
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+    )
 
 # ---------- Клавиатуры ----------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -1382,13 +1409,12 @@ async def view_mob(callback: types.CallbackQuery):
         current_message=callback.message,
     )
 
-@dp.callback_query(F.data.startswith("view_resources_"))
+@dp.callback_query(F.data.startswith(("view_resources_", "nav_resources_")))
 async def view_resource(callback: types.CallbackQuery):
     await callback.answer()
-    parts = callback.data.split("_")
-    res_id = int(parts[2])
-    location_id = int(parts[3])
-    page = int(parts[4])
+    is_navigation = callback.data.startswith("nav_resources_")
+    prefix = "nav_resources_" if is_navigation else "view_resources_"
+    res_id, location_id, page = map(int, callback.data.removeprefix(prefix).split("_"))
     await log_view_resource(callback.from_user.id, res_id)
 
     rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
@@ -1422,12 +1448,12 @@ async def view_resource(callback: types.CallbackQuery):
     if prev_res:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_resources_{prev_res[0]['id']}_{location_id}_{page}"
+            callback_data=f"nav_resources_{prev_res[0]['id']}_{location_id}_{page}"
         ))
     if next_res:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_resources_{next_res[0]['id']}_{location_id}_{page}"
+            callback_data=f"nav_resources_{next_res[0]['id']}_{location_id}_{page}"
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
@@ -1440,7 +1466,8 @@ async def view_resource(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await upsert_rich_card(
+    render_card = replace_rich_card if is_navigation else upsert_rich_card
+    await render_card(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
@@ -1688,13 +1715,14 @@ async def back_to_resource_categories(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("view_resource_"))
+@dp.callback_query(F.data.startswith(("view_resource_", "nav_resource_")))
 async def view_resource_by_type(callback: types.CallbackQuery):
     parsed = parse_resource_view_callback(callback.data)
     if not parsed:
         await callback.answer("Неверная ссылка на ресурс.", show_alert=True)
         return
     resource_id, resource_type, page = parsed
+    is_navigation = callback.data.startswith("nav_resource_")
     await callback.answer()
     await log_view_resource(callback.from_user.id, resource_id)
 
@@ -1707,12 +1735,12 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_resource_{neighbours['prev_id']}_{resource_type}_{page}"
+            callback_data=f"nav_resource_{neighbours['prev_id']}_{resource_type}_{page}"
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_resource_{neighbours['next_id']}_{resource_type}_{page}"
+            callback_data=f"nav_resource_{neighbours['next_id']}_{resource_type}_{page}"
         ))
 
     back_button = InlineKeyboardButton(
@@ -1726,7 +1754,8 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     keyboard.append([back_button])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-    await upsert_rich_card(
+    render_card = replace_rich_card if is_navigation else upsert_rich_card
+    await render_card(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,

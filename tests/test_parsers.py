@@ -20,6 +20,7 @@ from bot import (
     parse_resource_page_callback,
     parse_resource_view_callback,
     parse_return_param,
+    replace_rich_card,
 )
 
 
@@ -31,6 +32,10 @@ class CallbackParserTests(unittest.TestCase):
         )
         self.assertEqual(
             parse_resource_view_callback("view_resource_42_scroll_recipe_7"),
+            (42, "scroll_recipe", 7),
+        )
+        self.assertEqual(
+            parse_resource_view_callback("nav_resource_42_scroll_recipe_7"),
             (42, "scroll_recipe", 7),
         )
 
@@ -71,6 +76,37 @@ class CallbackParserTests(unittest.TestCase):
 
         self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
         self.assertIsNone(parse_resource_view_callback("view_resource_0_craft_1"))
+
+
+class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_navigation_deletes_old_card_before_sending_new_one(self):
+        events = []
+        sent_message = object()
+        bot = AsyncMock()
+        current_message = AsyncMock()
+
+        async def delete_old():
+            events.append("delete")
+
+        async def send_new(**kwargs):
+            events.append("send")
+            return sent_message
+
+        current_message.delete.side_effect = delete_old
+        bot.send_rich_message.side_effect = send_new
+
+        result = await replace_rich_card(
+            bot=bot,
+            chat_id=123,
+            rich_message=object(),
+            plain_text="Карточка",
+            reply_markup=object(),
+            current_message=current_message,
+        )
+
+        self.assertIs(result, sent_message)
+        self.assertEqual(events, ["delete", "send"])
+        bot.edit_message_text.assert_not_awaited()
 
 
 class OptionalNoteTests(unittest.TestCase):
