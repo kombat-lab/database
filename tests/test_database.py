@@ -181,6 +181,42 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gear["ingredients"][0]["name"], "ore, shard | rare")
         self.assertEqual(gear["owners"], ["owner, with | separators"])
 
+    async def test_resource_card_lists_recipes_using_resource(self):
+        ingredient_id = await self.db.add_resource("Кожаный лоскут", "🪹")
+        alchemy_result_id = await self.db.add_resource("Дублёная кожа", "🧶", "alchemy")
+        gear_id = await self.db.add_gear("Кожаный шлем", "rare", "шлем", "🪖")
+
+        gear_recipe_id = await self.db.create_recipe("gear", gear_id)
+        await self.db.add_ingredient(gear_recipe_id, ingredient_id, 5)
+        alchemy_recipe_id = await self.db.create_recipe("resource", alchemy_result_id)
+        await self.db.add_ingredient(alchemy_recipe_id, ingredient_id, 3)
+
+        resource = await self.db.get_resource_card(ingredient_id)
+
+        self.assertEqual(
+            resource["used_in"],
+            [
+                {
+                    "recipe_id": gear_recipe_id,
+                    "result_type": "gear",
+                    "result_id": gear_id,
+                    "result_name": "Кожаный шлем",
+                    "result_emoji": "🪖",
+                    "result_rarity": "rare",
+                    "quantity": 5,
+                },
+                {
+                    "recipe_id": alchemy_recipe_id,
+                    "result_type": "resource",
+                    "result_id": alchemy_result_id,
+                    "result_name": "Дублёная кожа",
+                    "result_emoji": "🧶",
+                    "result_rarity": None,
+                    "quantity": 3,
+                },
+            ],
+        )
+
     async def test_gear_card_finds_scroll_drop_by_resource_type(self):
         location_id = await self.db.execute_insert(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)",

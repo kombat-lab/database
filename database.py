@@ -206,6 +206,7 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_drops_item ON drops(item_type, item_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipes_result ON recipes(result_type, result_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_recipe ON recipe_ingredients(recipe_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recipe_ingredients_resource ON recipe_ingredients(resource_id)",
             "CREATE INDEX IF NOT EXISTS idx_recipe_owners_recipe ON recipe_owners(recipe_id)",
             "CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)",
             "CREATE INDEX IF NOT EXISTS idx_resources_type_name ON resources(type, name)",
@@ -448,7 +449,37 @@ class Database:
                     FROM drops d
                     JOIN mobs m ON d.mob_id = m.id
                     JOIN locations l ON m.location_id = l.id
-                    WHERE d.item_type = 'resource' AND d.item_id = r.id) AS mobs
+                    WHERE d.item_type = 'resource' AND d.item_id = r.id) AS mobs,
+                   (SELECT json_group_array(json_object(
+                       'recipe_id', usage.recipe_id,
+                       'result_type', usage.result_type,
+                       'result_id', usage.result_id,
+                       'result_name', usage.result_name,
+                       'result_emoji', usage.result_emoji,
+                       'result_rarity', usage.result_rarity,
+                       'quantity', usage.quantity
+                    ))
+                    FROM (
+                        SELECT * FROM (
+                            SELECT rec.id AS recipe_id, rec.result_type, rec.result_id,
+                                   g.name AS result_name, g.emoji AS result_emoji,
+                                   g.rarity AS result_rarity, ri.quantity, 1 AS type_order
+                            FROM recipe_ingredients ri
+                            JOIN recipes rec ON rec.id = ri.recipe_id
+                            JOIN gear g ON rec.result_type = 'gear' AND g.id = rec.result_id
+                            WHERE ri.resource_id = r.id
+                            UNION ALL
+                            SELECT rec.id AS recipe_id, rec.result_type, rec.result_id,
+                                   result.name AS result_name, result.emoji AS result_emoji,
+                                   NULL AS result_rarity, ri.quantity, 2 AS type_order
+                            FROM recipe_ingredients ri
+                            JOIN recipes rec ON rec.id = ri.recipe_id
+                            JOIN resources result
+                              ON rec.result_type = 'resource' AND result.id = rec.result_id
+                            WHERE ri.resource_id = r.id
+                        )
+                        ORDER BY type_order, LOWER_UNICODE(result_name), result_id
+                    ) AS usage) AS used_in
             FROM resources r
             WHERE r.id = ?
         """
@@ -457,6 +488,7 @@ class Database:
             return None
         row = res[0]
         row["mobs"] = json.loads(row["mobs"] or "[]")
+        row["used_in"] = json.loads(row["used_in"] or "[]")
         return row
 
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> List[Dict]:

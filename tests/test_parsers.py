@@ -14,6 +14,8 @@ from bot import (
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
     format_gear_card_plain,
     format_gear_card_rich,
+    format_resource_card,
+    format_resource_card_rich,
     get_alchemy_craft_location,
     parse_resource_page_callback,
     parse_resource_view_callback,
@@ -146,3 +148,50 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("⚔️ Выпадает с мобов:", card)
                 self.assertIn("Страж", card)
                 self.assertIn("Рецепт пока не заполнен.", card)
+
+
+class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_usage_recipes_are_rendered_in_plain_and_rich_cards(self):
+        resource_data = {
+            "id": 115,
+            "name": "Кожаный лоскут",
+            "emoji": "🪹",
+            "type": "craft",
+            "note": "",
+            "mobs": [],
+            "used_in": [
+                {
+                    "recipe_id": 10,
+                    "result_type": "gear",
+                    "result_id": 20,
+                    "result_name": "Кожаный шлем",
+                    "result_emoji": "🪖",
+                    "result_rarity": "rare",
+                    "quantity": 5,
+                },
+                {
+                    "recipe_id": 11,
+                    "result_type": "resource",
+                    "result_id": 30,
+                    "result_name": "Дублёная кожа",
+                    "result_emoji": "🧶",
+                    "result_rarity": None,
+                    "quantity": 3,
+                },
+            ],
+        }
+
+        with (
+            patch("bot.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
+            patch("bot.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
+        ):
+            plain = await format_resource_card(115, "type", "craft", 1)
+            rich = await format_resource_card_rich(115, "type", "craft", 1)
+
+        for card in (plain, rich.html):
+            with self.subTest(card_type=type(card).__name__):
+                self.assertIn("🧩 Используется в рецептах:", card)
+                self.assertIn("Кожаный шлем", card)
+                self.assertIn("Дублёная кожа", card)
+                self.assertIn("— 5 шт.", card)
+                self.assertIn("— 3 шт.", card)

@@ -100,6 +100,27 @@ def get_alchemy_craft_location(resource_name: str) -> str:
     return DEFAULT_ALCHEMY_CRAFT_LOCATION
 
 
+def format_resource_usage_entries(usages: list[dict], return_param: str | None) -> list[str]:
+    entries = []
+    for usage in usages:
+        result_type = usage.get("result_type")
+        result_id = usage.get("result_id")
+        if result_type not in {"gear", "resource"} or not result_id:
+            continue
+        link = make_deep_link(result_type, result_id, return_param)
+        prefix = (
+            f"⚔️ {get_rarity_emoji(usage.get('result_rarity'))}"
+            if result_type == "gear"
+            else "⚗️"
+        )
+        entries.append(
+            f"{prefix} {escape_html(usage.get('result_emoji', ''))} "
+            f"<a href='{link}'>{escape_html(usage.get('result_name', ''))}</a>"
+            f" — {usage.get('quantity', 1)} шт."
+        )
+    return entries
+
+
 def build_resource_return_param(
     resource_id: int,
     context_type: str | None,
@@ -390,6 +411,12 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
             text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
         text += "\n"
 
+    usage_entries = format_resource_usage_entries(data.get('used_in', []), return_param)
+    if usage_entries:
+        text += "<b>🧩 Используется в рецептах:</b>\n"
+        text += "\n".join(usage_entries)
+        text += "\n\n"
+
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>\n"
 
@@ -453,6 +480,12 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
             </tbody>
         </table>
         """
+
+    usage_entries = format_resource_usage_entries(data.get('used_in', []), return_param)
+    if usage_entries:
+        html += "<br><b>🧩 Используется в рецептах:</b><br>"
+        html += "<br>".join(usage_entries)
+        html += "<br>"
 
     if data.get('note'):
         html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
