@@ -245,6 +245,31 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_resource_card_mobs_are_sorted_alphabetically(self):
+        location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Лес", "🌲"),
+        )
+        resource_id = await self.db.add_resource("Шкура", "🧶")
+        mob_ids = []
+        for name, emoji in (("ягуар", "🐆"), ("Альпака", "🦙"), ("барсук", "🦡")):
+            mob_ids.append(await self.db.execute_insert(
+                """
+                INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (name, emoji, 10, 1, 2, 3, location_id),
+            ))
+        for mob_id in mob_ids:
+            await self.db.add_drop(mob_id, "resource", resource_id)
+
+        resource = await self.db.get_resource_card(resource_id)
+
+        self.assertEqual(
+            [mob["name"] for mob in resource["mobs"]],
+            ["Альпака", "барсук", "ягуар"],
+        )
+
     async def test_gear_card_finds_scroll_drop_by_resource_type(self):
         location_id = await self.db.execute_insert(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)",

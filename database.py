@@ -487,7 +487,13 @@ class Database:
         if not res:
             return None
         row = res[0]
-        row["mobs"] = json.loads(row["mobs"] or "[]")
+        row["mobs"] = sorted(
+            json.loads(row["mobs"] or "[]"),
+            key=lambda mob: (
+                str(mob.get("name") or "").casefold(),
+                int(mob.get("id") or 0),
+            ),
+        )
         row["used_in"] = json.loads(row["used_in"] or "[]")
         return row
 
