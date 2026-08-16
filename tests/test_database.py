@@ -245,14 +245,23 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_resource_card_mobs_are_sorted_alphabetically(self):
-        location_id = await self.db.execute_insert(
+    async def test_resource_card_mobs_are_grouped_by_location_and_sorted_by_name(self):
+        first_location_id = await self.db.execute_insert(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)",
-            ("Лес", "🌲"),
+            ("Песчаная кромка", "🏜"),
+        )
+        second_location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Пустынная равнина", "🏜"),
         )
         resource_id = await self.db.add_resource("Шкура", "🧶")
         mob_ids = []
-        for name, emoji in (("ягуар", "🐆"), ("Альпака", "🦙"), ("барсук", "🦡")):
+        mob_specs = (
+            ("ягуар", "🐆", first_location_id),
+            ("Альпака", "🦙", second_location_id),
+            ("барсук", "🦡", first_location_id),
+        )
+        for name, emoji, location_id in mob_specs:
             mob_ids.append(await self.db.execute_insert(
                 """
                 INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
@@ -267,7 +276,11 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [mob["name"] for mob in resource["mobs"]],
-            ["Альпака", "барсук", "ягуар"],
+            ["барсук", "ягуар", "Альпака"],
+        )
+        self.assertEqual(
+            [mob["location_id"] for mob in resource["mobs"]],
+            [first_location_id, first_location_id, second_location_id],
         )
 
     async def test_gear_card_finds_scroll_drop_by_resource_type(self):

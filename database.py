@@ -443,8 +443,9 @@ class Database:
         query = """
             SELECT r.id, r.name, r.emoji, r.type, r.note,
                    (SELECT json_group_array(json_object(
-                       'id', m.id, 'name', m.name, 'emoji', m.emoji,
-                       'location_name', l.name, 'location_emoji', l.emoji
+                        'id', m.id, 'name', m.name, 'emoji', m.emoji,
+                        'location_id', l.id,
+                        'location_name', l.name, 'location_emoji', l.emoji
                     ))
                     FROM drops d
                     JOIN mobs m ON d.mob_id = m.id
@@ -490,6 +491,7 @@ class Database:
         row["mobs"] = sorted(
             json.loads(row["mobs"] or "[]"),
             key=lambda mob: (
+                int(mob.get("location_id") or 0),
                 str(mob.get("name") or "").casefold(),
                 int(mob.get("id") or 0),
             ),
