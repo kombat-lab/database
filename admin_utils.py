@@ -1,14 +1,14 @@
 import logging
-from aiogram import Router, types, F
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.types import InputRichMessage
+
+from aiogram import F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
-from utils import is_valid_emoji, escape_html
+from utils import escape_html, is_valid_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,6 @@ async def edit_admin_rich(callback: types.CallbackQuery, html: str,
         )
 
 class GenericEditStates(StatesGroup):
-    select_item = State()
     select_field = State()
     new_value = State()
     confirm_delete = State()
@@ -184,6 +183,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
     get_entity_configs_func должна возвращать словарь ENTITY_CONFIGS.
     """
 
+    async def update_entity_field(config, entity_id, field, value):
+        database_field = config.get('field_aliases', {}).get(field, field)
+        await config['update_func'](entity_id, **{database_field: value})
+
     @router.callback_query(GenericEditStates.select_field, F.data.startswith("edit_field_"))
     async def generic_edit_field_prompt(callback: types.CallbackQuery, state: FSMContext):
         field = callback.data.split("_")[2]
@@ -246,7 +249,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             return
 
         try:
-            await config['update_field_func'](entity_id, 'note', '')
+            await update_entity_field(config, entity_id, 'note', '')
         except Exception as error:
             logger.exception("Не удалось очистить примечание")
             await callback.answer(f"Ошибка: {error}", show_alert=True)
@@ -294,7 +297,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         config = configs[entity_type]
         
         try:
-            await config['update_field_func'](entity_id, field, value)
+            await update_entity_field(config, entity_id, field, value)
             await callback.message.edit_text(
                 f"✅ Поле <b>{escape_html(field)}</b> обновлено на <code>{escape_html(value)}</code>.",
                 parse_mode="HTML",
@@ -352,7 +355,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             return
     
         try:
-            await config['update_field_func'](entity_id, field, new_value)
+            await update_entity_field(config, entity_id, field, new_value)
             await message.answer(
                 f"✅ Поле <b>{escape_html(field)}</b> обновлено на <code>{escape_html(new_value)}</code>.",
                 parse_mode="HTML",

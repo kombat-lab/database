@@ -1,28 +1,47 @@
-import os
-import logging
 import asyncio
+import logging
+import os
 import re
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineQuery, InlineQueryResultArticle, InputRichMessage,
-    InputRichMessageContent, FSInputFile
-)
+
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputRichMessage,
+    InputRichMessageContent,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
-from database import db
 from admin_handlers import admin_router
-from utils import clean_username, escape_html
 from analytics import (
     AnalyticsMiddleware,
-    log_start, log_view_mob, log_view_resource, log_view_gear, log_view_card,
-    log_search, log_inline_search
+    log_inline_search,
+    log_search,
+    log_start,
+    log_view_card,
+    log_view_gear,
+    log_view_mob,
+    log_view_resource,
 )
+from database import db
+from game_constants import (
+    GEAR_CLASS_ORDER,
+    GEAR_SLOT_ICONS as SLOT_ICONS,
+    GEAR_SLOT_LABELS as SLOT_NAMES,
+    GEAR_SLOTS as GEAR_SLOT_ORDER,
+    RARITY_EMOJIS,
+    RARITY_KEYS as RARITY_ORDER,
+    RARITY_NAMES,
+)
+from utils import clean_username, escape_html
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -32,20 +51,6 @@ ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
 BOT_USERNAME = None
-
-RARITY_EMOJIS = {
-    "common": "⚪",
-    "rare": "🟢",
-    "epic": "🔵",
-    "legendary": "🟣",
-}
-
-RARITY_NAMES = {
-    "common": "Обычное",
-    "rare": "Редкое",
-    "epic": "Сверхредкое",
-    "legendary": "Эпическое",
-}
 
 RESOURCE_TYPE_NAMES = {
     "craft": "⚒️ Крафтовый",
@@ -80,9 +85,6 @@ MEREDITH_ALCHEMY_RESOURCES = frozenset(
         "Ядро земель",
     )
 )
-
-RARITY_ORDER = ("common", "rare", "epic", "legendary")
-
 
 def get_rarity_emoji(rarity: str | None) -> str:
     return RARITY_EMOJIS.get(rarity or "common", RARITY_EMOJIS["common"])
@@ -226,26 +228,6 @@ inline_log_tasks = {}
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-SLOT_DEFINITIONS = (
-    ("шлем", "🪖", "Шлем"),
-    ("плечи", "🪹", "Плечи"),
-    ("тело", "🦺", "Тело"),
-    ("плащ", "🧣", "Плащ"),
-    ("пояс", "⛓", "Пояс"),
-    ("штаны", "🩳", "Штаны"),
-    ("ботинки", "🥾", "Ботинки"),
-    ("перчатки", "🧤", "Перчатки"),
-    ("кольцо", "💍", "Кольцо"),
-    ("амул", "📿", "Амулет"),
-    ("серьга", "🧏‍♀️", "Серьга"),
-    ("основная рука", "🗡", "Основная рука"),
-    ("вторая рука", "🛡", "Вторая рука"),
-)
-
-SLOT_NAMES = {key: f"{icon} {name}" for key, icon, name in SLOT_DEFINITIONS}
-SLOT_ICONS = {key: icon for key, icon, _ in SLOT_DEFINITIONS}
-GEAR_SLOT_ORDER = [key for key, _, _ in SLOT_DEFINITIONS]
-
 async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     counts = await db.execute_query(
         "SELECT slot, COUNT(*) AS item_count FROM gear WHERE rarity = ? GROUP BY slot",
@@ -272,7 +254,7 @@ async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-GEAR_CLASSES = {"Аколит", "Бастион", "Маг", "Охотник", "Тень"}
+GEAR_CLASSES = frozenset(GEAR_CLASS_ORDER)
 
 def format_gear_classes(classes_value) -> str:
     """Сокращает полный набор классов до надписи «Все классы»."""
@@ -285,7 +267,7 @@ def format_gear_classes(classes_value) -> str:
         return "Все классы"
     return ", ".join(
         class_name
-        for class_name in ("Аколит", "Бастион", "Маг", "Охотник", "Тень")
+        for class_name in GEAR_CLASS_ORDER
         if class_name in selected
     )
 
@@ -1102,9 +1084,9 @@ async def handle_search(message: types.Message, state: FSMContext):
     if len(query_text) < 2:
         await message.answer("Введи хотя бы 2 символа для поиска.")
         return
-    
+
     await log_search(message.from_user.id, query_text)
-    
+
     results = await db.search(query_text)
     if not any(results.values()):
         await message.answer("Ничего не найдено.")
@@ -1138,13 +1120,13 @@ async def handle_search(message: types.Message, state: FSMContext):
 @dp.inline_query()
 async def inline_search_handler(inline_query: InlineQuery):
     query = inline_query.query.strip()
-    
+
     if inline_query.from_user.id in inline_log_tasks:
         inline_log_tasks[inline_query.from_user.id].cancel()
-    
+
     task = asyncio.create_task(delayed_log_inline_search(inline_query.from_user.id, query))
     inline_log_tasks[inline_query.from_user.id] = task
-    
+
     if not query:
         await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введи запрос для поиска", switch_pm_parameter="start")
         return

@@ -1,16 +1,17 @@
-from aiogram import Router, types, F
+from aiogram import F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from admin_utils import edit_admin_rich
 from analytics import (
     get_active_users_count,
+    get_db_stats,
     get_retention,
     get_top_items_with_names,
-    get_db_stats,
     get_top_search_queries,
-    get_users_page,
     get_user_activity,
+    get_users_page,
 )
-from admin_utils import edit_admin_rich
 from utils import escape_html
 
 stats_router = Router()
@@ -74,7 +75,7 @@ async def show_top_searches(callback: types.CallbackQuery):
             count = item['count']
             lines.append(f"{idx}. «{query}» — {count} раз")
             rows.append(f"<tr><td>{idx}</td><td>{query}</td><td>{count}</td></tr>")
-        text = f"🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
+        text = "🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
         rich_html = (
             "<b>🔍 Топ-30 поисковых запросов за 30 дней</b><br>"
             "<table><tbody><tr><th>№</th><th>Запрос</th><th>Количество</th></tr>"
@@ -248,13 +249,8 @@ async def show_stats_command(message: types.Message):
 
 
 @stats_router.callback_query(F.data == "admin_stats")
-async def admin_stats_callback(callback: types.CallbackQuery):
-    await show_stats_menu(callback, edit=True)
-    await callback.answer()
-
-
 @stats_router.callback_query(F.data == "back_to_stats")
-async def back_to_stats(callback: types.CallbackQuery):
+async def show_stats_callback(callback: types.CallbackQuery):
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 

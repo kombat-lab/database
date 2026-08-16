@@ -1,5 +1,6 @@
 import html
 
+
 def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""
     return username.lstrip('@') if username else ''
@@ -16,6 +17,4 @@ def is_valid_emoji(s: str) -> bool:
     if not s or not s.strip():
         return False
     # Убираем вариант с одним символом, который является буквой/цифрой
-    if len(s) == 1 and s.isalnum():
-        return False
-    return True
+    return not (len(s) == 1 and s.isalnum())

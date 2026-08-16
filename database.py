@@ -1,10 +1,13 @@
-import os
 import asyncio
 import json
 import logging
-import aiosqlite
-from typing import List, Dict, Any, Optional
+import os
 from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
+
+import aiosqlite
+
+from game_constants import GEAR_SLOTS
 
 logger = logging.getLogger(__name__)
 
@@ -18,30 +21,14 @@ def _lower_unicode(s: str) -> str:
 
 
 class Database:
-    ALLOWED_MOB_FIELDS = {'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'}
+    ALLOWED_MOB_FIELDS = frozenset({'name', 'emoji', 'hp', 'dust_min', 'dust_max', 'exp', 'location_id'})
     RESOURCE_NAME_ORDER = "LOWER_UNICODE(name), id"
     
-    SLOT_ORDER = {
-        'шлем': 1,
-        'плечи': 2,
-        'тело': 3,
-        'плащ': 4,
-        'пояс': 5,
-        'штаны': 6,
-        'ботинки': 7,
-        'перчатки': 8,
-        'кольцо': 9,
-        'амул': 10,
-        'серьга': 11,
-        'основная рука': 12,
-        'вторая рука': 13,
-    }
-
-    @classmethod
-    def _slot_order_case(cls, column: str = "slot") -> str:
+    @staticmethod
+    def _slot_order_case(column: str = "slot") -> str:
         branches = " ".join(
             f"WHEN '{slot}' THEN {order}"
-            for slot, order in cls.SLOT_ORDER.items()
+            for order, slot in enumerate(GEAR_SLOTS, start=1)
         )
         return f"CASE {column} {branches} ELSE 99 END"
 

@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
-from bot import (  # noqa: E402
+from admin_utils import (
+    OPTIONAL_NOTE_SKIP_CALLBACK,
+    build_optional_note_keyboard,
+    normalize_optional_note,
+)
+from bot import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
     format_gear_card_plain,
@@ -13,11 +18,6 @@ from bot import (  # noqa: E402
     parse_resource_page_callback,
     parse_resource_view_callback,
     parse_return_param,
-)
-from admin_utils import (  # noqa: E402
-    OPTIONAL_NOTE_SKIP_CALLBACK,
-    build_optional_note_keyboard,
-    normalize_optional_note,
 )
 
 

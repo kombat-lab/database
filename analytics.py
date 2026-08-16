@@ -1,8 +1,10 @@
 import json
 import logging
-from typing import Dict, Any, Optional, Callable, Awaitable, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, User
+
 from database import db
 
 logger = logging.getLogger(__name__)

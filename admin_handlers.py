@@ -1,30 +1,39 @@
-import os
 import logging
-from aiogram import BaseMiddleware, Router, types, F
+import os
+
+from aiogram import BaseMiddleware, F, Router, types
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramAPIError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from database import db
-from utils import is_valid_emoji, clean_username, escape_html
 from admin_utils import (
     ADMIN_ITEMS_PER_PAGE,
-    get_admin_main_keyboard,
-    admin_close,
-    admin_cancel_edit,
-    render_entity_list,
-    show_edit_menu,
-    edit_admin_rich,
-    register_generic_handlers,
-    GenericEditStates,
     OPTIONAL_NOTE_PROMPT,
     OPTIONAL_NOTE_SKIP_CALLBACK,
+    GenericEditStates,
+    admin_cancel_edit,
+    admin_close,
     build_optional_note_keyboard,
+    edit_admin_rich,
+    get_admin_main_keyboard,
     normalize_optional_note,
+    register_generic_handlers,
+    render_entity_list,
+    show_edit_menu,
+)
+from database import db
+from game_constants import (
+    GEAR_CLASS_ORDER as GEAR_CLASSES,
+    GEAR_SLOT_LABELS,
+    GEAR_SLOTS,
+    RARITY_EMOJIS,
+    RARITY_KEYS,
+    RESOURCE_TYPE_KEYS,
 )
 from stats_handlers import stats_router
+from utils import clean_username, escape_html, is_valid_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +44,11 @@ def is_admin(user_id: int) -> bool:
 
 admin_router = Router()
 
-GEAR_SLOTS = [
-    'шлем', 'плечи', 'тело', 'плащ', 'пояс', 'штаны', 'ботинки', 'перчатки',
-    'кольцо', 'амул', 'серьга', 'основная рука', 'вторая рука'
-]
-GEAR_SLOT_LABELS = {
-    'шлем':'🪖 Шлем','плечи':'🪹 Плечи','тело':'🦺 Тело','плащ':'🧣 Плащ',
-    'пояс':'⛓ Пояс','штаны':'🩳 Штаны','ботинки':'🥾 Ботинки','перчатки':'🧤 Перчатки',
-    'кольцо':'💍 Кольцо','амул':'📿 Амулет','серьга':'🧏‍♀️ Серьга',
-    'основная рука':'🗡 Основная рука','вторая рука':'🛡 Вторая рука'
-}
 RESOURCE_TYPES = [
     ('craft', '📦 Крафтовые'), ('consumable', '✨ Расходуемые'),
     ('scroll_recipe', '📜 Рецепты экипировки'), ('currency', '💰 Валюта'),
     ('alchemy', '🧪 Алхимия')
 ]
-CARD_SLOTS = GEAR_SLOTS
 
 
 class AdminOnlyMiddleware(BaseMiddleware):
@@ -100,65 +98,6 @@ class CardAddStates(StatesGroup):
     bonus4 = State()
     note = State()
 
-# --- Ресурсы ---
-async def resource_get_page(offset, limit):
-    return await db.get_resources_page(offset, limit)
-
-async def resource_update_field(res_id, field, value):
-    if field == 'name':
-        await db.update_resource(res_id, name=value)
-    elif field == 'emoji':
-        await db.update_resource(res_id, emoji=value)
-    elif field == 'type':
-        await db.update_resource(res_id, resource_type=value)
-    elif field == 'note':
-        await db.update_resource(res_id, note=value)
-
-async def resource_get_by_id(res_id):
-    return await db.get_resource_by_id(res_id)
-
-async def resource_delete(res_id):
-    await db.delete_resource(res_id)
-
-# --- Снаряжение ---
-async def gear_get_page(offset, limit):
-    return await db.get_all_gear(offset, limit)
-
-async def gear_update_field(gear_id, field, value):
-    if field == 'name':
-        await db.update_gear(gear_id, name=value)
-    elif field == 'emoji':
-        await db.update_gear(gear_id, emoji=value)
-    elif field == 'rarity':
-        await db.update_gear(gear_id, rarity=value)
-    elif field == 'slot':
-        await db.update_gear(gear_id, slot=value)
-    elif field == 'level':
-        await db.update_gear(gear_id, level=value)
-    elif field == 'classes':
-        await db.update_gear(gear_id, classes=value)
-    elif field == 'note':
-        await db.update_gear(gear_id, note=value)
-
-async def gear_get_by_id(gear_id):
-    return await db.get_gear_by_id(gear_id)
-
-async def gear_delete(gear_id):
-    await db.delete_gear(gear_id)
-
-# --- Карты ---
-async def card_get_page(offset, limit):
-    return await db.get_cards_page(offset, limit)
-
-async def card_update_field(card_id, field, value):
-    await db.update_card(card_id, **{field: value})
-
-async def card_get_by_id(card_id):
-    return await db.get_card_by_id(card_id)
-
-async def card_delete(card_id):
-    await db.delete_card(card_id)
-
 ENTITY_CONFIGS = {}
 
 def _resource_display_format(d):
@@ -171,10 +110,11 @@ def _resource_display_format(d):
 ENTITY_CONFIGS['resource'] = {
     'name': 'resource',
     'name_ru': 'ресурс',
-    'get_page_func': resource_get_page,
-    'get_by_id_func': resource_get_by_id,
-    'update_field_func': resource_update_field,
-    'delete_func': resource_delete,
+    'get_page_func': db.get_resources_page,
+    'get_by_id_func': db.get_resource_by_id,
+    'update_func': db.update_resource,
+    'field_aliases': {'type': 'resource_type'},
+    'delete_func': db.delete_resource,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
     'list_title': "📦 Ресурсы:\nВыберите ресурс для редактирования или добавьте новый:",
@@ -189,7 +129,7 @@ ENTITY_CONFIGS['resource'] = {
     ],
     'integer_fields': [],
     'select_options': {
-        'type': ['craft', 'consumable', 'scroll_recipe', 'currency', 'alchemy']
+        'type': RESOURCE_TYPE_KEYS
     },
     'display_mapping': {
         'type': {
@@ -206,10 +146,10 @@ ENTITY_CONFIGS['resource'] = {
 ENTITY_CONFIGS['gear'] = {
     'name': 'gear',
     'name_ru': 'снаряжение',
-    'get_page_func': gear_get_page,
-    'get_by_id_func': gear_get_by_id,
-    'update_field_func': gear_update_field,
-    'delete_func': gear_delete,
+    'get_page_func': db.get_all_gear,
+    'get_by_id_func': db.get_gear_by_id,
+    'update_func': db.update_gear,
+    'delete_func': db.delete_gear,
     'item_callback_prefix': 'gear_edit',
     'list_state': GearListStates.list_page,
     'list_title': "⚔️ Управление снаряжением:\nВыберите предмет для редактирования или добавьте новый:",
@@ -227,11 +167,8 @@ ENTITY_CONFIGS['gear'] = {
     ],
     'integer_fields': ['level'],
     'select_options': {
-        'rarity': ['common', 'rare', 'epic', 'legendary'],
-        'slot': [
-            'шлем', 'плечи', 'тело', 'плащ', 'пояс', 'штаны', 'ботинки', 'перчатки',
-            'кольцо', 'амул', 'серьга', 'основная рука', 'вторая рука'
-        ]
+        'rarity': RARITY_KEYS,
+        'slot': GEAR_SLOTS,
     },
     'display_mapping': {
         'rarity': {
@@ -240,21 +177,7 @@ ENTITY_CONFIGS['gear'] = {
             'epic': '🔵 Сверхредкое',
             'legendary': '🟣 Эпическая'
         },
-        'slot': {
-            'шлем': '🪖 Шлем',
-            'плечи': '🪹 Плечи',
-            'тело': '🦺 Тело',
-            'плащ': '🧣 Плащ',
-            'пояс': '⛓ Пояс',
-            'штаны': '🩳 Штаны',
-            'ботинки': '🥾 Ботинки',
-            'перчатки': '🧤 Перчатки',
-            'кольцо': '💍 Кольцо',
-            'амул': '📿 Амулет',
-            'серьга': '🧏‍♀️ Серьга',
-            'основная рука': '🗡 Основная рука',
-            'вторая рука': '🛡 Вторая рука'
-        }
+        'slot': GEAR_SLOT_LABELS
     },
     'display_format': lambda d: (
         f"{d.get('emoji','')} {d.get('name','')} "
@@ -268,10 +191,10 @@ ENTITY_CONFIGS['gear'] = {
 ENTITY_CONFIGS['card'] = {
     'name': 'card',
     'name_ru': 'карту',
-    'get_page_func': card_get_page,
-    'get_by_id_func': card_get_by_id,
-    'update_field_func': card_update_field,
-    'delete_func': card_delete,
+    'get_page_func': db.get_cards_page,
+    'get_by_id_func': db.get_card_by_id,
+    'update_func': db.update_card,
+    'delete_func': db.delete_card,
     'item_callback_prefix': 'card_edit',
     'list_state': CardListStates.list_page,
     'list_title': "🃏 Управление картами:\nВыберите карту для редактирования или добавьте новую:",
@@ -290,19 +213,10 @@ ENTITY_CONFIGS['card'] = {
     ],
     'integer_fields': [],
     'select_options': {
-        'slot': [
-            'шлем', 'плечи', 'тело', 'плащ', 'пояс', 'штаны', 'ботинки', 'перчатки',
-            'кольцо', 'амул', 'серьга', 'основная рука', 'вторая рука'
-        ]
+        'slot': GEAR_SLOTS
     },
     'display_mapping': {
-        'slot': {
-            'шлем': '🪖 Шлем', 'плечи': '🪹 Плечи', 'тело': '🦺 Тело', 'плащ': '🧣 Плащ',
-            'пояс': '⛓ Пояс', 'штаны': '🩳 Штаны', 'ботинки': '🥾 Ботинки', 'перчатки': '🧤 Перчатки',
-            'кольцо': '💍 Кольцо', 'амул': '📿 Амулет',
-            'серьга': '🧏‍♀️ Серьга',
-            'основная рука': '🗡 Основная рука', 'вторая рука': '🛡 Вторая рука'
-        }
+        'slot': GEAR_SLOT_LABELS
     },
     'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (слот: {ENTITY_CONFIGS['card']['display_mapping']['slot'].get(d.get('slot','?'), d.get('slot','?'))})"
 }
@@ -312,24 +226,37 @@ ENTITY_CONFIGS['card'] = {
 # ============================================================
 
 @admin_router.callback_query(F.data == "admin_manage_resources")
-async def manage_resources(callback: types.CallbackQuery, state: FSMContext):
+@admin_router.callback_query(F.data == "admin_manage_cards")
+async def manage_catalog_entity(callback: types.CallbackQuery, state: FSMContext):
+    entity_type = callback.data.removeprefix("admin_manage_")
+    entity_type = "card" if entity_type == "cards" else "resource"
     await state.clear()
-    await render_entity_list(callback, state, ENTITY_CONFIGS['resource'], 1)
+    await render_entity_list(callback, state, ENTITY_CONFIGS[entity_type], 1)
 
 @admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("resource_edit_"))
-async def resource_edit_item(callback: types.CallbackQuery, state: FSMContext):
-    res_id = int(callback.data.split("_")[2])
-    res = await db.get_resource_by_id(res_id)
-    if not res:
-        await callback.message.edit_text("Ресурс не найден.")
+@admin_router.callback_query(GearListStates.list_page, F.data.startswith("gear_edit_"))
+@admin_router.callback_query(CardListStates.list_page, F.data.startswith("card_edit_"))
+async def edit_catalog_entity(callback: types.CallbackQuery, state: FSMContext):
+    entity_type, raw_id = callback.data.split("_edit_", 1)
+    entity_id = int(raw_id)
+    config = ENTITY_CONFIGS[entity_type]
+    entity = await config['get_by_id_func'](entity_id)
+    if not entity:
+        await callback.message.edit_text("Объект не найден.")
         await callback.answer()
         return
-    await show_edit_menu(callback, state, res_id, ENTITY_CONFIGS['resource'], res)
+    await show_edit_menu(callback, state, entity_id, config, entity)
 
 @admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("page_"))
-async def resource_page_nav(callback: types.CallbackQuery, state: FSMContext):
+@admin_router.callback_query(CardListStates.list_page, F.data.startswith("page_"))
+async def catalog_page_nav(callback: types.CallbackQuery, state: FSMContext):
+    entity_type = (
+        "resource"
+        if await state.get_state() == ResourceListStates.list_page.state
+        else "card"
+    )
     page = int(callback.data.split("_")[1])
-    await render_entity_list(callback, state, ENTITY_CONFIGS['resource'], page)
+    await render_entity_list(callback, state, ENTITY_CONFIGS[entity_type], page)
 
 @admin_router.callback_query(ResourceListStates.list_page, F.data == "resource_add_start")
 async def resource_add_name(callback: types.CallbackQuery, state: FSMContext):
@@ -359,26 +286,20 @@ async def resource_add_emoji_input(message: types.Message, state: FSMContext):
         await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     await state.update_data(res_emoji=emoji)
+    type_labels = ENTITY_CONFIGS['resource']['display_mapping']['type']
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Для крафта", callback_data="res_type_craft")],
-        [InlineKeyboardButton(text="✨ Расходуемый", callback_data="res_type_consumable")],
-        [InlineKeyboardButton(text="📜 Рецепт экипировки", callback_data="res_type_scroll_recipe")],
-        [InlineKeyboardButton(text="💰 Валюта", callback_data="res_type_currency")],
-        [InlineKeyboardButton(text="🧪 Алхимия", callback_data="res_type_alchemy")]
+        [InlineKeyboardButton(text=type_labels[resource_type], callback_data=f"res_type_{resource_type}")]
+        for resource_type in RESOURCE_TYPE_KEYS
     ])
     await message.answer("Выберите тип ресурса:", reply_markup=keyboard)
     await state.set_state(ResourceAddStates.type)
 
 @admin_router.callback_query(ResourceAddStates.type, F.data.startswith("res_type_"))
 async def resource_add_note(callback: types.CallbackQuery, state: FSMContext):
-    type_map = {
-        "craft": "craft",
-        "consumable": "consumable",
-        "scroll_recipe": "scroll_recipe",
-        "currency": "currency",
-        "alchemy": "alchemy"
-    }
-    resource_type = type_map.get(callback.data.removeprefix("res_type_"), "craft")
+    resource_type = callback.data.removeprefix("res_type_")
+    if resource_type not in RESOURCE_TYPE_KEYS:
+        await callback.answer("Неизвестный тип ресурса", show_alert=True)
+        return
     await state.update_data(res_type=resource_type)
     await callback.message.edit_text(
         OPTIONAL_NOTE_PROMPT,
@@ -422,8 +343,7 @@ async def render_admin_gear_slot(callback, state, slot_index: int, page: int = 1
     )
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
     items = items[:ADMIN_ITEMS_PER_PAGE]
-    rarity_icons = {'common':'⚪','rare':'🟢','epic':'🔵','legendary':'🟣'}
-    rows = [[InlineKeyboardButton(text=f"{rarity_icons.get(x.get('rarity'),'⚪')} {x.get('emoji','')} {x['name']} · ур. {x.get('level',1)}", callback_data=f"gear_edit_{x['id']}")] for x in items]
+    rows = [[InlineKeyboardButton(text=f"{RARITY_EMOJIS.get(x.get('rarity'),'⚪')} {x.get('emoji','')} {x['name']} · ур. {x.get('level',1)}", callback_data=f"gear_edit_{x['id']}")] for x in items]
     nav=[]
     if page>1: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_gear_page_{slot_index}_{page-1}"))
     if has_next: nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"admin_gear_page_{slot_index}_{page+1}"))
@@ -470,16 +390,6 @@ async def admin_gear_page(callback: types.CallbackQuery, state: FSMContext):
     parts=callback.data.split('_')
     await render_admin_gear_slot(callback, state, int(parts[3]), int(parts[4]))
 
-@admin_router.callback_query(GearListStates.list_page, F.data.startswith("gear_edit_"))
-async def gear_edit_item(callback: types.CallbackQuery, state: FSMContext):
-    gear_id = int(callback.data.split("_")[2])
-    gear = await db.get_gear_by_id(gear_id)
-    if not gear:
-        await callback.message.edit_text("Снаряжение не найдено.")
-        await callback.answer()
-        return
-    await show_edit_menu(callback, state, gear_id, ENTITY_CONFIGS['gear'], gear)
-
 @admin_router.callback_query(GearListStates.list_page, F.data == "gear_add_start")
 async def gear_add_name(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введите название снаряжения:")
@@ -496,8 +406,6 @@ class GearAddStates(StatesGroup):
 
 class GearClassEditStates(StatesGroup):
     selecting = State()
-
-GEAR_CLASSES = ["Аколит", "Бастион", "Маг", "Охотник", "Тень"]
 
 def build_gear_classes_keyboard(selected):
     selected = set(selected)
@@ -518,11 +426,10 @@ async def gear_add_rarity(message: types.Message, state: FSMContext):
         await message.answer("Название не может быть пустым.")
         return
     await state.update_data(gear_name=name)
+    rarity_labels = ENTITY_CONFIGS['gear']['display_mapping']['rarity']
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚪ Обычное (common)", callback_data="rarity_common")],
-        [InlineKeyboardButton(text="🟢 Редкое (rare)", callback_data="rarity_rare")],
-        [InlineKeyboardButton(text="🔵 Сверхредкое (epic)", callback_data="rarity_epic")],
-        [InlineKeyboardButton(text="🟣 Эпическая (legendary)", callback_data="rarity_legendary")]
+        [InlineKeyboardButton(text=f"{rarity_labels[rarity]} ({rarity})", callback_data=f"rarity_{rarity}")]
+        for rarity in RARITY_KEYS
     ])
     await message.answer("Выберите редкость:", reply_markup=keyboard)
     await state.set_state(GearAddStates.rarity)
@@ -531,17 +438,10 @@ async def gear_add_rarity(message: types.Message, state: FSMContext):
 async def gear_add_slot(callback: types.CallbackQuery, state: FSMContext):
     rarity = callback.data.split("_")[1]
     await state.update_data(gear_rarity=rarity)
-    slots = [
-        ("шлем", "🪖 Шлем"), ("плечи", "🪹 Плечи"), ("тело", "🦺 Тело"),
-        ("плащ", "🧣 Плащ"), ("пояс", "⛓ Пояс"), ("штаны", "🩳 Штаны"),
-        ("ботинки", "🥾 Ботинки"), ("перчатки", "🧤 Перчатки"),
-        ("кольцо", "💍 Кольцо"),
-        ("амул", "📿 Амулет"),
-        ("серьга", "🧏‍♀️ Серьга"),
-        ("основная рука", "🗡 Основная рука"),
-        ("вторая рука", "🛡 Вторая рука")
+    keyboard = [
+        [InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"slot_{slot}")]
+        for slot in GEAR_SLOTS
     ]
-    keyboard = [[InlineKeyboardButton(text=label, callback_data=f"slot_{name}")] for name, label in slots]
     await callback.message.edit_text("Выберите слот:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(GearAddStates.slot)
 
@@ -579,7 +479,8 @@ async def gear_add_classes_prompt(message: types.Message, state: FSMContext):
     await state.set_state(GearAddStates.classes)
 
 @admin_router.callback_query(GearAddStates.classes, F.data.startswith("gear_class_toggle_"))
-async def gear_add_toggle_class(callback: types.CallbackQuery, state: FSMContext):
+@admin_router.callback_query(GearClassEditStates.selecting, F.data.startswith("gear_class_toggle_"))
+async def gear_toggle_class(callback: types.CallbackQuery, state: FSMContext):
     index = int(callback.data.rsplit("_", 1)[1])
     if index < 0 or index >= len(GEAR_CLASSES):
         await callback.answer("Неизвестный класс", show_alert=True)
@@ -630,26 +531,6 @@ async def gear_save_with_note(message: types.Message, state: FSMContext):
 # ОБРАБОТЧИКИ ДЛЯ КАРТ
 # ============================================================
 
-@admin_router.callback_query(F.data == "admin_manage_cards")
-async def manage_cards(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await render_entity_list(callback, state, ENTITY_CONFIGS['card'], 1)
-
-@admin_router.callback_query(CardListStates.list_page, F.data.startswith("card_edit_"))
-async def card_edit_item(callback: types.CallbackQuery, state: FSMContext):
-    card_id = int(callback.data.split("_")[2])
-    card = await db.get_card_by_id(card_id)
-    if not card:
-        await callback.message.edit_text("Карта не найдена.")
-        await callback.answer()
-        return
-    await show_edit_menu(callback, state, card_id, ENTITY_CONFIGS['card'], card)
-
-@admin_router.callback_query(CardListStates.list_page, F.data.startswith("page_"))
-async def card_page_nav(callback: types.CallbackQuery, state: FSMContext):
-    page = int(callback.data.split("_")[1])
-    await render_entity_list(callback, state, ENTITY_CONFIGS['card'], page)
-
 @admin_router.callback_query(CardListStates.list_page, F.data == "card_add_start")
 async def card_add_name(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введите название карты:")
@@ -672,17 +553,10 @@ async def card_add_emoji_input(message: types.Message, state: FSMContext):
         await message.answer("Эмодзи должен состоять из 1 или 2 символов (не буквы и не цифры).")
         return
     await state.update_data(card_emoji=emoji)
-    slots = [
-        ("шлем", "🪖 Шлем"), ("плечи", "🪹 Плечи"), ("тело", "🦺 Тело"),
-        ("плащ", "🧣 Плащ"), ("пояс", "⛓ Пояс"), ("штаны", "🩳 Штаны"),
-        ("ботинки", "🥾 Ботинки"), ("перчатки", "🧤 Перчатки"),
-        ("кольцо", "💍 Кольцо"),
-        ("амул", "📿 Амулет"),
-        ("серьга", "🧏‍♀️ Серьга"),
-        ("основная рука", "🗡 Основная рука"),
-        ("вторая рука", "🛡 Вторая рука")
+    keyboard = [
+        [InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"card_slot_{slot}")]
+        for slot in GEAR_SLOTS
     ]
-    keyboard = [[InlineKeyboardButton(text=label, callback_data=f"card_slot_{name}")] for name, label in slots]
     await message.answer("Выберите слот:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(CardAddStates.slot)
 
@@ -1069,14 +943,14 @@ def build_drop_filters_keyboard(category: str) -> InlineKeyboardMarkup:
     elif category == 'gear':
         rows = [[InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"drop_filter_gear_{i}")] for i, slot in enumerate(GEAR_SLOTS)]
     else:
-        rows = [[InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"drop_filter_card_{i}")] for i, slot in enumerate(CARD_SLOTS)]
+        rows = [[InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"drop_filter_card_{i}")] for i, slot in enumerate(GEAR_SLOTS)]
     rows.append([InlineKeyboardButton(text="🔙 Назад к типам дропа", callback_data="back_to_drop_categories")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def resolve_drop_filter(category: str, filter_index: int) -> str:
     if category == 'resource': return RESOURCE_TYPES[filter_index][0]
     if category == 'gear': return GEAR_SLOTS[filter_index]
-    return CARD_SLOTS[filter_index]
+    return GEAR_SLOTS[filter_index]
 
 async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
@@ -1390,7 +1264,6 @@ class RecipeStates(StatesGroup):
     view_recipe = State()
     add_confirm = State()
     add_ingredient = State()
-    add_ingredient_page = State()
     add_owner = State()
     manage_owners = State()
     delete_owner_confirm = State()
@@ -1656,7 +1529,12 @@ async def recipe_ing_save_quantity(message: types.Message, state: FSMContext):
     await show_recipe(message, recipe, state)
 
 @admin_router.callback_query(RecipeStates.add_ingredient, F.data == "recipe_finish_adding")
-async def recipe_finish_adding(callback: types.CallbackQuery, state: FSMContext):
+@admin_router.callback_query(RecipeStates.manage_owners, F.data == "recipe_owners_back")
+@admin_router.callback_query(
+    StateFilter(RecipeStates.edit_ingredient, RecipeStates.delete_confirm),
+    F.data == "recipe_back_to_view",
+)
+async def recipe_show_current(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     recipe_id = data['recipe_id']
     recipe = await db.get_recipe_details(recipe_id)
@@ -1709,7 +1587,8 @@ async def show_recipe_owners(callback: types.CallbackQuery, state: FSMContext):
 
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_manage_owners")
-async def recipe_manage_owners(callback: types.CallbackQuery, state: FSMContext):
+@admin_router.callback_query(RecipeStates.delete_owner_confirm, F.data == "recipe_owner_delete_cancel")
+async def recipe_show_owners(callback: types.CallbackQuery, state: FSMContext):
     await show_recipe_owners(callback, state)
     await callback.answer()
 
@@ -1746,19 +1625,6 @@ async def recipe_owner_delete_execute(callback: types.CallbackQuery, state: FSMC
     await show_recipe_owners(callback, state)
     await callback.answer(f"Владелец @{clean_username(owner)} удалён" if owner else "Владелец не найден")
 
-
-@admin_router.callback_query(RecipeStates.delete_owner_confirm, F.data == "recipe_owner_delete_cancel")
-async def recipe_owner_delete_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await show_recipe_owners(callback, state)
-    await callback.answer()
-
-
-@admin_router.callback_query(RecipeStates.manage_owners, F.data == "recipe_owners_back")
-async def recipe_owners_back(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    recipe = await db.get_recipe_details(data['recipe_id'])
-    await show_recipe(callback, recipe, state)
-    await callback.answer()
 
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_edit_ingredients")
 async def recipe_edit_ingredients_list(callback: types.CallbackQuery, state: FSMContext):
@@ -1806,14 +1672,6 @@ async def recipe_ing_delete(callback: types.CallbackQuery, state: FSMContext):
 async def recipe_back_to_edit_list(callback: types.CallbackQuery, state: FSMContext):
     await recipe_edit_ingredients_list(callback, state)
 
-@admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_back_to_view")
-async def recipe_back_to_view(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    recipe_id = data['recipe_id']
-    recipe = await db.get_recipe_details(recipe_id)
-    await show_recipe(callback, recipe, state)
-    await callback.answer()
-
 @admin_router.callback_query(RecipeStates.view_recipe, F.data == "recipe_delete")
 async def recipe_delete_confirm(callback: types.CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1852,24 +1710,6 @@ async def gear_edit_classes_start(callback: types.CallbackQuery, state: FSMConte
         reply_markup=build_gear_classes_keyboard(selected)
     )
     await state.set_state(GearClassEditStates.selecting)
-    await callback.answer()
-
-@admin_router.callback_query(GearClassEditStates.selecting, F.data.startswith("gear_class_toggle_"))
-async def gear_edit_toggle_class(callback: types.CallbackQuery, state: FSMContext):
-    index = int(callback.data.rsplit("_", 1)[1])
-    if index < 0 or index >= len(GEAR_CLASSES):
-        await callback.answer("Неизвестный класс", show_alert=True)
-        return
-    data = await state.get_data()
-    selected = list(data.get('gear_classes', []))
-    class_name = GEAR_CLASSES[index]
-    if class_name in selected:
-        selected.remove(class_name)
-    else:
-        selected.append(class_name)
-    selected.sort(key=GEAR_CLASSES.index)
-    await state.update_data(gear_classes=selected)
-    await callback.message.edit_reply_markup(reply_markup=build_gear_classes_keyboard(selected))
     await callback.answer()
 
 @admin_router.callback_query(GearClassEditStates.selecting, F.data == "gear_classes_done")
