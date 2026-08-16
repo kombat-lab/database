@@ -583,6 +583,32 @@ class Database:
         )
         return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
+    async def get_prev_next_resource_by_location(
+        self,
+        resource_id: int,
+        location_id: int,
+    ) -> Dict[str, Optional[int]]:
+        rows = await self.execute_query(
+            """
+            WITH location_resources AS (
+                SELECT r.id
+                FROM resources r
+                JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
+                JOIN mobs m ON m.id = d.mob_id
+                WHERE m.location_id = ?
+                GROUP BY r.id
+            ), ordered AS (
+                SELECT id,
+                       LAG(id) OVER (ORDER BY id) AS prev_id,
+                       LEAD(id) OVER (ORDER BY id) AS next_id
+                FROM location_resources
+            )
+            SELECT prev_id, next_id FROM ordered WHERE id = ?
+            """,
+            (location_id, resource_id),
+        )
+        return rows[0] if rows else {'prev_id': None, 'next_id': None}
+
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
         return await self.execute_query(
@@ -946,12 +972,24 @@ class Database:
             (mob_id, query, mob_id, query, mob_id, query, limit),
         )
 
-    async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
-        res = await self.execute_query(
-            "SELECT 1 FROM drops WHERE mob_id = ? AND item_type = ? AND item_id = ?",
-            (mob_id, item_type, item_id)
+    async def get_enabled_drop_ids(
+        self,
+        mob_id: int,
+        item_type: str,
+        item_ids: List[int],
+    ) -> set[int]:
+        if not item_ids:
+            return set()
+        placeholders = ", ".join("?" for _ in item_ids)
+        rows = await self.execute_query(
+            f"SELECT item_id FROM drops "
+            f"WHERE mob_id = ? AND item_type = ? AND item_id IN ({placeholders})",
+            (mob_id, item_type, *item_ids),
         )
-        return len(res) > 0
+        return {int(row['item_id']) for row in rows}
+
+    async def get_drop_status(self, mob_id: int, item_type: str, item_id: int) -> bool:
+        return item_id in await self.get_enabled_drop_ids(mob_id, item_type, [item_id])
 
     async def add_drop(self, mob_id: int, item_type: str, item_id: int):
         try:

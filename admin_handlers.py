@@ -761,9 +761,6 @@ async def get_mob_list_keyboard(location_id: int, page: int = 1) -> InlineKeyboa
 
 @admin_router.callback_query(F.data == "admin_edit_mob")
 async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа")
-        return
     await state.clear()
     await callback.message.edit_text(
         "🐾 Управление мобами:\nВыберите локацию:",
@@ -776,14 +773,13 @@ async def start_edit_mob(callback: types.CallbackQuery, state: FSMContext):
 @admin_router.callback_query(MobStates.edit_select, F.data.startswith("mob_location_"))
 async def mob_location_select(callback: types.CallbackQuery, state: FSMContext):
     location_id = int(callback.data.rsplit("_", 1)[1])
-    location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
+    location = await db.get_location_by_id(location_id)
     if not location:
         await callback.answer("Локация не найдена", show_alert=True)
         return
     await state.update_data(mob_location_id=location_id)
-    loc = location[0]
     await callback.message.edit_text(
-        f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
+        f"🐾 Мобы: {location['emoji']} {location['name']}\nВыберите моба или добавьте нового:",
         reply_markup=await get_mob_list_keyboard(location_id, 1),
     )
     await callback.answer()
@@ -794,8 +790,8 @@ async def mob_list_page(callback: types.CallbackQuery, state: FSMContext):
     _, _, location_id, page = callback.data.split("_")
     location_id, page = int(location_id), int(page)
     await state.update_data(mob_location_id=location_id)
-    location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
-    loc = location[0] if location else {'name': 'Локация', 'emoji': '📍'}
+    location = await db.get_location_by_id(location_id)
+    loc = location or {'name': 'Локация', 'emoji': '📍'}
     await callback.message.edit_text(
         f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
         reply_markup=await get_mob_list_keyboard(location_id, page),
@@ -983,8 +979,7 @@ async def back_to_mob_list_from_edit(callback: types.CallbackQuery, state: FSMCo
     await state.set_state(MobStates.edit_select)
     if location_id:
         await state.update_data(mob_location_id=location_id)
-        location = await db.execute_query("SELECT name, emoji FROM locations WHERE id = ?", (location_id,))
-        loc = location[0] if location else {'name': 'Локация', 'emoji': '📍'}
+        loc = await db.get_location_by_id(location_id) or {'name': 'Локация', 'emoji': '📍'}
         await callback.message.edit_text(
             f"🐾 Мобы: {loc['emoji']} {loc['name']}\nВыберите моба или добавьте нового:",
             reply_markup=await get_mob_list_keyboard(location_id, 1),
@@ -1039,19 +1034,25 @@ def build_drop_categories_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def build_drop_filters_keyboard(category: str) -> InlineKeyboardMarkup:
-    if category == 'resource':
-        rows = [[InlineKeyboardButton(text=label, callback_data=f"drop_filter_resource_{i}")] for i, (_, label) in enumerate(RESOURCE_TYPES)]
-    elif category == 'gear':
-        rows = [[InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"drop_filter_gear_{i}")] for i, slot in enumerate(GEAR_SLOTS)]
-    else:
-        rows = [[InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"drop_filter_card_{i}")] for i, slot in enumerate(GEAR_SLOTS)]
+    options = get_drop_filter_options(category)
+    rows = [[InlineKeyboardButton(
+        text=label,
+        callback_data=f"drop_filter_{category}_{index}",
+    )] for index, (_, label) in enumerate(options)]
     rows.append([InlineKeyboardButton(text="🔙 Назад к типам дропа", callback_data="back_to_drop_categories")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def get_drop_filter_options(category: str) -> list[tuple[str, str]]:
+    if category == 'resource':
+        return RESOURCE_TYPES
+    if category in {'gear', 'card'}:
+        return [(slot, GEAR_SLOT_LABELS[slot]) for slot in GEAR_SLOTS]
+    raise ValueError(f"Unknown drop category: {category}")
+
+
 def resolve_drop_filter(category: str, filter_index: int) -> str:
-    if category == 'resource': return RESOURCE_TYPES[filter_index][0]
-    if category == 'gear': return GEAR_SLOTS[filter_index]
-    return GEAR_SLOTS[filter_index]
+    return get_drop_filter_options(category)[filter_index][0]
 
 async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, page: int) -> InlineKeyboardMarkup:
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
@@ -1071,16 +1072,33 @@ async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, 
         items = await db.execute_query(sql, params)
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
     items = items[:ADMIN_ITEMS_PER_PAGE]
-    rows=[]
-    rarity_icons={'common':'⚪','rare':'🟢','epic':'🔵','legendary':'🟣'}
+    enabled_ids = await db.get_enabled_drop_ids(
+        mob_id,
+        category,
+        [item['id'] for item in items],
+    )
+    rows = []
     for item in items:
-        enabled = await db.get_drop_status(mob_id, category, item['id'])
-        prefix = rarity_icons.get(item.get('rarity'),'') if category == 'gear' else ''
-        rows.append([InlineKeyboardButton(text=f"{'✅' if enabled else '❌'} {prefix} {item.get('emoji','')} {item['name']}", callback_data=f"drop_toggle_{category}_{item['id']}_{page}")])
-    nav=[]
-    if page>1: nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"drop_page_{category}_{page-1}"))
-    if has_next: nav.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"drop_page_{category}_{page+1}"))
-    if nav: rows.append(nav)
+        status = '✅' if item['id'] in enabled_ids else '❌'
+        rarity = RARITY_EMOJIS.get(item.get('rarity'), '') if category == 'gear' else ''
+        label = f"{status} {rarity} {item.get('emoji') or ''} {item['name']}".replace('  ', ' ').strip()
+        rows.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"drop_toggle_{category}_{item['id']}_{page}",
+        )])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=f"drop_page_{category}_{page-1}",
+        ))
+    if has_next:
+        nav.append(InlineKeyboardButton(
+            text="Вперед ▶️",
+            callback_data=f"drop_page_{category}_{page+1}",
+        ))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data=f"back_to_drop_filters_{category}")])
     rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1088,12 +1106,11 @@ async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, 
 
 def build_drop_search_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
     category_icons = {'resource': '📦', 'gear': '⚔️', 'card': '🃏'}
-    rarity_icons = {'common': '⚪', 'rare': '🟢', 'epic': '🔵', 'legendary': '🟣'}
     rows = []
     for item in items:
         status = '✅' if item['enabled'] else '❌'
         category_icon = category_icons[item['item_type']]
-        rarity_icon = rarity_icons.get(item.get('rarity'), '')
+        rarity_icon = RARITY_EMOJIS.get(item.get('rarity'), '')
         label = (
             f"{status} {category_icon} {rarity_icon} "
             f"{item.get('emoji') or ''} {item['name']}"
@@ -1204,7 +1221,8 @@ async def back_from_drop_search(callback: types.CallbackQuery, state: FSMContext
 
 @admin_router.callback_query(MobStates.drop_category, F.data == "back_to_mob_list")
 async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, state: FSMContext):
-    data=await state.get_data(); mob_id=data.get('mob_id')
+    data = await state.get_data()
+    mob_id = data.get('mob_id')
     mob = await get_mob_edit_data(mob_id)
     if not mob:
         await callback.message.edit_text("❌ Моб не найден.")
@@ -1220,46 +1238,88 @@ async def back_to_mob_edit_from_drop_category(callback: types.CallbackQuery, sta
 
 @admin_router.callback_query(MobStates.drop_category, F.data.startswith("drop_category_"))
 async def show_drop_filters(callback: types.CallbackQuery, state: FSMContext):
-    category=callback.data.split('_')[2]
-    await callback.message.edit_text("Выберите категорию:",reply_markup=build_drop_filters_keyboard(category))
+    category = callback.data.split('_')[2]
+    await callback.message.edit_text(
+        "Выберите категорию:",
+        reply_markup=build_drop_filters_keyboard(category),
+    )
     await state.update_data(drop_category=category)
     await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_category, F.data.startswith("drop_filter_"))
 async def show_drop_list(callback: types.CallbackQuery, state: FSMContext):
-    parts=callback.data.split('_'); category=parts[2]; filter_index=int(parts[3]); filter_value=resolve_drop_filter(category,filter_index)
-    data=await state.get_data(); keyboard=await get_drop_list_keyboard(data['mob_id'],category,filter_value,1)
-    await callback.message.edit_text("✅ — падает, ❌ — не падает",reply_markup=keyboard)
-    await state.update_data(drop_category=category,drop_filter_index=filter_index,drop_filter_value=filter_value,drop_page=1)
-    await state.set_state(MobStates.drop_list_page); await callback.answer()
+    _, _, category, raw_filter_index = callback.data.split('_')
+    filter_index = int(raw_filter_index)
+    filter_value = resolve_drop_filter(category, filter_index)
+    data = await state.get_data()
+    keyboard = await get_drop_list_keyboard(data['mob_id'], category, filter_value, 1)
+    await callback.message.edit_text("✅ — падает, ❌ — не падает", reply_markup=keyboard)
+    await state.update_data(
+        drop_category=category,
+        drop_filter_index=filter_index,
+        drop_filter_value=filter_value,
+        drop_page=1,
+    )
+    await state.set_state(MobStates.drop_list_page)
+    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_page_"))
 async def drop_page(callback: types.CallbackQuery, state: FSMContext):
-    parts=callback.data.split('_'); category=parts[2]; page=int(parts[3]); data=await state.get_data()
-    await callback.message.edit_reply_markup(reply_markup=await get_drop_list_keyboard(data['mob_id'],category,data['drop_filter_value'],page)); await state.update_data(drop_page=page); await callback.answer()
+    _, _, category, raw_page = callback.data.split('_')
+    page = int(raw_page)
+    data = await state.get_data()
+    keyboard = await get_drop_list_keyboard(
+        data['mob_id'],
+        category,
+        data['drop_filter_value'],
+        page,
+    )
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await state.update_data(drop_page=page)
+    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("drop_toggle_"))
 async def toggle_drop(callback: types.CallbackQuery, state: FSMContext):
-    parts=callback.data.split('_'); category=parts[2]; item_id=int(parts[3]); page=int(parts[4]); data=await state.get_data(); mob_id=data['mob_id']
-    if await db.get_drop_status(mob_id,category,item_id): await db.remove_drop(mob_id,category,item_id); await callback.answer("❌ Дроп убран")
-    else: await db.add_drop(mob_id,category,item_id); await callback.answer("✅ Дроп добавлен")
-    await callback.message.edit_reply_markup(reply_markup=await get_drop_list_keyboard(mob_id,category,data['drop_filter_value'],page))
+    _, _, category, raw_item_id, raw_page = callback.data.split('_')
+    item_id = int(raw_item_id)
+    page = int(raw_page)
+    data = await state.get_data()
+    mob_id = data['mob_id']
+    if await db.get_drop_status(mob_id, category, item_id):
+        await db.remove_drop(mob_id, category, item_id)
+        await callback.answer("❌ Дроп убран")
+    else:
+        await db.add_drop(mob_id, category, item_id)
+        await callback.answer("✅ Дроп добавлен")
+    keyboard = await get_drop_list_keyboard(
+        mob_id,
+        category,
+        data['drop_filter_value'],
+        page,
+    )
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
 
 @admin_router.callback_query(MobStates.drop_list_page, F.data.startswith("back_to_drop_filters_"))
 async def back_to_drop_filters(callback: types.CallbackQuery, state: FSMContext):
-    category=callback.data.rsplit('_',1)[1]
-    await callback.message.edit_text("Выберите категорию:",reply_markup=build_drop_filters_keyboard(category)); await state.set_state(MobStates.drop_category); await callback.answer()
+    category = callback.data.rsplit('_', 1)[1]
+    await callback.message.edit_text(
+        "Выберите категорию:",
+        reply_markup=build_drop_filters_keyboard(category),
+    )
+    await state.set_state(MobStates.drop_category)
+    await callback.answer()
 
 @admin_router.callback_query(MobStates.drop_category, F.data == "back_to_drop_categories")
 async def back_to_drop_categories(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Выберите тип дропа:",reply_markup=build_drop_categories_keyboard()); await callback.answer()
+    await callback.message.edit_text(
+        "Выберите тип дропа:",
+        reply_markup=build_drop_categories_keyboard(),
+    )
+    await callback.answer()
 
 # ---------- Добавление моба ----------
 @admin_router.callback_query(MobStates.edit_select, F.data == "mob_add_start")
 async def start_add_mob(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа")
-        return
     await callback.message.edit_text("Введите название моба:")
     await state.set_state(MobStates.add_name)
     await callback.answer()
@@ -1338,10 +1398,9 @@ async def add_mob_exp(message: types.Message, state: FSMContext):
     await message.answer("Выберите локацию:", reply_markup=keyboard)
     await state.set_state(MobStates.add_location)
 
-@admin_router.callback_query(MobStates.add_location, F.data.startswith(("loc_", "mob_add_location_")))
+@admin_router.callback_query(MobStates.add_location, F.data.startswith("mob_add_location_"))
 async def add_mob_location(callback: types.CallbackQuery, state: FSMContext):
-    prefix = "mob_add_location_" if callback.data.startswith("mob_add_location_") else "loc_"
-    location_id = int(callback.data.removeprefix(prefix))
+    location_id = int(callback.data.removeprefix("mob_add_location_"))
     if not await db.get_location_by_id(location_id):
         await callback.answer("Локация не найдена.", show_alert=True)
         return
@@ -1845,9 +1904,6 @@ register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
 # ============================================================
 @admin_router.message(Command("kombat"))
 async def admin_panel(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
-        return
     await state.clear()
     await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
                          reply_markup=get_admin_main_keyboard())

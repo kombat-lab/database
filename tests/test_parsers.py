@@ -9,7 +9,12 @@ from admin_utils import (
     build_optional_note_keyboard,
     normalize_optional_note,
 )
-from admin_handlers import build_mob_edit_keyboard, get_location_choice_keyboard
+from admin_handlers import (
+    build_mob_edit_keyboard,
+    get_drop_filter_options,
+    get_location_choice_keyboard,
+    resolve_drop_filter,
+)
 from bot import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
@@ -172,6 +177,18 @@ class AdminLocationSelectionTests(unittest.IsolatedAsyncioTestCase):
         labels = [row[0].text for row in keyboard.inline_keyboard]
         self.assertIn("Локация: 🏛 Алькасар", labels)
         self.assertNotIn("ID локации: 17", labels)
+
+
+class AdminDropFilterTests(unittest.TestCase):
+    def test_filter_value_and_label_come_from_one_configuration(self):
+        gear_options = get_drop_filter_options("gear")
+
+        self.assertEqual(resolve_drop_filter("gear", 0), gear_options[0][0])
+        self.assertTrue(gear_options[0][1])
+
+    def test_unknown_drop_category_is_rejected(self):
+        with self.assertRaises(ValueError):
+            get_drop_filter_options("unknown")
 
 
 class AlchemyCraftLocationTests(unittest.TestCase):

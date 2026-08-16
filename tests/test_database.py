@@ -80,7 +80,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ("Волк", "🐺", 10, 1, 2, 3, location_id),
         )
         resource_id = await self.db.add_resource("Сияющий кристалл", "💎")
-        await self.db.add_resource("Древесина", "🪵")
+        other_resource_id = await self.db.add_resource("Древесина", "🪵")
         gear_id = await self.db.add_gear(
             "Кристальный меч", "rare", "основная рука", "⚔️"
         )
@@ -97,6 +97,15 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             {row["item_type"]: bool(row["enabled"]) for row in rows},
             {"card": False, "gear": False, "resource": True},
         )
+        self.assertEqual(
+            await self.db.get_enabled_drop_ids(
+                mob_id,
+                "resource",
+                [resource_id, other_resource_id],
+            ),
+            {resource_id},
+        )
+        self.assertEqual(await self.db.get_enabled_drop_ids(mob_id, "resource", []), set())
 
     async def test_nested_transaction_rollback_isolated_by_savepoint(self):
         async with self.db.transaction():
@@ -128,6 +137,25 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             await self.db.get_prev_next_resource_by_type(first, "scroll_recipe"),
             {"prev_id": None, "next_id": middle},
+        )
+
+        location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Лес", "🌲"),
+        )
+        mob_id = await self.db.execute_insert(
+            """
+            INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Волк", "🐺", 10, 1, 2, 3, location_id),
+        )
+        for resource_id in (first, middle, last):
+            await self.db.add_drop(mob_id, "resource", resource_id)
+
+        self.assertEqual(
+            await self.db.get_prev_next_resource_by_location(middle, location_id),
+            {"prev_id": first, "next_id": last},
         )
 
     async def test_gear_recipes_are_sorted_by_slot_across_pages(self):

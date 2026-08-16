@@ -492,7 +492,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
     # Параметр для возврата к текущему ресурсу
     return_param = build_resource_return_param(resource_id, context_type, context_id, page)
 
-    # ----- ТАБЛИЦА С МОБАМИ (добавлено) -----
+    # ----- ТАБЛИЦА С МОБАМИ -----
     if data['mobs']:
         html += "<br><b>Падает с мобов:</b><br>"
         rows = ""
@@ -1434,40 +1434,18 @@ async def view_resource(callback: types.CallbackQuery):
     rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
     plain_text = await format_resource_card(res_id, context_type='location', context_id=location_id, page=page)
 
-    # Навигация по ресурсам в локации
-    prev_res = await db.execute_query(
-        """
-        SELECT r.id FROM resources r
-        JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
-        JOIN mobs m ON d.mob_id = m.id
-        WHERE m.location_id = ? AND r.id < ?
-        GROUP BY r.id
-        ORDER BY r.id DESC LIMIT 1
-        """,
-        (location_id, res_id)
-    )
-    next_res = await db.execute_query(
-        """
-        SELECT r.id FROM resources r
-        JOIN drops d ON d.item_type = 'resource' AND d.item_id = r.id
-        JOIN mobs m ON d.mob_id = m.id
-        WHERE m.location_id = ? AND r.id > ?
-        GROUP BY r.id
-        ORDER BY r.id LIMIT 1
-        """,
-        (location_id, res_id)
-    )
+    neighbours = await db.get_prev_next_resource_by_location(res_id, location_id)
 
     nav_buttons = []
-    if prev_res:
+    if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"nav_resources_{prev_res[0]['id']}_{location_id}_{page}"
+            callback_data=f"nav_resources_{neighbours['prev_id']}_{location_id}_{page}"
         ))
-    if next_res:
+    if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"nav_resources_{next_res[0]['id']}_{location_id}_{page}"
+            callback_data=f"nav_resources_{neighbours['next_id']}_{location_id}_{page}"
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
