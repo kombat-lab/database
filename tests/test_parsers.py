@@ -9,6 +9,7 @@ from admin_utils import (
     build_optional_note_keyboard,
     normalize_optional_note,
 )
+from admin_handlers import build_mob_edit_keyboard, get_location_choice_keyboard
 from bot import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
@@ -120,6 +121,44 @@ class OptionalNoteTests(unittest.TestCase):
     def test_legacy_dash_and_whitespace_are_normalized(self):
         self.assertEqual(normalize_optional_note(" - "), "")
         self.assertEqual(normalize_optional_note("  заметка  "), "заметка")
+
+
+class AdminLocationSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_location_buttons_show_names_in_alphabetical_order(self):
+        locations = [
+            {"id": 2, "name": "Ядовитая топь", "emoji": "🧪"},
+            {"id": 1, "name": "Алькасар", "emoji": "🏛"},
+        ]
+        with patch(
+            "admin_handlers.db.get_locations",
+            new=AsyncMock(return_value=locations),
+        ):
+            keyboard = await get_location_choice_keyboard("mob_add_location_")
+
+        buttons = [row[0] for row in keyboard.inline_keyboard]
+        self.assertEqual([button.text for button in buttons], ["🏛 Алькасар", "🧪 Ядовитая топь"])
+        self.assertEqual(
+            [button.callback_data for button in buttons],
+            ["mob_add_location_1", "mob_add_location_2"],
+        )
+
+    async def test_mob_edit_menu_displays_location_name_instead_of_id(self):
+        keyboard = build_mob_edit_keyboard({
+            "id": 10,
+            "name": "Страж",
+            "emoji": "🛡",
+            "hp": 100,
+            "dust_min": 1,
+            "dust_max": 2,
+            "exp": 3,
+            "location_id": 17,
+            "location_name": "Алькасар",
+            "location_emoji": "🏛",
+        })
+
+        labels = [row[0].text for row in keyboard.inline_keyboard]
+        self.assertIn("Локация: 🏛 Алькасар", labels)
+        self.assertNotIn("ID локации: 17", labels)
 
 
 class AlchemyCraftLocationTests(unittest.TestCase):
