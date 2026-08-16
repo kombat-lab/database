@@ -105,7 +105,14 @@ def build_resource_usage_rows(
     return_param: str | None,
 ) -> list[tuple[str, int]]:
     rows = []
-    for usage in usages:
+    sorted_usages = sorted(
+        usages,
+        key=lambda usage: (
+            str(usage.get("result_name") or "").casefold(),
+            int(usage.get("result_id") or 0),
+        ),
+    )
+    for usage in sorted_usages:
         result_type = usage.get("result_type")
         result_id = usage.get("result_id")
         if result_type not in {"gear", "resource"} or not result_id:
@@ -421,12 +428,12 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
 
     usage_rows = build_resource_usage_rows(data.get('used_in', []), return_param)
     if usage_rows:
-        text += "<b>🧩 Используется в рецептах:</b>\n"
+        text += "<tg-spoiler><b>🧩 Используется в рецептах:</b>\n"
         text += "\n".join(
             f"{result} — {quantity} шт."
             for result, quantity in usage_rows
         )
-        text += "\n\n"
+        text += "</tg-spoiler>\n\n"
 
     if data.get('note'):
         text += f"\n📝 <i>{escape_html(data['note'])}</i>\n"
@@ -498,11 +505,13 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
             f"<tr><td>{result}</td><td>{quantity} шт.</td></tr>"
             for result, quantity in usage_rows
         )
-        html += "<br><b>🧩 Используется в рецептах:</b><br>"
         html += (
+            "<br><details>"
+            "<summary>🧩 Используется в рецептах:</summary>"
             "<table border='1' cellspacing='0' cellpadding='5'><tbody>"
             "<tr><th>Результат</th><th>Нужно</th></tr>"
             f"{rows}</tbody></table>"
+            "</details>"
         )
 
     if data.get('note'):
