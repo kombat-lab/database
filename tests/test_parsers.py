@@ -174,7 +174,7 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
                     "result_type": "resource",
                     "result_id": 30,
                     "result_name": "Дублёная кожа",
-                    "result_emoji": "🧶",
+                    "result_emoji": "⚗️🧶",
                     "result_rarity": None,
                     "quantity": 3,
                 },
@@ -193,5 +193,13 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("🧩 Используется в рецептах:", card)
                 self.assertIn("Кожаный шлем", card)
                 self.assertIn("Дублёная кожа", card)
-                self.assertIn("— 5 шт.", card)
-                self.assertIn("— 3 шт.", card)
+                self.assertIn("🟢 🪖", card)
+                self.assertNotIn("⚔️", card)
+                self.assertNotIn("⚗️ ⚗️", card)
+
+        self.assertIn("— 5 шт.", plain)
+        self.assertIn("— 3 шт.", plain)
+        self.assertNotIn("<table", plain)
+        self.assertIn("<th>Результат</th><th>Нужно</th>", rich.html)
+        self.assertIn("<td>5 шт.</td>", rich.html)
+        self.assertIn("<td>3 шт.</td>", rich.html)

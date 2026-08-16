@@ -100,25 +100,29 @@ def get_alchemy_craft_location(resource_name: str) -> str:
     return DEFAULT_ALCHEMY_CRAFT_LOCATION
 
 
-def format_resource_usage_entries(usages: list[dict], return_param: str | None) -> list[str]:
-    entries = []
+def build_resource_usage_rows(
+    usages: list[dict],
+    return_param: str | None,
+) -> list[tuple[str, int]]:
+    rows = []
     for usage in usages:
         result_type = usage.get("result_type")
         result_id = usage.get("result_id")
         if result_type not in {"gear", "resource"} or not result_id:
             continue
         link = make_deep_link(result_type, result_id, return_param)
-        prefix = (
-            f"⚔️ {get_rarity_emoji(usage.get('result_rarity'))}"
+        visual_parts = (
+            [get_rarity_emoji(usage.get("result_rarity"))]
             if result_type == "gear"
-            else "⚗️"
+            else []
         )
-        entries.append(
-            f"{prefix} {escape_html(usage.get('result_emoji', ''))} "
-            f"<a href='{link}'>{escape_html(usage.get('result_name', ''))}</a>"
-            f" — {usage.get('quantity', 1)} шт."
+        visual_parts.append(escape_html(usage.get("result_emoji", "")))
+        visual = " ".join(part for part in visual_parts if part)
+        name_link = f"<a href='{link}'>{escape_html(usage.get('result_name', ''))}</a>"
+        rows.append(
+            (f"{visual} {name_link}".strip(), int(usage.get("quantity", 1)))
         )
-    return entries
+    return rows
 
 
 def build_resource_return_param(
@@ -411,10 +415,13 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
             text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
         text += "\n"
 
-    usage_entries = format_resource_usage_entries(data.get('used_in', []), return_param)
-    if usage_entries:
+    usage_rows = build_resource_usage_rows(data.get('used_in', []), return_param)
+    if usage_rows:
         text += "<b>🧩 Используется в рецептах:</b>\n"
-        text += "\n".join(usage_entries)
+        text += "\n".join(
+            f"{result} — {quantity} шт."
+            for result, quantity in usage_rows
+        )
         text += "\n\n"
 
     if data.get('note'):
@@ -481,11 +488,18 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
         </table>
         """
 
-    usage_entries = format_resource_usage_entries(data.get('used_in', []), return_param)
-    if usage_entries:
+    usage_rows = build_resource_usage_rows(data.get('used_in', []), return_param)
+    if usage_rows:
+        rows = "".join(
+            f"<tr><td>{result}</td><td>{quantity} шт.</td></tr>"
+            for result, quantity in usage_rows
+        )
         html += "<br><b>🧩 Используется в рецептах:</b><br>"
-        html += "<br>".join(usage_entries)
-        html += "<br>"
+        html += (
+            "<table border='1' cellspacing='0' cellpadding='5'><tbody>"
+            "<tr><th>Результат</th><th>Нужно</th></tr>"
+            f"{rows}</tbody></table>"
+        )
 
     if data.get('note'):
         html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
