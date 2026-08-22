@@ -133,7 +133,11 @@ async def render_entity_list(callback: types.CallbackQuery, state: FSMContext, e
     await state.set_state(entity_config['list_state'])
     await callback.answer()
 
-async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entity_id: int, entity_config: dict, entity_data: dict):
+def build_edit_menu(
+    entity_id: int,
+    entity_config: dict,
+    entity_data: dict,
+) -> tuple[str, str, InlineKeyboardMarkup]:
     fields = entity_config['edit_fields']
     display_mapping = entity_config.get('display_mapping', {})
     keyboard = []
@@ -141,7 +145,10 @@ async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entit
     fallback_lines = []
     for field_name, field_label in fields:
         current_value = entity_data.get(field_name, '?')
-        if field_name in display_mapping:
+        formatter = entity_config.get('field_formatters', {}).get(field_name)
+        if formatter:
+            current_value = formatter(current_value)
+        elif field_name in display_mapping:
             current_value = display_mapping[field_name].get(current_value, current_value)
         rich_rows.append(
             f"<tr><td>{escape_html(field_label)}</td><td>{escape_html(current_value)}</td></tr>"
@@ -167,10 +174,19 @@ async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entit
         "<table><tbody><tr><th>Поле</th><th>Значение</th></tr>"
         + "".join(rich_rows) + "</tbody></table>"
     )
+    return fallback_text, rich_html, InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def show_edit_menu(callback: types.CallbackQuery, state: FSMContext, entity_id: int, entity_config: dict, entity_data: dict):
+    fallback_text, rich_html, reply_markup = build_edit_menu(
+        entity_id,
+        entity_config,
+        entity_data,
+    )
     await edit_admin_rich(
         callback,
         rich_html,
-        InlineKeyboardMarkup(inline_keyboard=keyboard),
+        reply_markup,
         fallback_html=fallback_text,
     )
     await state.update_data(entity_id=entity_id, editing_entity=entity_config['name'])
@@ -194,6 +210,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         entity_type = data['editing_entity']
         configs = get_entity_configs_func()
         config = configs[entity_type]
+        editable_fields = {name for name, _ in config['edit_fields']}
+        if field not in editable_fields:
+            await callback.answer("Неизвестное поле.", show_alert=True)
+            return
         
         select_options = config.get('select_options', {}).get(field)
         if select_options:
@@ -295,6 +315,10 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
         
         configs = get_entity_configs_func()
         config = configs[entity_type]
+        allowed_values = config.get('select_options', {}).get(field)
+        if not allowed_values or value not in allowed_values:
+            await callback.answer("Недопустимое значение.", show_alert=True)
+            return
         
         try:
             await update_entity_field(config, entity_id, field, value)
@@ -338,12 +362,15 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             new_value = normalize_optional_note(new_value)
     
         if field in config.get('integer_fields', []):
+            minimum = config.get('integer_minimums', {}).get(field, 0)
             try:
                 new_value = int(new_value)
-                if new_value < 0:
+                if new_value < minimum:
                     raise ValueError
             except (TypeError, ValueError):
-                await message.answer("❌ Ошибка: введите положительное целое число.")
+                await message.answer(
+                    f"❌ Ошибка: введите целое число не меньше {minimum}."
+                )
                 return
     
         if field == 'emoji' and not is_valid_emoji(new_value):
@@ -371,24 +398,15 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await message.answer("🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
             return
     
-        fields = config['edit_fields']
-        keyboard = []
-        for field_name, field_label in fields:
-            current_value = entity_data.get(field_name, '?')
-            keyboard.append([InlineKeyboardButton(
-                text=f"{field_label}: {current_value}",
-                callback_data=f"edit_field_{field_name}"
-            )])
-        if config.get('extra_edit_buttons'):
-            for btn in config['extra_edit_buttons'](entity_id):
-                keyboard.append(btn)
-        keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data="delete_entity")])
-        keyboard.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="back_to_list")])
-        keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="admin_cancel_edit")])
-    
+        fallback_text, _, reply_markup = build_edit_menu(
+            entity_id,
+            config,
+            entity_data,
+        )
         await message.answer(
-            f"Редактирование {config['name_ru']} ID {entity_id}:\n{config['display_format'](entity_data)}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            fallback_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
         )
         await message.delete()
     
@@ -432,7 +450,11 @@ def register_generic_handlers(router: Router, get_entity_configs_func):
             await callback.message.edit_text("✅ Успешно удалено.")
         except Exception as e:
             await callback.message.edit_text(f"❌ Ошибка: {e}")
-        await render_entity_list(callback, state, config, 1)
+        back_to_list_func = config.get('back_to_list_func')
+        if back_to_list_func:
+            await back_to_list_func(callback, state, data)
+        else:
+            await render_entity_list(callback, state, config, 1)
 
     @router.callback_query(
         StateFilter(GenericEditStates.select_field, GenericEditStates.confirm_delete),

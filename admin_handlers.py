@@ -30,7 +30,10 @@ from game_constants import (
     GEAR_SLOTS,
     RARITY_EMOJIS,
     RARITY_KEYS,
+    RARITY_LABELS,
     RESOURCE_TYPE_KEYS,
+    format_gear_classes,
+    parse_gear_classes,
 )
 from stats_handlers import stats_router
 from utils import clean_username, escape_html, is_valid_emoji
@@ -100,13 +103,6 @@ class CardAddStates(StatesGroup):
 
 ENTITY_CONFIGS = {}
 
-def _resource_display_format(d):
-    note_part = ""
-    note_val = d.get('note')
-    if note_val:
-        note_part = f"\n📝 {note_val}"
-    return f"{d.get('emoji','')} {d.get('name','')} (тип: {ENTITY_CONFIGS['resource']['display_mapping']['type'].get(d.get('type','craft'), d.get('type','craft'))}){note_part}"
-
 ENTITY_CONFIGS['resource'] = {
     'name': 'resource',
     'name_ru': 'ресурс',
@@ -139,8 +135,7 @@ ENTITY_CONFIGS['resource'] = {
             'currency': '💰 Валюта',
             'alchemy': '🧪 Алхимия'
         }
-    },
-    'display_format': _resource_display_format
+    }
 }
 
 ENTITY_CONFIGS['gear'] = {
@@ -166,26 +161,16 @@ ENTITY_CONFIGS['gear'] = {
         ('emoji', '😀 Эмодзи')
     ],
     'integer_fields': ['level'],
+    'integer_minimums': {'level': 1},
     'select_options': {
         'rarity': RARITY_KEYS,
         'slot': GEAR_SLOTS,
     },
     'display_mapping': {
-        'rarity': {
-            'common': '⚪ Обычное',
-            'rare': '🟢 Редкое',
-            'epic': '🔵 Сверхредкое',
-            'legendary': '🟣 Эпическая'
-        },
+        'rarity': RARITY_LABELS,
         'slot': GEAR_SLOT_LABELS
     },
-    'display_format': lambda d: (
-        f"{d.get('emoji','')} {d.get('name','')} "
-        f"[{ENTITY_CONFIGS['gear']['display_mapping']['rarity'].get(d.get('rarity','common'), d.get('rarity','common'))}]"
-        f"\n📈 Уровень: {d.get('level', 1)}"
-        f"\n🧙 Классы: {d.get('classes') or 'Все классы'}"
-        + (f"\n📝 {d.get('note')}" if d.get('note') else '')
-    )
+    'field_formatters': {'classes': format_gear_classes}
 }
 
 ENTITY_CONFIGS['card'] = {
@@ -217,8 +202,7 @@ ENTITY_CONFIGS['card'] = {
     },
     'display_mapping': {
         'slot': GEAR_SLOT_LABELS
-    },
-    'display_format': lambda d: f"{d.get('emoji','')} {d.get('name','')} (слот: {ENTITY_CONFIGS['card']['display_mapping']['slot'].get(d.get('slot','?'), d.get('slot','?'))})"
+    }
 }
 
 # ============================================================
@@ -335,11 +319,15 @@ def build_admin_gear_slots_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def render_admin_gear_slot(callback, state, slot_index: int, page: int = 1):
+    if not 0 <= slot_index < len(GEAR_SLOTS) or page < 1:
+        await callback.answer("Некорректная страница снаряжения.", show_alert=True)
+        return
     slot = GEAR_SLOTS[slot_index]
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
-    items = await db.execute_query(
-        "SELECT id, name, emoji, rarity, level FROM gear WHERE slot = ? ORDER BY rarity, level, name LIMIT ? OFFSET ?",
-        (slot, ADMIN_ITEMS_PER_PAGE + 1, offset),
+    items = await db.get_gear_by_slot(
+        slot,
+        offset,
+        ADMIN_ITEMS_PER_PAGE + 1,
     )
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
     items = items[:ADMIN_ITEMS_PER_PAGE]
@@ -437,6 +425,9 @@ async def gear_add_rarity(message: types.Message, state: FSMContext):
 @admin_router.callback_query(GearAddStates.rarity, F.data.startswith("rarity_"))
 async def gear_add_slot(callback: types.CallbackQuery, state: FSMContext):
     rarity = callback.data.split("_")[1]
+    if rarity not in RARITY_KEYS:
+        await callback.answer("Неизвестная редкость", show_alert=True)
+        return
     await state.update_data(gear_rarity=rarity)
     keyboard = [
         [InlineKeyboardButton(text=GEAR_SLOT_LABELS[slot], callback_data=f"slot_{slot}")]
@@ -444,13 +435,18 @@ async def gear_add_slot(callback: types.CallbackQuery, state: FSMContext):
     ]
     await callback.message.edit_text("Выберите слот:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await state.set_state(GearAddStates.slot)
+    await callback.answer()
 
 @admin_router.callback_query(GearAddStates.slot, F.data.startswith("slot_"))
 async def gear_add_emoji(callback: types.CallbackQuery, state: FSMContext):
     slot = callback.data.split("_")[1]
+    if slot not in GEAR_SLOTS:
+        await callback.answer("Неизвестный слот", show_alert=True)
+        return
     await state.update_data(gear_slot=slot)
     await callback.message.edit_text("Введите эмодзи:")
     await state.set_state(GearAddStates.emoji)
+    await callback.answer()
 
 @admin_router.message(GearAddStates.emoji, F.text)
 async def gear_add_level_prompt(message: types.Message, state: FSMContext):
@@ -1063,9 +1059,11 @@ async def get_drop_list_keyboard(mob_id: int, category: str, filter_value: str, 
             ADMIN_ITEMS_PER_PAGE + 1,
         )
     elif category == 'gear':
-        sql = "SELECT id, name, emoji, rarity, slot FROM gear WHERE slot = ? ORDER BY CASE rarity WHEN 'common' THEN 1 WHEN 'rare' THEN 2 WHEN 'epic' THEN 3 WHEN 'legendary' THEN 4 ELSE 5 END, level, LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
-        params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
-        items = await db.execute_query(sql, params)
+        items = await db.get_gear_by_slot(
+            filter_value,
+            offset,
+            ADMIN_ITEMS_PER_PAGE + 1,
+        )
     else:
         sql = "SELECT id, name, emoji, slot FROM cards WHERE slot = ? ORDER BY LOWER_UNICODE(name), id LIMIT ? OFFSET ?"
         params = (filter_value, ADMIN_ITEMS_PER_PAGE + 1, offset)
@@ -1872,7 +1870,7 @@ async def gear_edit_classes_start(callback: types.CallbackQuery, state: FSMConte
         await callback.answer()
         return
     gear = await db.get_gear_by_id(data['entity_id'])
-    selected = [v.strip() for v in (gear.get('classes') or '').split(',') if v.strip()]
+    selected = list(parse_gear_classes(gear.get('classes')))
     await state.update_data(gear_classes=selected)
     await callback.message.edit_text(
         "Выберите один или несколько классов, затем нажмите «Готово»:",

@@ -29,6 +29,9 @@ RARITY_DEFINITIONS = (
 RARITY_KEYS = tuple(key for key, _, _ in RARITY_DEFINITIONS)
 RARITY_EMOJIS = {key: emoji for key, emoji, _ in RARITY_DEFINITIONS}
 RARITY_NAMES = {key: name for key, _, name in RARITY_DEFINITIONS}
+RARITY_LABELS = {
+    key: f"{emoji} {name}" for key, emoji, name in RARITY_DEFINITIONS
+}
 RESOURCE_TYPE_KEYS = (
     "craft",
     "consumable",
@@ -37,3 +40,22 @@ RESOURCE_TYPE_KEYS = (
     "alchemy",
 )
 GEAR_CLASS_ORDER = ("Аколит", "Бастион", "Маг", "Охотник", "Тень")
+GEAR_CLASS_SET = frozenset(GEAR_CLASS_ORDER)
+
+
+def parse_gear_classes(value) -> tuple[str, ...]:
+    selected = {
+        class_name.strip()
+        for class_name in str(value or "").split(",")
+        if class_name.strip() in GEAR_CLASS_SET
+    }
+    return tuple(
+        class_name for class_name in GEAR_CLASS_ORDER if class_name in selected
+    )
+
+
+def format_gear_classes(value) -> str:
+    selected = parse_gear_classes(value)
+    if not selected or len(selected) == len(GEAR_CLASS_ORDER):
+        return "Все классы"
+    return ", ".join(selected)

@@ -6,10 +6,12 @@ os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh
 
 from admin_utils import (
     OPTIONAL_NOTE_SKIP_CALLBACK,
+    build_edit_menu,
     build_optional_note_keyboard,
     normalize_optional_note,
 )
 from admin_handlers import (
+    ENTITY_CONFIGS,
     build_mob_edit_keyboard,
     get_drop_filter_options,
     get_location_choice_keyboard,
@@ -18,6 +20,8 @@ from admin_handlers import (
 from bot import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
+    build_gear_card_keyboard,
+    build_recipe_owner_callback,
     format_gear_card_plain,
     format_gear_card_rich,
     format_resource_card,
@@ -26,12 +30,37 @@ from bot import (
     get_location_list_title,
     parse_resource_page_callback,
     parse_resource_view_callback,
+    parse_gear_view_callback,
+    parse_recipe_owner_callback,
     parse_return_param,
     replace_rich_card,
 )
 
 
 class CallbackParserTests(unittest.TestCase):
+    def test_gear_callbacks_preserve_slot_context(self):
+        self.assertEqual(
+            parse_gear_view_callback("nav_gear_47_epic_2_3"),
+            (47, "epic", 2, 3),
+        )
+        self.assertEqual(
+            parse_gear_view_callback("view_gear_47_epic_3"),
+            (47, "epic", None, 3),
+        )
+
+        callback_data = build_recipe_owner_callback(
+            "claim", 36, 47, "epic", 3, 2
+        )
+        self.assertEqual(callback_data, "recipe_claim_36_47_epic_2_3")
+        self.assertEqual(
+            parse_recipe_owner_callback(callback_data),
+            ("claim", 36, 47, "epic", 2, 3),
+        )
+        self.assertEqual(
+            parse_recipe_owner_callback("recipe_claim_36_47_epic_3"),
+            ("claim", 36, 47, "epic", None, 3),
+        )
+
     def test_resource_type_with_underscore(self):
         self.assertEqual(
             parse_resource_page_callback("res_page_scroll_recipe_3", "res_page_"),
@@ -191,6 +220,28 @@ class AdminDropFilterTests(unittest.TestCase):
             get_drop_filter_options("unknown")
 
 
+class GearAdminPresentationTests(unittest.TestCase):
+    def test_edit_menu_uses_shared_labels_and_class_formatter(self):
+        fallback, rich, _ = build_edit_menu(
+            47,
+            ENTITY_CONFIGS["gear"],
+            {
+                "name": "Тлеющий шлем",
+                "rarity": "epic",
+                "slot": "шлем",
+                "level": 1,
+                "classes": "",
+                "note": "",
+                "emoji": "🔥🪖",
+            },
+        )
+
+        for text in (fallback, rich):
+            self.assertIn("🔵 Сверхредкое", text)
+            self.assertIn("🪖 Шлем", text)
+            self.assertIn("Все классы", text)
+
+
 class AlchemyCraftLocationTests(unittest.TestCase):
     def test_meredith_resources_use_trading_outpost(self):
         resource_names = (
@@ -224,6 +275,36 @@ class AlchemyCraftLocationTests(unittest.TestCase):
 
 
 class GearCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_keyboard_uses_one_navigation_context_after_owner_update(self):
+        gear_data = {
+            "id": 47,
+            "rarity": "epic",
+            "slot": "шлем",
+            "recipe_id": 36,
+            "owners": ["tester"],
+        }
+        with patch(
+            "bot.db.get_prev_next_gear",
+            new=AsyncMock(return_value={"prev_id": 46, "next_id": 48}),
+        ) as neighbours:
+            keyboard = await build_gear_card_keyboard(
+                gear_data,
+                "tester",
+                page=3,
+                slot_index=0,
+            )
+
+        neighbours.assert_awaited_once_with(47, "epic", "шлем")
+        callbacks = [
+            button.callback_data
+            for row in keyboard.inline_keyboard
+            for button in row
+        ]
+        self.assertIn("nav_gear_46_epic_0_3", callbacks)
+        self.assertIn("nav_gear_48_epic_0_3", callbacks)
+        self.assertIn("recipe_relinquish_36_47_epic_0_3", callbacks)
+        self.assertIn("page_gear_epic_0_3", callbacks)
+
     async def test_scroll_and_direct_drop_sources_are_rendered_separately(self):
         gear_data = {
             "id": 47,

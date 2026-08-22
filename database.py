@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
-from game_constants import GEAR_SLOTS
+from game_constants import GEAR_SLOTS, RARITY_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,14 @@ class Database:
         branches = " ".join(
             f"WHEN '{slot}' THEN {order}"
             for order, slot in enumerate(GEAR_SLOTS, start=1)
+        )
+        return f"CASE {column} {branches} ELSE 99 END"
+
+    @staticmethod
+    def _rarity_order_case(column: str = "rarity") -> str:
+        branches = " ".join(
+            f"WHEN '{rarity}' THEN {order}"
+            for order, rarity in enumerate(RARITY_KEYS, start=1)
         )
         return f"CASE {column} {branches} ELSE 99 END"
 
@@ -619,9 +627,41 @@ class Database:
 
     # ========== СНАРЯЖЕНИЕ ==========
     async def get_all_gear(self, offset: int, limit: int) -> List[Dict]:
+        slot_order = self._slot_order_case()
+        rarity_order = self._rarity_order_case()
         return await self.execute_query(
-            "SELECT id, name, rarity, slot, emoji, level, classes, note FROM gear ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, name, rarity, slot, emoji, level, classes, note "
+            f"FROM gear ORDER BY {slot_order}, {rarity_order}, level, "
+            "LOWER_UNICODE(name), id LIMIT ? OFFSET ?",
             (limit, offset)
+        )
+
+    async def get_gear_by_slot(
+        self,
+        slot: str,
+        offset: int,
+        limit: int,
+    ) -> List[Dict]:
+        rarity_order = self._rarity_order_case()
+        return await self.execute_query(
+            "SELECT id, name, emoji, rarity, level FROM gear WHERE slot = ? "
+            f"ORDER BY {rarity_order}, level, LOWER_UNICODE(name), id "
+            "LIMIT ? OFFSET ?",
+            (slot, limit, offset),
+        )
+
+    async def get_gear_by_rarity_slot(
+        self,
+        rarity: str,
+        slot: str,
+        offset: int,
+        limit: int,
+    ) -> List[Dict]:
+        return await self.execute_query(
+            "SELECT id, name, rarity, slot, emoji, level, classes, note "
+            "FROM gear WHERE rarity = ? AND slot = ? "
+            "ORDER BY level, LOWER_UNICODE(name), id LIMIT ? OFFSET ?",
+            (rarity, slot, limit, offset),
         )
 
     async def get_gear_by_id(self, gear_id: int) -> Optional[Dict]:
@@ -662,32 +702,48 @@ class Database:
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji, g.level, g.classes, g.note,
                    (SELECT rc.id FROM recipes rc
                     WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as recipe_id,
-                   (SELECT json_group_array(json_object('id', m.id, 'name', m.name, 'emoji', m.emoji))
-                    FROM drops d JOIN mobs m ON d.mob_id = m.id
-                    WHERE d.item_type = 'gear' AND d.item_id = g.id) as mobs,
-                   (SELECT json_group_array(DISTINCT json_object(
-                       'id', m.id, 'name', m.name, 'emoji', m.emoji
-                    ))
-                    FROM recipes rc
-                    JOIN recipe_ingredients ri ON ri.recipe_id = rc.id
-                    JOIN resources scroll ON scroll.id = ri.resource_id
-                    JOIN drops d ON d.item_type = 'resource' AND d.item_id = scroll.id
-                    JOIN mobs m ON m.id = d.mob_id
-                    WHERE rc.result_type = 'gear'
-                      AND rc.result_id = g.id
-                      AND scroll.type = 'scroll_recipe') as scroll_mobs,
                    (SELECT json_group_array(json_object(
-                       'id', ri.resource_id, 'name', r.name,
-                       'emoji', r.emoji, 'type', r.type, 'quantity', ri.quantity
-                    ))
-                    FROM recipes rc
-                    JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
-                    JOIN resources r ON ri.resource_id = r.id
-                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as ingredients,
-                   (SELECT json_group_array(ro.player_username)
-                    FROM recipe_owners ro
-                    JOIN recipes rc ON ro.recipe_id = rc.id
-                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as owners
+                       'id', source.id, 'name', source.name, 'emoji', source.emoji
+                    )) FROM (
+                       SELECT m.id, m.name, m.emoji
+                       FROM drops d JOIN mobs m ON d.mob_id = m.id
+                       WHERE d.item_type = 'gear' AND d.item_id = g.id
+                       ORDER BY LOWER_UNICODE(m.name), m.id
+                    ) source) as mobs,
+                   (SELECT json_group_array(json_object(
+                       'id', source.id, 'name', source.name, 'emoji', source.emoji
+                    )) FROM (
+                       SELECT m.id, m.name, m.emoji
+                       FROM recipes rc
+                       JOIN recipe_ingredients ri ON ri.recipe_id = rc.id
+                       JOIN resources scroll ON scroll.id = ri.resource_id
+                       JOIN drops d ON d.item_type = 'resource' AND d.item_id = scroll.id
+                       JOIN mobs m ON m.id = d.mob_id
+                       WHERE rc.result_type = 'gear'
+                         AND rc.result_id = g.id
+                         AND scroll.type = 'scroll_recipe'
+                       GROUP BY m.id, m.name, m.emoji
+                       ORDER BY LOWER_UNICODE(m.name), m.id
+                    ) source) as scroll_mobs,
+                   (SELECT json_group_array(json_object(
+                       'id', source.resource_id, 'name', source.name,
+                       'emoji', source.emoji, 'type', source.type,
+                       'quantity', source.quantity
+                    )) FROM (
+                       SELECT ri.resource_id, r.name, r.emoji, r.type, ri.quantity
+                       FROM recipes rc
+                       JOIN recipe_ingredients ri ON rc.id = ri.recipe_id
+                       JOIN resources r ON ri.resource_id = r.id
+                       WHERE rc.result_type = 'gear' AND rc.result_id = g.id
+                       ORDER BY LOWER_UNICODE(r.name), r.id
+                    ) source) as ingredients,
+                   (SELECT json_group_array(source.player_username) FROM (
+                       SELECT ro.player_username
+                       FROM recipe_owners ro
+                       JOIN recipes rc ON ro.recipe_id = rc.id
+                       WHERE rc.result_type = 'gear' AND rc.result_id = g.id
+                       ORDER BY LOWER_UNICODE(ro.player_username)
+                    ) source) as owners
             FROM gear g
             WHERE g.id = ?
         """
@@ -702,26 +758,39 @@ class Database:
         row["craftable"] = row["recipe_id"] is not None
         return row
 
-    async def get_prev_next_gear_by_slot(self, gear_id: int, rarity: str) -> Dict[str, Optional[int]]:
-        case_expression = self._slot_order_case()
-        
+    async def get_prev_next_gear(
+        self,
+        gear_id: int,
+        rarity: str,
+        slot: str | None = None,
+    ) -> Dict[str, Optional[int]]:
+        order_by = (
+            "level, LOWER_UNICODE(name), id"
+            if slot is not None
+            else f"{self._slot_order_case()}, LOWER_UNICODE(name), id"
+        )
+        slot_filter = " AND slot = ?" if slot is not None else ""
+        params = (rarity, slot, gear_id) if slot is not None else (rarity, gear_id)
         rows = await self.execute_query(
             f"""
             WITH ordered AS (
                 SELECT id,
-                       LAG(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS prev_id,
-                       LEAD(id) OVER (ORDER BY {case_expression}, name COLLATE NOCASE, id) AS next_id
+                       LAG(id) OVER (ORDER BY {order_by}) AS prev_id,
+                       LEAD(id) OVER (ORDER BY {order_by}) AS next_id
                 FROM gear
-                WHERE rarity = ?
+                WHERE rarity = ?{slot_filter}
             )
             SELECT prev_id, next_id FROM ordered WHERE id = ?
             """,
-            (rarity, gear_id),
+            params,
         )
         return rows[0] if rows else {'prev_id': None, 'next_id': None}
 
     async def get_all_gear_simple(self) -> List[Dict]:
-        return await self.execute_query("SELECT id, name, emoji FROM gear ORDER BY id")
+        return await self.execute_query(
+            "SELECT id, name, emoji FROM gear "
+            f"ORDER BY {self._slot_order_case()}, LOWER_UNICODE(name), id"
+        )
 
     # ========== РЕЦЕПТЫ ==========
     async def get_all_recipes(self, result_type: str, offset: int, limit: int) -> List[Dict]:
@@ -744,19 +813,11 @@ class Database:
         """
         return await self.execute_query(query, (result_type, limit, offset))
 
-    async def get_recipe_id_by_gear(self, gear_id: int) -> Optional[int]:
-        """Возвращает ID рецепта для указанного снаряжения (если есть)."""
-        res = await self.execute_query(
-            "SELECT id FROM recipes WHERE result_type = 'gear' AND result_id = ?",
-            (gear_id,)
-        )
-        return res[0]['id'] if res else None
-
     async def get_recipe_owners(self, recipe_id: int) -> List[str]:
-        """Возвращает список username владельцев рецепта."""
         rows = await self.execute_query(
-            "SELECT player_username FROM recipe_owners WHERE recipe_id = ?",
-            (recipe_id,)
+            "SELECT player_username FROM recipe_owners WHERE recipe_id = ? "
+            "ORDER BY LOWER_UNICODE(player_username)",
+            (recipe_id,),
         )
         return [row['player_username'] for row in rows]
 

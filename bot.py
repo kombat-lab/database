@@ -33,13 +33,13 @@ from analytics import (
 )
 from database import db
 from game_constants import (
-    GEAR_CLASS_ORDER,
     GEAR_SLOT_ICONS as SLOT_ICONS,
     GEAR_SLOT_LABELS as SLOT_NAMES,
     GEAR_SLOTS as GEAR_SLOT_ORDER,
     RARITY_EMOJIS,
     RARITY_KEYS as RARITY_ORDER,
     RARITY_NAMES,
+    format_gear_classes,
 )
 from utils import clean_username, escape_html
 
@@ -149,6 +149,77 @@ def build_resource_return_param(
 
 def build_gear_return_param(gear_id: int, rarity: str | None, page: int) -> str | None:
     return f"gear_{gear_id}_{rarity}_{page}" if rarity else None
+
+
+def parse_gear_view_callback(value: str) -> tuple[int, str, int | None, int] | None:
+    for prefix in ("view_gear_", "nav_gear_"):
+        if value.startswith(prefix):
+            parts = value.removeprefix(prefix).split("_")
+            break
+    else:
+        return None
+
+    if len(parts) not in (3, 4):
+        return None
+    try:
+        gear_id = int(parts[0])
+        rarity = parts[1]
+        slot_index = int(parts[2]) if len(parts) == 4 else None
+        page = int(parts[-1])
+    except ValueError:
+        return None
+    if (
+        gear_id < 1
+        or rarity not in RARITY_ORDER
+        or page < 1
+        or (slot_index is not None and not 0 <= slot_index < len(GEAR_SLOT_ORDER))
+    ):
+        return None
+    return gear_id, rarity, slot_index, page
+
+
+def build_recipe_owner_callback(
+    action: str,
+    recipe_id: int,
+    gear_id: int,
+    rarity: str,
+    page: int,
+    slot_index: int | None,
+) -> str:
+    slot = str(slot_index) if slot_index is not None else "x"
+    return f"recipe_{action}_{recipe_id}_{gear_id}_{rarity}_{slot}_{page}"
+
+
+def parse_recipe_owner_callback(
+    value: str,
+) -> tuple[str, int, int, str, int | None, int] | None:
+    parts = value.split("_")
+    if len(parts) not in (6, 7) or parts[0] != "recipe":
+        return None
+    action = parts[1]
+    if action not in {"claim", "relinquish"}:
+        return None
+    try:
+        recipe_id = int(parts[2])
+        gear_id = int(parts[3])
+        rarity = parts[4]
+        if len(parts) == 7:
+            slot_index = None if parts[5] == "x" else int(parts[5])
+            page = int(parts[6])
+        else:
+            slot_index = None
+            page = int(parts[5])
+    except ValueError:
+        return None
+    if (
+        recipe_id < 1
+        or gear_id < 1
+        or rarity not in RARITY_ORDER
+        or page < 1
+        or (slot_index is not None and not 0 <= slot_index < len(GEAR_SLOT_ORDER))
+    ):
+        return None
+    return action, recipe_id, gear_id, rarity, slot_index, page
 
 
 def parse_return_param(value: str | None) -> dict | None:
@@ -300,24 +371,6 @@ async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
 
     rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-GEAR_CLASSES = frozenset(GEAR_CLASS_ORDER)
-
-def format_gear_classes(classes_value) -> str:
-    """Сокращает полный набор классов до надписи «Все классы»."""
-    selected = {
-        class_name.strip()
-        for class_name in str(classes_value or "").split(",")
-        if class_name.strip()
-    }
-    if not selected or selected == GEAR_CLASSES:
-        return "Все классы"
-    return ", ".join(
-        class_name
-        for class_name in GEAR_CLASS_ORDER
-        if class_name in selected
-    )
-
 
 # ---------- Формирование карточек ----------
 async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int = 1) -> str:
@@ -563,8 +616,15 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
 
     return InputRichMessage(html=html.strip())
 
-async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1) -> str:
-    data = await db.get_gear_card(gear_id)
+async def format_gear_card_plain(
+    gear_id: int,
+    rarity: str = None,
+    page: int = 1,
+    *,
+    data: dict | None = None,
+) -> str:
+    if data is None:
+        data = await db.get_gear_card(gear_id)
     if not data:
         return "Предмет не найден."
 
@@ -584,17 +644,7 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
         text += "Крафт: да\n"
         if data['ingredients']:
             text += "\n<b>Требуемые ресурсы:</b>\n"
-            dust = None
-            other = []
             for ing in data['ingredients']:
-                if ing['id'] == 71:
-                    dust = ing
-                else:
-                    other.append(ing)
-            if dust:
-                link = make_deep_link("resource", dust['id'], return_param)
-                text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']}\n"
-            for ing in other:
                 link = make_deep_link("resource", ing['id'], return_param)
                 text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
         else:
@@ -622,8 +672,15 @@ async def format_gear_card_plain(gear_id: int, rarity: str = None, page: int = 1
     return text
 
 
-async def format_gear_card_rich(gear_id: int, rarity: str = None, page: int = 1) -> InputRichMessage:
-    data = await db.get_gear_card(gear_id)
+async def format_gear_card_rich(
+    gear_id: int,
+    rarity: str = None,
+    page: int = 1,
+    *,
+    data: dict | None = None,
+) -> InputRichMessage:
+    if data is None:
+        data = await db.get_gear_card(gear_id)
     if not data:
         return InputRichMessage(html="Предмет не найден.")
 
@@ -932,9 +989,11 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
 async def get_gear_by_slot_keyboard(rarity: str, slot_index: int, page: int) -> InlineKeyboardMarkup:
     slot = GEAR_SLOT_ORDER[slot_index]
     offset = (page - 1) * ITEMS_PER_PAGE
-    items = await db.execute_query(
-        "SELECT * FROM gear WHERE rarity = ? AND slot = ? ORDER BY level, name LIMIT ? OFFSET ?",
-        (rarity, slot, ITEMS_PER_PAGE + FETCH_EXTRA, offset),
+    items = await db.get_gear_by_rarity_slot(
+        rarity,
+        slot,
+        offset,
+        ITEMS_PER_PAGE + FETCH_EXTRA,
     )
     has_next = len(items) > ITEMS_PER_PAGE
     items = items[:ITEMS_PER_PAGE]
@@ -1468,80 +1527,134 @@ async def view_resource(callback: types.CallbackQuery):
         current_message=callback.message,
     )
 
-@dp.callback_query(F.data.startswith("view_gear_"))
-async def view_gear(callback: types.CallbackQuery):
-    await callback.answer()
-    parts = callback.data.split("_")
-    gear_id = int(parts[2])
-    rarity = parts[3]
-    slot_index = int(parts[4]) if len(parts) >= 6 else None
-    page = int(parts[5]) if len(parts) >= 6 else int(parts[4])
-
-    await log_view_gear(callback.from_user.id, gear_id)
-
-    # Передаём rarity и page в функцию
-    rich_msg = await format_gear_card_rich(gear_id, rarity, page)
-    plain_text = await format_gear_card_plain(gear_id, rarity, page)
-
-    # остальной код без изменений (кнопки и т.д.)
-    recipe_id = await db.get_recipe_id_by_gear(gear_id)
-    user_username = callback.from_user.username
+async def build_gear_card_keyboard(
+    data: dict,
+    username: str | None,
+    page: int,
+    slot_index: int | None,
+) -> InlineKeyboardMarkup:
+    gear_id = data['id']
+    rarity = data['rarity']
 
     if slot_index is not None:
-        slot = GEAR_SLOT_ORDER[slot_index]
-        ids = await db.execute_query("SELECT id FROM gear WHERE rarity = ? AND slot = ? ORDER BY level, name, id", (rarity, slot))
-        ordered = [row['id'] for row in ids]
-        pos = ordered.index(gear_id) if gear_id in ordered else -1
-        neighbours = {
-            'prev_id': ordered[pos-1] if pos > 0 else None,
-            'next_id': ordered[pos+1] if 0 <= pos < len(ordered)-1 else None,
-        }
-    else:
-        neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
+        try:
+            slot_index = GEAR_SLOT_ORDER.index(data['slot'])
+        except ValueError:
+            slot_index = None
+
+    slot = GEAR_SLOT_ORDER[slot_index] if slot_index is not None else None
+    neighbours = await db.get_prev_next_gear(gear_id, rarity, slot)
     nav_buttons = []
-    if neighbours['prev_id']:
-        nav_buttons.append(InlineKeyboardButton(
-            text="◀️ Предыдущий",
-            callback_data=(f"view_gear_{neighbours['prev_id']}_{rarity}_{slot_index}_{page}" if slot_index is not None else f"view_gear_{neighbours['prev_id']}_{rarity}_{page}")
-        ))
-    if neighbours['next_id']:
-        nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶️",
-            callback_data=(f"view_gear_{neighbours['next_id']}_{rarity}_{slot_index}_{page}" if slot_index is not None else f"view_gear_{neighbours['next_id']}_{rarity}_{page}")
-        ))
-
-    back_button = InlineKeyboardButton(
-        text="🔙 Назад к списку",
-        callback_data=(f"page_gear_{rarity}_{slot_index}_{page}" if slot_index is not None else "gear_rarities")
-    )
-
-    keyboard = []
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    if rarity == 'epic' and recipe_id and user_username:
-        owners = await db.get_recipe_owners(recipe_id)
-        if user_username in owners:
-            keyboard.append([InlineKeyboardButton(
-                text="❌ У меня нет рецепта",
-                callback_data=f"recipe_relinquish_{recipe_id}_{gear_id}_{rarity}_{page}"
-            )])
+    for key, text_label in (
+        ('prev_id', '◀️ Предыдущий'),
+        ('next_id', 'Следующий ▶️'),
+    ):
+        neighbour_id = neighbours[key]
+        if not neighbour_id:
+            continue
+        if slot_index is None:
+            callback_data = f"nav_gear_{neighbour_id}_{rarity}_{page}"
         else:
-            keyboard.append([InlineKeyboardButton(
-                text="✅ У меня есть рецепт",
-                callback_data=f"recipe_claim_{recipe_id}_{gear_id}_{rarity}_{page}"
-            )])
+            callback_data = (
+                f"nav_gear_{neighbour_id}_{rarity}_{slot_index}_{page}"
+            )
+        nav_buttons.append(InlineKeyboardButton(
+            text=text_label,
+            callback_data=callback_data,
+        ))
 
-    keyboard.append([back_button])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    keyboard = [nav_buttons] if nav_buttons else []
+    recipe_id = data.get('recipe_id')
+    if rarity == 'epic' and recipe_id and username:
+        is_owner = username in data.get('owners', [])
+        action = 'relinquish' if is_owner else 'claim'
+        keyboard.append([InlineKeyboardButton(
+            text="❌ У меня нет рецепта" if is_owner else "✅ У меня есть рецепт",
+            callback_data=build_recipe_owner_callback(
+                action,
+                recipe_id,
+                gear_id,
+                rarity,
+                page,
+                slot_index,
+            ),
+        )])
 
-    await upsert_rich_card(
+    back_callback = (
+        f"page_gear_{rarity}_{slot_index}_{page}"
+        if slot_index is not None
+        else "gear_rarities"
+    )
+    keyboard.append([InlineKeyboardButton(
+        text="🔙 Назад к списку",
+        callback_data=back_callback,
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def render_gear_card(
+    callback: types.CallbackQuery,
+    gear_id: int,
+    rarity: str,
+    page: int,
+    slot_index: int | None = None,
+    *,
+    replace: bool = False,
+) -> bool:
+    data = await db.get_gear_card(gear_id)
+    if not data:
+        await replace_callback_message_text(callback, "Предмет не найден.")
+        return False
+
+    # Данные карточки являются источником истины: старые кнопки могут содержать
+    # редкость, которая уже изменилась в админке.
+    rarity = data['rarity']
+    rich_msg = await format_gear_card_rich(
+        gear_id,
+        rarity,
+        page,
+        data=data,
+    )
+    plain_text = await format_gear_card_plain(
+        gear_id,
+        rarity,
+        page,
+        data=data,
+    )
+    reply_markup = await build_gear_card_keyboard(
+        data,
+        callback.from_user.username,
+        page,
+        slot_index,
+    )
+    render_card = replace_rich_card if replace else upsert_rich_card
+    await render_card(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         rich_message=rich_msg,
         plain_text=plain_text,
         reply_markup=reply_markup,
         current_message=callback.message,
+    )
+    return True
+
+
+@dp.callback_query(F.data.startswith(("view_gear_", "nav_gear_")))
+async def view_gear(callback: types.CallbackQuery):
+    parsed = parse_gear_view_callback(callback.data)
+    if not parsed:
+        await callback.answer("Некорректная ссылка на снаряжение.", show_alert=True)
+        return
+    gear_id, rarity, slot_index, page = parsed
+    await callback.answer()
+    await log_view_gear(callback.from_user.id, gear_id)
+    await render_gear_card(
+        callback,
+        gear_id,
+        rarity,
+        page,
+        slot_index,
+        replace=callback.data.startswith("nav_gear_"),
     )
 
 # ---------- Карты ----------
@@ -1594,93 +1707,51 @@ async def view_card(callback: types.CallbackQuery):
         current_message=callback.message,
     )
 
-@dp.callback_query(F.data.startswith("recipe_claim_"))
-async def recipe_claim(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    recipe_id = int(parts[2])
-    gear_id = int(parts[3])
-    rarity = parts[4]
-    page = int(parts[5])
+@dp.callback_query(F.data.startswith(("recipe_claim_", "recipe_relinquish_")))
+async def update_recipe_owner(callback: types.CallbackQuery):
+    parsed = parse_recipe_owner_callback(callback.data)
+    if not parsed:
+        await callback.answer("Некорректная кнопка рецепта.", show_alert=True)
+        return
+    action, recipe_id, gear_id, rarity, slot_index, page = parsed
     username = callback.from_user.username
-
     if not username:
-        await callback.answer("У тебя нет username. Установи его в настройках Telegram.", show_alert=True)
+        await callback.answer(
+            "У тебя нет username. Установи его в настройках Telegram.",
+            show_alert=True,
+        )
         return
 
-    await db.add_recipe_owner(recipe_id, username)
-    await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("✅ Ты добавлен в список владельцев рецепта!", show_alert=False)
-
-@dp.callback_query(F.data.startswith("recipe_relinquish_"))
-async def recipe_relinquish(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    recipe_id = int(parts[2])
-    gear_id = int(parts[3])
-    rarity = parts[4]
-    page = int(parts[5])
-    username = callback.from_user.username
-
-    if not username:
-        await callback.answer("Ошибка: username не найден.", show_alert=True)
+    gear = await db.get_gear_card(gear_id)
+    if not gear or gear.get('recipe_id') != recipe_id:
+        await callback.answer(
+            "Рецепт изменился или был удалён. Открой карточку заново.",
+            show_alert=True,
+        )
+        return
+    if gear.get('rarity') != 'epic':
+        await callback.answer(
+            "Для этого снаряжения учёт владельцев рецепта недоступен.",
+            show_alert=True,
+        )
         return
 
-    await db.remove_recipe_owner(recipe_id, username)
-    await update_gear_card(callback, gear_id, rarity, page)
-    await callback.answer("❌ Ты удален из списка владельцев рецепта.", show_alert=False)
+    if action == 'claim':
+        await db.add_recipe_owner(recipe_id, username)
+        result_text = "✅ Ты добавлен в список владельцев рецепта!"
+    else:
+        await db.remove_recipe_owner(recipe_id, username)
+        result_text = "❌ Ты удалён из списка владельцев рецепта."
 
-async def update_gear_card(callback: types.CallbackQuery, gear_id: int, rarity: str, page: int):
-    rich_msg = await format_gear_card_rich(gear_id, rarity, page)
-    plain_text = await format_gear_card_plain(gear_id, rarity, page)
-    # остальной код без изменений (он уже использует rarity и page)
-    recipe_id = await db.get_recipe_id_by_gear(gear_id)
-    user_username = callback.from_user.username
-
-    neighbours = await db.get_prev_next_gear_by_slot(gear_id, rarity)
-    nav_buttons = []
-    if neighbours['prev_id']:
-        nav_buttons.append(InlineKeyboardButton(
-            text="◀️ Предыдущий",
-            callback_data=f"view_gear_{neighbours['prev_id']}_{rarity}_{page}"
-        ))
-    if neighbours['next_id']:
-        nav_buttons.append(InlineKeyboardButton(
-            text="Следующий ▶️",
-            callback_data=f"view_gear_{neighbours['next_id']}_{rarity}_{page}"
-        ))
-
-    back_button = InlineKeyboardButton(
-        text="🔙 Назад к списку",
-        callback_data=f"list_gear_{rarity}_{page}"
+    await render_gear_card(
+        callback,
+        gear_id,
+        rarity,
+        page,
+        slot_index,
+        replace=True,
     )
-
-    keyboard = []
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    if rarity == 'epic' and recipe_id and user_username:
-        owners = await db.get_recipe_owners(recipe_id)
-        if user_username in owners:
-            keyboard.append([InlineKeyboardButton(
-                text="❌ У меня нет рецепта",
-                callback_data=f"recipe_relinquish_{recipe_id}_{gear_id}_{rarity}_{page}"
-            )])
-        else:
-            keyboard.append([InlineKeyboardButton(
-                text="✅ У меня есть рецепт",
-                callback_data=f"recipe_claim_{recipe_id}_{gear_id}_{rarity}_{page}"
-            )])
-
-    keyboard.append([back_button])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-    await upsert_rich_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
-        rich_message=rich_msg,
-        plain_text=plain_text,
-        reply_markup=reply_markup,
-        current_message=callback.message,
-    )
+    await callback.answer(result_text, show_alert=False)
 
 # ---------- Ресурсы по категориям ----------
 @dp.callback_query(F.data.startswith("resource_cat_"))

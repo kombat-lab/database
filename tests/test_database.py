@@ -177,6 +177,68 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ["Шлем Альфа", "Шлем Ястреба", "Броня", "Щит"],
         )
 
+    async def test_gear_lists_and_neighbours_share_the_same_order(self):
+        await self.db.add_gear("Обычный", "common", "шлем", "⚪", 5)
+        last = await self.db.add_gear("Ястреб", "rare", "шлем", "3", 2)
+        first = await self.db.add_gear("Альфа", "rare", "шлем", "1", 1)
+        middle = await self.db.add_gear("Бета", "rare", "шлем", "2", 1)
+        await self.db.add_gear("Броня", "rare", "тело", "🦺", 1)
+
+        admin_rows = await self.db.get_gear_by_slot("шлем", 0, 10)
+        public_rows = await self.db.get_gear_by_rarity_slot(
+            "rare", "шлем", 0, 10
+        )
+
+        self.assertEqual(
+            [row["name"] for row in admin_rows],
+            ["Обычный", "Альфа", "Бета", "Ястреб"],
+        )
+        self.assertEqual(
+            [row["name"] for row in public_rows],
+            ["Альфа", "Бета", "Ястреб"],
+        )
+        self.assertEqual(
+            await self.db.get_prev_next_gear(
+                middle, "rare", "шлем"
+            ),
+            {"prev_id": first, "next_id": last},
+        )
+
+    async def test_gear_delete_cleans_drop_and_recipe_relations(self):
+        location_id = await self.db.execute_insert(
+            "INSERT INTO locations (name, emoji) VALUES (?, ?)",
+            ("Лес", "🌲"),
+        )
+        mob_id = await self.db.execute_insert(
+            """
+            INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("Страж", "🐺", 10, 1, 2, 3, location_id),
+        )
+        resource_id = await self.db.add_resource("Руда", "🪨")
+        gear_id = await self.db.add_gear("Меч", "rare", "основная рука", "🗡")
+        recipe_id = await self.db.create_recipe("gear", gear_id)
+        await self.db.add_ingredient(recipe_id, resource_id, 2)
+        await self.db.add_recipe_owner(recipe_id, "tester")
+        await self.db.add_drop(mob_id, "gear", gear_id)
+
+        await self.db.delete_gear(gear_id)
+
+        self.assertIsNone(await self.db.get_gear_by_id(gear_id))
+        checks = (
+            ("drops", "item_type = 'gear' AND item_id = ?", gear_id),
+            ("recipes", "id = ?", recipe_id),
+            ("recipe_ingredients", "recipe_id = ?", recipe_id),
+            ("recipe_owners", "recipe_id = ?", recipe_id),
+        )
+        for table, condition, value in checks:
+            rows = await self.db.execute_query(
+                f"SELECT 1 FROM {table} WHERE {condition}",
+                (value,),
+            )
+            self.assertEqual(rows, [], table)
+
     async def test_card_aggregates_preserve_commas_and_pipes(self):
         await self.db.execute_query(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("forest, cave | level", "📍")
