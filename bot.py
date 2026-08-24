@@ -540,8 +540,10 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
     is_alchemy = (data.get('type') == 'alchemy')
     resource_name = escape_html(data['name'])
 
-    html = f"<b>{escape_html(data['emoji'])} {resource_name}</b><br>"
-    html += f"🏷 Тип: {type_str}<br>"
+    html = (
+        f"<p><b>{escape_html(data['emoji'])} {resource_name}</b><br>"
+        f"🏷 Тип: {type_str}</p>"
+    )
     html += (
         '<tg-button-row align="center">'
         f'<tg-button type="copy_text" style="primary" text="{resource_name}">'
