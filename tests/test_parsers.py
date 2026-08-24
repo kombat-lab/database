@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
+from aiogram.types import Update
+
 from admin_utils import (
     OPTIONAL_NOTE_SKIP_CALLBACK,
     build_edit_menu,
@@ -36,6 +38,47 @@ from bot import (
     replace_rich_card,
 )
 from utils import RICH_TABLE_OPEN
+
+
+class BotApiCompatibilityTests(unittest.TestCase):
+    def test_bot_api_10_3_rich_button_update_is_deserialized(self):
+        update = Update.model_validate({
+            "update_id": 1001,
+            "callback_query": {
+                "id": "callback-1",
+                "from": {
+                    "id": 123456789,
+                    "is_bot": False,
+                    "first_name": "Test User",
+                },
+                "message": {
+                    "message_id": 42,
+                    "date": 1787600000,
+                    "chat": {
+                        "id": 123456789,
+                        "type": "private",
+                        "first_name": "Test User",
+                    },
+                    "rich_message": {
+                        "blocks": [{
+                            "type": "buttons",
+                            "buttons": [{
+                                "text": "📋 Скопировать название",
+                                "style": "primary",
+                                "copy_text": {"text": "Клочок меха"},
+                            }],
+                            "align": "center",
+                        }],
+                    },
+                },
+                "chat_instance": "chat-instance-1",
+                "data": "nav_resource_115_craft_2",
+            },
+        })
+
+        button_block = update.callback_query.message.rich_message.blocks[0]
+        self.assertEqual(button_block.type, "buttons")
+        self.assertEqual(button_block.buttons[0].copy_text.text, "Клочок меха")
 
 
 class CallbackParserTests(unittest.TestCase):

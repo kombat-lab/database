@@ -1,2 +1,2 @@
-aiogram>=3.30,<3.32
+aiogram @ https://github.com/aiogram/aiogram/archive/37683f1ef4d90861b1021c136d950b5db8cb9ae4.zip
 aiosqlite>=0.20,<0.23
