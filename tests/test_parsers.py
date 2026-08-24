@@ -445,12 +445,4 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<td>3 шт.</td>", rich.html)
         self.assertIn(RICH_TABLE_OPEN, rich.html)
         self.assertNotIn("cellpadding=", rich.html)
-        self.assertIn("🏷 Тип: ⚒️ Крафтовый</p>", rich.html)
-        self.assertLess(rich.html.index("</p>"), rich.html.index("<tg-button-row"))
-        self.assertIn('<tg-button-row align="center">', rich.html)
-        self.assertIn(
-            '<tg-button type="copy_text" style="primary" text="Кожаный лоскут">',
-            rich.html,
-        )
-        self.assertIn("📋 Скопировать название", rich.html)
-        self.assertNotIn("tg-button", plain)
+        self.assertNotIn("tg-button", rich.html)

@@ -538,19 +538,9 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
 
     type_str = get_resource_type_name(data.get('type'))
     is_alchemy = (data.get('type') == 'alchemy')
-    resource_name = escape_html(data['name'])
 
-    html = (
-        f"<p><b>{escape_html(data['emoji'])} {resource_name}</b><br>"
-        f"🏷 Тип: {type_str}</p>"
-    )
-    html += (
-        '<tg-button-row align="center">'
-        f'<tg-button type="copy_text" style="primary" text="{resource_name}">'
-        "📋 Скопировать название"
-        "</tg-button>"
-        "</tg-button-row>"
-    )
+    html = f"<b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
+    html += f"🏷 Тип: {type_str}<br>"
 
     # Параметр для возврата к текущему ресурсу
     return_param = build_resource_return_param(resource_id, context_type, context_id, page)
