@@ -35,6 +35,7 @@ from bot import (
     parse_return_param,
     replace_rich_card,
 )
+from utils import RICH_TABLE_OPEN
 
 
 class CallbackParserTests(unittest.TestCase):
@@ -241,6 +242,8 @@ class GearAdminPresentationTests(unittest.TestCase):
             self.assertIn("🪖 Шлем", text)
             self.assertIn("Все классы", text)
 
+        self.assertIn(RICH_TABLE_OPEN, rich)
+
 
 class AlchemyCraftLocationTests(unittest.TestCase):
     def test_meredith_resources_use_trading_outpost(self):
@@ -335,6 +338,8 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Страж", card)
                 self.assertIn("Рецепт пока не заполнен.", card)
 
+        self.assertIn(RICH_TABLE_OPEN, rich.html)
+
 
 class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_usage_recipes_are_rendered_in_plain_and_rich_cards(self):
@@ -395,3 +400,5 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<th>Результат</th><th>Нужно</th>", rich.html)
         self.assertIn("<td>5 шт.</td>", rich.html)
         self.assertIn("<td>3 шт.</td>", rich.html)
+        self.assertIn(RICH_TABLE_OPEN, rich.html)
+        self.assertNotIn("cellpadding=", rich.html)

@@ -1,2 +1,2 @@
-aiogram>=3.29.1,<3.31
+aiogram>=3.30,<3.32
 aiosqlite>=0.20,<0.23

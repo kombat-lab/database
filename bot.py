@@ -41,7 +41,7 @@ from game_constants import (
     RARITY_NAMES,
     format_gear_classes,
 )
-from utils import clean_username, escape_html
+from utils import RICH_TABLE_OPEN, clean_username, escape_html
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -421,7 +421,7 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
 
     # Таблица 2×2
     table_html = f"""
-    <table border="1" cellspacing="0" cellpadding="5">
+    {RICH_TABLE_OPEN}
         <tbody>
             <tr>
                 <td><b>❤️ HP:</b> {data['hp']}</td>
@@ -555,7 +555,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
             mob_name = f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>"
             rows += f"<tr><td>{mob_name}</td><td>{loc_str}</td></tr>"
         html += f"""
-        <table border="1" cellspacing="0" cellpadding="5">
+        {RICH_TABLE_OPEN}
             <tbody>
                 <tr><th>Моб</th><th>Локация</th></tr>
                 {rows}
@@ -572,7 +572,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
         html += (
             "<br><details>"
             "<summary>🧩 Используется в рецептах:</summary>"
-            "<table border='1' cellspacing='0' cellpadding='5'><tbody>"
+            f"{RICH_TABLE_OPEN}<tbody>"
             "<tr><th>Результат</th><th>Нужно</th></tr>"
             f"{rows}</tbody></table>"
             "</details>"
@@ -604,7 +604,7 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
             rows += f"<tr><td>{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a></td><td>{ing['quantity']} шт.</td></tr>"
 
         html += f"""
-        <table border="1" cellspacing="0" cellpadding="5">
+        {RICH_TABLE_OPEN}
             <tbody>
                 <tr><th>Ресурс</th><th>Количество</th></tr>
                 {rows}
@@ -691,7 +691,7 @@ async def format_gear_card_rich(
         f"{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
     )
     html += f"""
-    <table border="1" cellspacing="0" cellpadding="5">
+    {RICH_TABLE_OPEN}
         <tbody>
             <tr>
                 <th align="center">Уровень</th>
@@ -721,7 +721,7 @@ async def format_gear_card_rich(
                 ing_link = f'<a href="{link}">{ing_name}</a>'
                 rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
             html += f"""
-            <table border="1" cellspacing="0" cellpadding="5">
+            {RICH_TABLE_OPEN}
                 <tbody>{rows}</tbody>
             </table>
             """

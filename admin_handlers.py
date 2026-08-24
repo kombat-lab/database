@@ -36,7 +36,7 @@ from game_constants import (
     parse_gear_classes,
 )
 from stats_handlers import stats_router
-from utils import clean_username, escape_html, is_valid_emoji
+from utils import RICH_TABLE_OPEN, clean_username, escape_html, is_valid_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -1540,7 +1540,7 @@ async def show_recipe(target, recipe: dict, state: FSMContext):
         rich_html = (
             f"<b>📜 Рецепт ID {recipe['id']}</b><br>"
             f"🎁 Результат: {result_info} · {recipe['quantity']} шт.<br>"
-            "<table><tbody><tr><th>Ингредиент</th><th>Количество</th></tr>"
+            f"{RICH_TABLE_OPEN}<tbody><tr><th>Ингредиент</th><th>Количество</th></tr>"
             f"{ingredient_rows}</tbody></table>"
         )
         if recipe['result_type'] == 'gear':

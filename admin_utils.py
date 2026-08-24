@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
 
-from utils import escape_html, is_valid_emoji
+from utils import RICH_TABLE_OPEN, escape_html, is_valid_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ def build_edit_menu(
     )
     rich_html = (
         f"<b>✏️ Редактирование: {escape_html(entity_config['name_ru'])} · ID {entity_id}</b>"
-        "<table><tbody><tr><th>Поле</th><th>Значение</th></tr>"
+        f"{RICH_TABLE_OPEN}<tbody><tr><th>Поле</th><th>Значение</th></tr>"
         + "".join(rich_rows) + "</tbody></table>"
     )
     return fallback_text, rich_html, InlineKeyboardMarkup(inline_keyboard=keyboard)
