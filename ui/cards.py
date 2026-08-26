@@ -105,8 +105,15 @@ def build_gear_return_param(
 def _link_builder(
     bot_username: str | None,
     link_mode: EntityLinkMode,
+    source_type: str,
+    source_id: int,
 ) -> EntityLinkBuilder:
-    return EntityLinkBuilder(bot_username or DEFAULT_BOT_USERNAME, link_mode)
+    return EntityLinkBuilder(
+        bot_username or DEFAULT_BOT_USERNAME,
+        link_mode,
+        source_type,
+        source_id,
+    )
 
 
 def _entity_line(
@@ -180,7 +187,7 @@ async def build_mob_card(
     if not data:
         return CardView("Моб не найден.", "Моб не найден.")
 
-    links = _link_builder(bot_username, link_mode)
+    links = _link_builder(bot_username, link_mode, "mob", mob_id)
     return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
     loc_str = f"{escape_html(data['loc_emoji'])} {escape_html(data['loc_name'])}"
     composer = CardComposer()
@@ -267,7 +274,7 @@ async def build_resource_card(
     if not data:
         return CardView("Ресурс не найден.", "Ресурс не найден.")
 
-    links = _link_builder(bot_username, link_mode)
+    links = _link_builder(bot_username, link_mode, "resource", resource_id)
     return_param = build_resource_return_param(
         resource_id,
         context_type,
@@ -383,7 +390,7 @@ async def build_gear_card(
     if not data:
         return CardView("Предмет не найден.", "Предмет не найден.")
 
-    links = _link_builder(bot_username, link_mode)
+    links = _link_builder(bot_username, link_mode, "gear", gear_id)
     return_param = build_gear_return_param(gear_id, rarity, page)
     craft_text = "да" if data.get("craftable") else "нет"
     composer = CardComposer()
@@ -492,7 +499,7 @@ async def build_card_card(
     if not card:
         return CardView("Карта не найдена.", "Карта не найдена.")
 
-    links = _link_builder(bot_username, link_mode)
+    links = _link_builder(bot_username, link_mode, "card", card_id)
     return_param = None
     if context_type and context_id:
         if context_type == "location":

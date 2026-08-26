@@ -50,6 +50,8 @@ class EntityLinkBuilder:
 
     bot_username: str
     mode: EntityLinkMode = EntityLinkMode.DEEP_LINK
+    source_type: str | None = None
+    source_id: int | None = None
 
     def link(
         self,
@@ -68,9 +70,14 @@ class EntityLinkBuilder:
         if self.mode is EntityLinkMode.DEEP_LINK:
             return MarkupPair.same(fallback)
 
+        if not self.source_type or not self.source_id:
+            return MarkupPair.same(fallback)
+
         callback_data = EntityNavigateCallback(
             entity_type=item_type,
             entity_id=item_id,
+            source_type=self.source_type,
+            source_id=self.source_id,
         ).pack()
         rich = (
             '<tg-button type="callback_data" style="link" '

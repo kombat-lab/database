@@ -4,7 +4,7 @@ import os
 import re
 
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -40,6 +40,8 @@ from game_constants import (
 )
 from ui.callbacks import (
     CardViewCallback,
+    EntityBackCallback,
+    EntityNavigateCallback,
     GearViewCallback,
     MobViewCallback,
     RecipeOwnerCallback,
@@ -58,6 +60,8 @@ from ui.cards import (
     get_rarity_emoji,
 )
 from ui.rich import RichRenderMode, present_rich_card
+from ui.links import EntityLinkMode
+from ui.navigation import EntityNavigationHistory, EntityRef
 from utils import escape_html
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -106,9 +110,93 @@ def get_location_list_title(location: dict, category: str, page: int) -> str:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 inline_log_tasks = {}
+entity_navigation = EntityNavigationHistory()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+
+def get_card_link_mode(chat: types.Chat) -> EntityLinkMode:
+    return (
+        EntityLinkMode.CALLBACK
+        if chat.type == ChatType.PRIVATE
+        else EntityLinkMode.DEEP_LINK
+    )
+
+
+def get_navigation_key(callback: types.CallbackQuery) -> tuple[int, int, int]:
+    return (
+        callback.from_user.id,
+        callback.message.chat.id,
+        callback.message.message_id,
+    )
+
+
+async def build_interactive_entity_card(entity: EntityRef):
+    common = {
+        "bot_username": BOT_USERNAME,
+        "link_mode": EntityLinkMode.CALLBACK,
+    }
+    if entity.entity_type == "mob":
+        return await build_mob_card(db, entity.entity_id, **common)
+    if entity.entity_type == "resource":
+        return await build_resource_card(db, entity.entity_id, **common)
+    if entity.entity_type == "gear":
+        return await build_gear_card(db, entity.entity_id, **common)
+    if entity.entity_type == "card":
+        return await build_card_card(db, entity.entity_id, **common)
+    raise ValueError("Unsupported entity type")
+
+
+def build_interactive_navigation_keyboard(
+    previous: EntityRef | None,
+) -> InlineKeyboardMarkup:
+    keyboard = []
+    if previous:
+        keyboard.append([InlineKeyboardButton(
+            text="↩️ Назад",
+            callback_data=EntityBackCallback(
+                entity_type=previous.entity_type,
+                entity_id=previous.entity_id,
+            ).pack(),
+        )])
+    keyboard.append([InlineKeyboardButton(
+        text="🏠 В главное меню",
+        callback_data="back_to_main_menu",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def log_interactive_entity_view(user_id: int, entity: EntityRef) -> None:
+    loggers = {
+        "mob": log_view_mob,
+        "resource": log_view_resource,
+        "gear": log_view_gear,
+        "card": log_view_card,
+    }
+    await loggers[entity.entity_type](user_id, entity.entity_id)
+
+
+async def present_interactive_entity(
+    callback: types.CallbackQuery,
+    entity: EntityRef,
+    previous: EntityRef | None,
+) -> None:
+    old_key = get_navigation_key(callback)
+    card_view = await build_interactive_entity_card(entity)
+    sent = await present_rich_card(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        card=card_view,
+        reply_markup=build_interactive_navigation_keyboard(previous),
+        current_message=callback.message,
+    )
+    new_key = (
+        callback.from_user.id,
+        sent.chat.id,
+        sent.message_id,
+    )
+    entity_navigation.transfer(old_key, new_key)
 
 async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     counts = await db.execute_query(
@@ -387,6 +475,7 @@ async def send_menu(message: types.Message):
                     context_id=context_id,
                     page=page,
                     bot_username=BOT_USERNAME,
+                    link_mode=get_card_link_mode(message.chat),
                 )
             elif target_type == "mob":
                 card_view = await build_mob_card(
@@ -395,6 +484,7 @@ async def send_menu(message: types.Message):
                     location_id=None,
                     page=page,
                     bot_username=BOT_USERNAME,
+                    link_mode=get_card_link_mode(message.chat),
                 )
             elif target_type == "gear":
                 card_view = await build_gear_card(
@@ -403,6 +493,7 @@ async def send_menu(message: types.Message):
                     rarity,
                     page,
                     bot_username=BOT_USERNAME,
+                    link_mode=get_card_link_mode(message.chat),
                 )
             elif target_type == "card":
                 card_view = await build_card_card(
@@ -412,6 +503,7 @@ async def send_menu(message: types.Message):
                     context_type=context_type,
                     context_id=context_id,
                     bot_username=BOT_USERNAME,
+                    link_mode=get_card_link_mode(message.chat),
                 )
             else:
                 await message.answer("Неизвестный тип объекта.")
@@ -687,6 +779,50 @@ async def replace_callback_message_text(
     )
 
 # ---------- Callback-обработчики ----------
+@dp.callback_query(EntityNavigateCallback.filter())
+async def navigate_related_entity(
+    callback: types.CallbackQuery,
+    callback_data: EntityNavigateCallback,
+):
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Интерактивная навигация доступна в личном чате с ботом.",
+            show_alert=True,
+        )
+        return
+
+    source = EntityRef(callback_data.source_type, callback_data.source_id)
+    target = EntityRef(callback_data.entity_type, callback_data.entity_id)
+    if not source.is_valid or not target.is_valid:
+        await callback.answer("Некорректная ссылка.", show_alert=True)
+        return
+
+    key = get_navigation_key(callback)
+    entity_navigation.visit(key, source, target)
+    previous = entity_navigation.previous(key)
+    await callback.answer()
+    await log_interactive_entity_view(callback.from_user.id, target)
+    await present_interactive_entity(callback, target, previous)
+
+
+@dp.callback_query(EntityBackCallback.filter())
+async def navigate_related_entity_back(
+    callback: types.CallbackQuery,
+    callback_data: EntityBackCallback,
+):
+    fallback = EntityRef(callback_data.entity_type, callback_data.entity_id)
+    if not fallback.is_valid:
+        await callback.answer("История переходов устарела.", show_alert=True)
+        return
+
+    key = get_navigation_key(callback)
+    target = entity_navigation.back(key) or fallback
+    previous = entity_navigation.previous(key)
+    await callback.answer()
+    await log_interactive_entity_view(callback.from_user.id, target)
+    await present_interactive_entity(callback, target, previous)
+
+
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery):
     await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
@@ -762,6 +898,7 @@ async def view_mob(callback: types.CallbackQuery):
         parsed.location_id,
         parsed.page,
         bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(callback.message.chat),
     )
 
     # Формируем клавиатуру
@@ -820,6 +957,7 @@ async def view_resource(callback: types.CallbackQuery):
         context_id=parsed.location_id,
         page=parsed.page,
         bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(callback.message.chat),
     )
 
     neighbours = await db.get_prev_next_resource_by_location(
@@ -953,6 +1091,7 @@ async def render_gear_card(
         page,
         data=data,
         bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(callback.message.chat),
     )
     reply_markup = await build_gear_card_keyboard(
         data,
@@ -1007,6 +1146,7 @@ async def view_card(callback: types.CallbackQuery):
         db,
         parsed.card_id,
         bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(callback.message.chat),
     )
 
     neighbours = await db.get_prev_next_card_by_slot(parsed.card_id)
@@ -1132,6 +1272,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
         context_id=parsed.resource_type,
         page=parsed.page,
         bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(callback.message.chat),
     )
 
     neighbours = await db.get_prev_next_resource_by_type(
@@ -1177,6 +1318,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
+    entity_navigation.clear(get_navigation_key(callback))
     await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
     await callback.message.delete()
     await callback.answer()

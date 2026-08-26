@@ -25,6 +25,8 @@ from bot import (
     get_location_list_title,
 )
 from ui.callbacks import (
+    EntityBackCallback,
+    EntityNavigateCallback,
     GearViewCallback,
     RecipeOwnerCallback,
     ResourceViewCallback,
@@ -39,6 +41,7 @@ from ui.cards import (
     get_alchemy_craft_location,
 )
 from ui.links import EntityLinkMode
+from ui.navigation import EntityNavigationHistory, EntityRef
 from ui.rich import CardView, RichRenderMode, present_rich_card
 from utils import RICH_TABLE_OPEN
 
@@ -82,6 +85,52 @@ class BotApiCompatibilityTests(unittest.TestCase):
         button_block = update.callback_query.message.rich_message.blocks[0]
         self.assertEqual(button_block.type, "buttons")
         self.assertEqual(button_block.buttons[0].copy_text.text, "Клочок меха")
+
+
+class EntityNavigationTests(unittest.TestCase):
+    def test_callback_contains_target_and_source(self):
+        callback = EntityNavigateCallback(
+            entity_type="mob",
+            entity_id=5,
+            source_type="resource",
+            source_id=115,
+        )
+        packed = callback.pack()
+        self.assertEqual(packed, "entity:mob:5:resource:115")
+        self.assertEqual(EntityNavigateCallback.unpack(packed), callback)
+        self.assertEqual(
+            EntityBackCallback(entity_type="resource", entity_id=115).pack(),
+            "entity_back:resource:115",
+        )
+
+    def test_history_supports_multiple_steps_and_message_replacement(self):
+        history = EntityNavigationHistory(max_sessions=4, max_depth=4)
+        old_key = (1, 10, 100)
+        new_key = (1, 10, 101)
+        resource = EntityRef("resource", 115)
+        mob = EntityRef("mob", 5)
+        gear = EntityRef("gear", 30)
+
+        history.visit(old_key, resource, mob)
+        history.visit(old_key, mob, gear)
+        self.assertEqual(history.previous(old_key), mob)
+        self.assertEqual(history.back(old_key), mob)
+        self.assertEqual(history.previous(old_key), resource)
+
+        history.transfer(old_key, new_key)
+        self.assertIsNone(history.previous(old_key))
+        self.assertEqual(history.previous(new_key), resource)
+
+    def test_stale_source_resets_history(self):
+        history = EntityNavigationHistory()
+        key = (1, 10, 100)
+        resource = EntityRef("resource", 115)
+        mob = EntityRef("mob", 5)
+        card = EntityRef("card", 7)
+
+        history.visit(key, resource, mob)
+        history.visit(key, card, resource)
+        self.assertEqual(history.previous(key), card)
 
 
 class CallbackParserTests(unittest.TestCase):
@@ -478,6 +527,9 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn('style="link"', card.rich_html)
-        self.assertIn('data="entity:mob:5"', card.rich_html)
+        self.assertIn(
+            'data="entity:mob:5:resource:115"',
+            card.rich_html,
+        )
         self.assertNotIn("tg-button", card.fallback_html)
         self.assertIn("https://t.me/fog_database_bot?start=mob_5", card.fallback_html)

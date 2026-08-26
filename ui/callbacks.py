@@ -22,6 +22,15 @@ class EntityNavigateCallback(CallbackData, prefix="entity"):
 
     entity_type: str
     entity_id: int
+    source_type: str
+    source_id: int
+
+
+class EntityBackCallback(CallbackData, prefix="entity_back"):
+    """Back navigation with a stateless fallback for expired history."""
+
+    entity_type: str
+    entity_id: int
 
 
 @dataclass(frozen=True)
