@@ -2,12 +2,13 @@ import logging
 
 from aiogram import F, Router, types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from ui.rich import CardView, present_rich_card
 from utils import RICH_TABLE_OPEN, escape_html, is_valid_emoji
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def build_optional_note_keyboard() -> InlineKeyboardMarkup:
             text="⏭ Без примечания",
             callback_data=OPTIONAL_NOTE_SKIP_CALLBACK,
         )
-    ]])
+    ]], force_reply=True)
 
 
 def normalize_optional_note(value: str) -> str:
@@ -34,23 +35,17 @@ def normalize_optional_note(value: str) -> str:
 async def edit_admin_rich(callback: types.CallbackQuery, html: str,
                           reply_markup: InlineKeyboardMarkup = None,
                           fallback_html: str = None):
-    """Редактирует экран админки как Rich Message с HTML fallback."""
-    try:
-        return await callback.bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            rich_message=InputRichMessage(html=html),
-            reply_markup=reply_markup,
-        )
-    except TelegramAPIError as error:
-        if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
-            return callback.message
-        logger.info("Rich admin screen fallback: %s", error)
-        return await callback.message.edit_text(
-            fallback_html or html,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup,
-        )
+    """Presents an admin screen through the shared RichMessage policy."""
+    return await present_rich_card(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        current_message=callback.message,
+        card=CardView(
+            rich_html=html,
+            fallback_html=fallback_html or html,
+        ),
+        reply_markup=reply_markup,
+    )
 
 class GenericEditStates(StatesGroup):
     select_field = State()

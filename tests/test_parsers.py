@@ -12,31 +12,34 @@ from admin_utils import (
     build_optional_note_keyboard,
     normalize_optional_note,
 )
-from admin_handlers import (
-    ENTITY_CONFIGS,
+from admin_handlers import ENTITY_CONFIGS
+from admin_mobs import (
     build_mob_edit_keyboard,
     get_drop_filter_options,
     get_location_choice_keyboard,
     resolve_drop_filter,
 )
+from database import db
 from bot import (
+    build_gear_card_keyboard,
+    get_location_list_title,
+)
+from ui.callbacks import (
+    GearViewCallback,
+    RecipeOwnerCallback,
+    ResourceViewCallback,
+    parse_resource_page,
+    parse_return_context,
+)
+from ui.cards import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
-    build_gear_card_keyboard,
-    build_recipe_owner_callback,
-    format_gear_card_plain,
-    format_gear_card_rich,
-    format_resource_card,
-    format_resource_card_rich,
+    build_gear_card,
+    build_resource_card,
     get_alchemy_craft_location,
-    get_location_list_title,
-    parse_resource_page_callback,
-    parse_resource_view_callback,
-    parse_gear_view_callback,
-    parse_recipe_owner_callback,
-    parse_return_param,
-    replace_rich_card,
 )
+from ui.links import EntityLinkMode
+from ui.rich import CardView, RichRenderMode, present_rich_card
 from utils import RICH_TABLE_OPEN
 
 
@@ -84,44 +87,44 @@ class BotApiCompatibilityTests(unittest.TestCase):
 class CallbackParserTests(unittest.TestCase):
     def test_gear_callbacks_preserve_slot_context(self):
         self.assertEqual(
-            parse_gear_view_callback("nav_gear_47_epic_2_3"),
-            (47, "epic", 2, 3),
+            GearViewCallback.parse("nav_gear_47_epic_2_3"),
+            GearViewCallback(47, "epic", 2, 3),
         )
         self.assertEqual(
-            parse_gear_view_callback("view_gear_47_epic_3"),
-            (47, "epic", None, 3),
+            GearViewCallback.parse("view_gear_47_epic_3"),
+            GearViewCallback(47, "epic", None, 3),
         )
 
-        callback_data = build_recipe_owner_callback(
-            "claim", 36, 47, "epic", 3, 2
-        )
+        callback_data = RecipeOwnerCallback(
+            "claim", 36, 47, "epic", 2, 3
+        ).pack()
         self.assertEqual(callback_data, "recipe_claim_36_47_epic_2_3")
         self.assertEqual(
-            parse_recipe_owner_callback(callback_data),
-            ("claim", 36, 47, "epic", 2, 3),
+            RecipeOwnerCallback.parse(callback_data),
+            RecipeOwnerCallback("claim", 36, 47, "epic", 2, 3),
         )
         self.assertEqual(
-            parse_recipe_owner_callback("recipe_claim_36_47_epic_3"),
-            ("claim", 36, 47, "epic", None, 3),
+            RecipeOwnerCallback.parse("recipe_claim_36_47_epic_3"),
+            RecipeOwnerCallback("claim", 36, 47, "epic", None, 3),
         )
 
     def test_resource_type_with_underscore(self):
         self.assertEqual(
-            parse_resource_page_callback("res_page_scroll_recipe_3", "res_page_"),
+            parse_resource_page("res_page_scroll_recipe_3", "res_page_"),
             ("scroll_recipe", 3),
         )
         self.assertEqual(
-            parse_resource_view_callback("view_resource_42_scroll_recipe_7"),
-            (42, "scroll_recipe", 7),
+            ResourceViewCallback.parse("view_resource_42_scroll_recipe_7"),
+            ResourceViewCallback(42, "scroll_recipe", 7),
         )
         self.assertEqual(
-            parse_resource_view_callback("nav_resource_42_scroll_recipe_7"),
-            (42, "scroll_recipe", 7),
+            ResourceViewCallback.parse("nav_resource_42_scroll_recipe_7"),
+            ResourceViewCallback(42, "scroll_recipe", 7),
         )
 
     def test_return_contexts(self):
         self.assertEqual(
-            parse_return_param("resource_type_42_scroll_recipe_7"),
+            parse_return_context("resource_type_42_scroll_recipe_7"),
             {
                 "kind": "resource_type",
                 "item_id": 42,
@@ -131,7 +134,7 @@ class CallbackParserTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            parse_return_param("resource_loc_11_4_2"),
+            parse_return_context("resource_loc_11_4_2"),
             {
                 "kind": "resource_loc",
                 "item_id": 11,
@@ -152,10 +155,10 @@ class CallbackParserTests(unittest.TestCase):
         )
         for value in invalid_values:
             with self.subTest(value=value):
-                self.assertIsNone(parse_return_param(value))
+                self.assertIsNone(parse_return_context(value))
 
-        self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
-        self.assertIsNone(parse_resource_view_callback("view_resource_0_craft_1"))
+        self.assertIsNone(parse_resource_page("res_page_scroll_recipe_x", "res_page_"))
+        self.assertIsNone(ResourceViewCallback.parse("view_resource_0_craft_1"))
 
     def test_location_list_titles_are_in_russian(self):
         location = {"id": 5, "name": "Поляна", "emoji": "🏕"}
@@ -187,13 +190,13 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
         current_message.delete.side_effect = delete_old
         bot.send_rich_message.side_effect = send_new
 
-        result = await replace_rich_card(
+        result = await present_rich_card(
             bot=bot,
             chat_id=123,
-            rich_message=object(),
-            plain_text="Карточка",
+            card=CardView("Карточка", "Карточка"),
             reply_markup=object(),
             current_message=current_message,
+            mode=RichRenderMode.REPLACE,
         )
 
         self.assertIs(result, sent_message)
@@ -208,6 +211,7 @@ class OptionalNoteTests(unittest.TestCase):
 
         self.assertEqual(button.text, "⏭ Без примечания")
         self.assertEqual(button.callback_data, OPTIONAL_NOTE_SKIP_CALLBACK)
+        self.assertTrue(keyboard.force_reply)
 
     def test_legacy_dash_and_whitespace_are_normalized(self):
         self.assertEqual(normalize_optional_note(" - "), "")
@@ -369,19 +373,18 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
             "mobs": [{"id": 44, "name": "Страж", "emoji": "🛡️"}],
         }
 
-        with patch("bot.db.get_gear_card", new=AsyncMock(return_value=gear_data)):
-            plain = await format_gear_card_plain(47, "epic", 1)
-            rich = await format_gear_card_rich(47, "epic", 1)
+        with patch("database.db.get_gear_card", new=AsyncMock(return_value=gear_data)):
+            card = await build_gear_card(db, 47, "epic", 1)
 
-        for card in (plain, rich.html):
-            with self.subTest(card_type=type(card).__name__):
-                self.assertIn("📜 Свиток падает с мобов:", card)
-                self.assertIn("Муха-охотник", card)
-                self.assertIn("⚔️ Выпадает с мобов:", card)
-                self.assertIn("Страж", card)
-                self.assertIn("Рецепт пока не заполнен.", card)
+        for rendered in (card.fallback_html, card.rich_html):
+            with self.subTest(card_type=type(rendered).__name__):
+                self.assertIn("📜 Свиток падает с мобов:", rendered)
+                self.assertIn("Муха-охотник", rendered)
+                self.assertIn("⚔️ Выпадает с мобов:", rendered)
+                self.assertIn("Страж", rendered)
+                self.assertIn("Рецепт пока не заполнен.", rendered)
 
-        self.assertIn(RICH_TABLE_OPEN, rich.html)
+        self.assertIn(RICH_TABLE_OPEN, card.rich_html)
 
 
 class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
@@ -416,33 +419,65 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            patch("bot.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
-            patch("bot.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
+            patch("database.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
+            patch("database.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
         ):
-            plain = await format_resource_card(115, "type", "craft", 1)
-            rich = await format_resource_card_rich(115, "type", "craft", 1)
+            card = await build_resource_card(db, 115, "type", "craft", 1)
 
-        for card in (plain, rich.html):
-            with self.subTest(card_type=type(card).__name__):
-                self.assertIn("🧩 Используется в рецептах:", card)
-                self.assertIn("Кожаный шлем", card)
-                self.assertIn("Дублёная кожа", card)
-                self.assertIn("🟢 🪖", card)
-                self.assertNotIn("⚔️", card)
-                self.assertNotIn("⚗️ ⚗️", card)
-                self.assertLess(card.index("Дублёная кожа"), card.index("Кожаный шлем"))
+        for rendered in (card.fallback_html, card.rich_html):
+            with self.subTest(card_type=type(rendered).__name__):
+                self.assertIn("🧩 Используется в рецептах:", rendered)
+                self.assertIn("Кожаный шлем", rendered)
+                self.assertIn("Дублёная кожа", rendered)
+                self.assertIn("🟢 🪖", rendered)
+                self.assertNotIn("⚔️", rendered)
+                self.assertNotIn("⚗️ ⚗️", rendered)
+                self.assertLess(rendered.index("Дублёная кожа"), rendered.index("Кожаный шлем"))
 
-        self.assertIn("— 5 шт.", plain)
-        self.assertIn("— 3 шт.", plain)
-        self.assertIn("<tg-spoiler>", plain)
-        self.assertIn("</tg-spoiler>", plain)
-        self.assertNotIn("<table", plain)
-        self.assertIn("<details>", rich.html)
-        self.assertIn("<summary>🧩 Используется в рецептах:</summary>", rich.html)
-        self.assertIn("</details>", rich.html)
-        self.assertIn("<th>Результат</th><th>Нужно</th>", rich.html)
-        self.assertIn("<td>5 шт.</td>", rich.html)
-        self.assertIn("<td>3 шт.</td>", rich.html)
-        self.assertIn(RICH_TABLE_OPEN, rich.html)
-        self.assertNotIn("cellpadding=", rich.html)
-        self.assertNotIn("tg-button", rich.html)
+        self.assertIn("— 5 шт.", card.fallback_html)
+        self.assertIn("— 3 шт.", card.fallback_html)
+        self.assertIn("<tg-spoiler>", card.fallback_html)
+        self.assertIn("</tg-spoiler>", card.fallback_html)
+        self.assertNotIn("<table", card.fallback_html)
+        self.assertIn("<details>", card.rich_html)
+        self.assertIn("<summary>🧩 Используется в рецептах:</summary>", card.rich_html)
+        self.assertIn("</details>", card.rich_html)
+        self.assertIn("<th>Результат</th><th>Нужно</th>", card.rich_html)
+        self.assertIn("<td>5 шт.</td>", card.rich_html)
+        self.assertIn("<td>3 шт.</td>", card.rich_html)
+        self.assertIn(RICH_TABLE_OPEN, card.rich_html)
+        self.assertNotIn("cellpadding=", card.rich_html)
+        self.assertNotIn("tg-button", card.rich_html)
+
+    async def test_callback_link_mode_keeps_deep_link_fallback(self):
+        resource_data = {
+            "id": 115,
+            "name": "Кожаный лоскут",
+            "emoji": "🪹",
+            "type": "craft",
+            "note": "",
+            "mobs": [{
+                "id": 5,
+                "name": "Волк",
+                "emoji": "🐺",
+                "location_id": 1,
+                "location_name": "Лес",
+                "location_emoji": "🌲",
+            }],
+            "used_in": [],
+        }
+        with (
+            patch("database.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
+            patch("database.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
+        ):
+            card = await build_resource_card(
+                db,
+                115,
+                bot_username="fog_database_bot",
+                link_mode=EntityLinkMode.CALLBACK,
+            )
+
+        self.assertIn('style="link"', card.rich_html)
+        self.assertIn('data="entity:mob:5"', card.rich_html)
+        self.assertNotIn("tg-button", card.fallback_html)
+        self.assertIn("https://t.me/fog_database_bot?start=mob_5", card.fallback_html)
