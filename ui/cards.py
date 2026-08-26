@@ -208,8 +208,9 @@ async def build_mob_card(
         ],
     )
 
+    drop_sections = []
     if data["resource_drops"]:
-        composer.add_list(
+        drop_sections.append((
             "📦 Падает:",
             [
                 _entity_line(
@@ -222,9 +223,9 @@ async def build_mob_card(
                 )
                 for item in data["resource_drops"]
             ],
-        )
+        ))
     if data["gear_drops"]:
-        composer.add_list(
+        drop_sections.append((
             "⚔️ Снаряжение:",
             [
                 _entity_line(
@@ -240,9 +241,9 @@ async def build_mob_card(
                 )
                 for item in data["gear_drops"]
             ],
-        )
+        ))
     if data["card_drops"]:
-        composer.add_list(
+        drop_sections.append((
             "🃏 Карты:",
             [
                 _entity_line(
@@ -256,7 +257,11 @@ async def build_mob_card(
                 )
                 for item in data["card_drops"]
             ],
-        )
+        ))
+    for index, (title, items) in enumerate(drop_sections):
+        if index:
+            composer.add_divider()
+        composer.add_list(title, items)
     return composer.build()
 
 

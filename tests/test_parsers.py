@@ -37,12 +37,13 @@ from ui.cards import (
     DEFAULT_ALCHEMY_CRAFT_LOCATION,
     MEREDITH_ALCHEMY_CRAFT_LOCATION,
     build_gear_card,
+    build_mob_card,
     build_resource_card,
     get_alchemy_craft_location,
 )
 from ui.links import EntityLinkMode
 from ui.navigation import EntityNavigationHistory, EntityRef
-from ui.rich import CardView, present_rich_card
+from ui.rich import CardView, SECTION_DIVIDER, present_rich_card
 from utils import RICH_TABLE_OPEN
 
 
@@ -363,6 +364,60 @@ class AlchemyCraftLocationTests(unittest.TestCase):
             get_alchemy_craft_location("  субстанция  "),
             MEREDITH_ALCHEMY_CRAFT_LOCATION,
         )
+
+
+class MobCardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_drop_sections_have_dividers_only_between_nonempty_blocks(self):
+        mob = {
+            "id": 24,
+            "name": "Бабочка-туманница",
+            "emoji": "💎🦋",
+            "hp": 100,
+            "exp": 20,
+            "dust_min": 1,
+            "dust_max": 3,
+            "loc_emoji": "🌫",
+            "loc_name": "Туманный лес",
+            "resource_drops": [{
+                "id": 1,
+                "name": "Блестящая пыльца",
+                "emoji": "✨",
+            }],
+            "gear_drops": [{
+                "id": 2,
+                "name": "Книга теней",
+                "emoji": "📖",
+                "rarity": "uncommon",
+            }],
+            "card_drops": [{
+                "id": 3,
+                "name": "Карта Бабочки-туманницы",
+                "emoji": "💎🦋",
+                "slot": "gloves",
+            }],
+        }
+        with patch(
+            "database.db.get_mob_full_card",
+            new=AsyncMock(return_value=mob),
+        ):
+            card = await build_mob_card(db, 24)
+
+        for rendered in (card.rich_html, card.fallback_html):
+            self.assertEqual(rendered.count(SECTION_DIVIDER), 2)
+            self.assertLess(rendered.index("📦 Падает:"), rendered.index(SECTION_DIVIDER))
+            self.assertLess(rendered.index(SECTION_DIVIDER), rendered.index("⚔️ Снаряжение:"))
+            self.assertLess(rendered.index("⚔️ Снаряжение:"), rendered.rindex(SECTION_DIVIDER))
+            self.assertLess(rendered.rindex(SECTION_DIVIDER), rendered.index("🃏 Карты:"))
+
+        mob["gear_drops"] = []
+        mob["card_drops"] = []
+        with patch(
+            "database.db.get_mob_full_card",
+            new=AsyncMock(return_value=mob),
+        ):
+            single_section = await build_mob_card(db, 24)
+        self.assertNotIn(SECTION_DIVIDER, single_section.rich_html)
+        self.assertNotIn(SECTION_DIVIDER, single_section.fallback_html)
 
 
 class GearCardTests(unittest.IsolatedAsyncioTestCase):
