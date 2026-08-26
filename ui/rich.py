@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Iterable, Sequence
 
 from aiogram import Bot, types
@@ -121,11 +120,6 @@ class CardComposer:
         )
 
 
-class RichRenderMode(str, Enum):
-    EDIT = "edit"
-    REPLACE = "replace"
-
-
 async def _send_card(
     *,
     bot: Bot,
@@ -156,24 +150,8 @@ async def present_rich_card(
     card: CardView,
     reply_markup: InlineKeyboardMarkup | None = None,
     current_message: types.Message | None = None,
-    mode: RichRenderMode = RichRenderMode.EDIT,
 ) -> types.Message:
-    """Presents a card through one edit/replace policy and one HTML fallback."""
-    if current_message and mode is RichRenderMode.REPLACE:
-        try:
-            await current_message.delete()
-        except TelegramAPIError:
-            logger.warning(
-                "Old Rich Message could not be deleted before replacement",
-                exc_info=True,
-            )
-        return await _send_card(
-            bot=bot,
-            chat_id=chat_id,
-            card=card,
-            reply_markup=reply_markup,
-        )
-
+    """Edits one card in place and falls back safely when editing is impossible."""
     if current_message:
         try:
             return await bot.edit_message_text(

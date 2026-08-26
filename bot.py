@@ -59,7 +59,7 @@ from ui.cards import (
     build_resource_card,
     get_rarity_emoji,
 )
-from ui.rich import RichRenderMode, present_rich_card
+from ui.rich import present_rich_card
 from ui.links import EntityLinkMode
 from ui.navigation import EntityNavigationHistory, EntityRef
 from utils import escape_html
@@ -181,6 +181,7 @@ async def present_interactive_entity(
     callback: types.CallbackQuery,
     entity: EntityRef,
     previous: EntityRef | None,
+    root_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     old_key = get_navigation_key(callback)
     card_view = await build_interactive_entity_card(entity)
@@ -188,7 +189,11 @@ async def present_interactive_entity(
         bot=callback.bot,
         chat_id=callback.message.chat.id,
         card=card_view,
-        reply_markup=build_interactive_navigation_keyboard(previous),
+        reply_markup=(
+            root_markup
+            if previous is None and root_markup is not None
+            else build_interactive_navigation_keyboard(previous)
+        ),
         current_message=callback.message,
     )
     new_key = (
@@ -798,7 +803,12 @@ async def navigate_related_entity(
         return
 
     key = get_navigation_key(callback)
-    entity_navigation.visit(key, source, target)
+    entity_navigation.visit(
+        key,
+        source,
+        target,
+        root_state=callback.message.reply_markup,
+    )
     previous = entity_navigation.previous(key)
     await callback.answer()
     await log_interactive_entity_view(callback.from_user.id, target)
@@ -818,9 +828,15 @@ async def navigate_related_entity_back(
     key = get_navigation_key(callback)
     target = entity_navigation.back(key) or fallback
     previous = entity_navigation.previous(key)
+    root_markup = entity_navigation.root_state(key) if previous is None else None
     await callback.answer()
     await log_interactive_entity_view(callback.from_user.id, target)
-    await present_interactive_entity(callback, target, previous)
+    await present_interactive_entity(
+        callback,
+        target,
+        previous,
+        root_markup=root_markup,
+    )
 
 
 @dp.callback_query(F.data == "gear_rarities")
@@ -942,7 +958,6 @@ async def view_mob(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith(("view_resources_", "nav_resources_")))
 async def view_resource(callback: types.CallbackQuery):
-    is_navigation = callback.data.startswith("nav_resources_")
     parsed = ResourceLocationViewCallback.parse(callback.data)
     if not parsed:
         await callback.answer("Некорректная ссылка на ресурс.", show_alert=True)
@@ -997,7 +1012,6 @@ async def view_resource(callback: types.CallbackQuery):
         card=card_view,
         reply_markup=reply_markup,
         current_message=callback.message,
-        mode=(RichRenderMode.REPLACE if is_navigation else RichRenderMode.EDIT),
     )
 
 async def build_gear_card_keyboard(
@@ -1073,8 +1087,6 @@ async def render_gear_card(
     rarity: str,
     page: int,
     slot_index: int | None = None,
-    *,
-    replace: bool = False,
 ) -> bool:
     data = await db.get_gear_card(gear_id)
     if not data:
@@ -1105,7 +1117,6 @@ async def render_gear_card(
         card=card_view,
         reply_markup=reply_markup,
         current_message=callback.message,
-        mode=(RichRenderMode.REPLACE if replace else RichRenderMode.EDIT),
     )
     return True
 
@@ -1124,7 +1135,6 @@ async def view_gear(callback: types.CallbackQuery):
         parsed.rarity,
         parsed.page,
         parsed.slot_index,
-        replace=callback.data.startswith("nav_gear_"),
     )
 
 # ---------- Карты ----------
@@ -1226,7 +1236,6 @@ async def update_recipe_owner(callback: types.CallbackQuery):
         parsed.rarity,
         parsed.page,
         parsed.slot_index,
-        replace=True,
     )
     await callback.answer(result_text, show_alert=False)
 
@@ -1261,7 +1270,6 @@ async def view_resource_by_type(callback: types.CallbackQuery):
     if not parsed:
         await callback.answer("Неверная ссылка на ресурс.", show_alert=True)
         return
-    is_navigation = callback.data.startswith("nav_resource_")
     await callback.answer()
     await log_view_resource(callback.from_user.id, parsed.resource_id)
 
@@ -1313,7 +1321,6 @@ async def view_resource_by_type(callback: types.CallbackQuery):
         card=card_view,
         reply_markup=reply_markup,
         current_message=callback.message,
-        mode=(RichRenderMode.REPLACE if is_navigation else RichRenderMode.EDIT),
     )
 
 @dp.callback_query(F.data == "back_to_main_menu")

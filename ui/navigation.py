@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Any
 
 
 ENTITY_TYPES = frozenset({"mob", "resource", "gear", "card"})
@@ -20,56 +21,71 @@ class EntityRef:
 NavigationKey = tuple[int, int, int]
 
 
+@dataclass
+class NavigationSession:
+    history: list[EntityRef]
+    root_state: Any = None
+
+
 class EntityNavigationHistory:
     """Bounded in-memory browser history for one interactive bot message."""
 
     def __init__(self, *, max_sessions: int = 512, max_depth: int = 20):
         self.max_sessions = max_sessions
         self.max_depth = max_depth
-        self._sessions: OrderedDict[NavigationKey, list[EntityRef]] = OrderedDict()
+        self._sessions: OrderedDict[NavigationKey, NavigationSession] = OrderedDict()
 
     def visit(
         self,
         key: NavigationKey,
         source: EntityRef,
         target: EntityRef,
+        *,
+        root_state: Any = None,
     ) -> None:
         if not source.is_valid or not target.is_valid:
             raise ValueError("Invalid entity navigation target")
 
-        history = self._sessions.get(key)
-        if not history or history[-1] != source:
-            history = [source]
-            self._sessions[key] = history
+        session = self._sessions.get(key)
+        if not session or session.history[-1] != source:
+            session = NavigationSession([source], root_state)
+            self._sessions[key] = session
 
-        if history[-1] != target:
-            history.append(target)
-            if len(history) > self.max_depth:
-                del history[:-self.max_depth]
+        if session.history[-1] != target:
+            session.history.append(target)
+            if len(session.history) > self.max_depth:
+                session.history.pop(1)
 
         self._touch(key)
 
     def previous(self, key: NavigationKey) -> EntityRef | None:
-        history = self._sessions.get(key)
-        if not history or len(history) < 2:
+        session = self._sessions.get(key)
+        if not session or len(session.history) < 2:
             return None
         self._touch(key)
-        return history[-2]
+        return session.history[-2]
 
     def back(self, key: NavigationKey) -> EntityRef | None:
-        history = self._sessions.get(key)
-        if not history or len(history) < 2:
+        session = self._sessions.get(key)
+        if not session or len(session.history) < 2:
             return None
-        history.pop()
+        session.history.pop()
         self._touch(key)
-        return history[-1]
+        return session.history[-1]
+
+    def root_state(self, key: NavigationKey) -> Any:
+        session = self._sessions.get(key)
+        if not session:
+            return None
+        self._touch(key)
+        return session.root_state
 
     def transfer(self, old_key: NavigationKey, new_key: NavigationKey) -> None:
         if old_key == new_key:
             return
-        history = self._sessions.pop(old_key, None)
-        if history:
-            self._sessions[new_key] = history
+        session = self._sessions.pop(old_key, None)
+        if session:
+            self._sessions[new_key] = session
             self._touch(new_key)
 
     def clear(self, key: NavigationKey) -> None:

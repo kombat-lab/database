@@ -42,7 +42,7 @@ from ui.cards import (
 )
 from ui.links import EntityLinkMode
 from ui.navigation import EntityNavigationHistory, EntityRef
-from ui.rich import CardView, RichRenderMode, present_rich_card
+from ui.rich import CardView, present_rich_card
 from utils import RICH_TABLE_OPEN
 
 
@@ -111,7 +111,7 @@ class EntityNavigationTests(unittest.TestCase):
         mob = EntityRef("mob", 5)
         gear = EntityRef("gear", 30)
 
-        history.visit(old_key, resource, mob)
+        history.visit(old_key, resource, mob, root_state="root keyboard")
         history.visit(old_key, mob, gear)
         self.assertEqual(history.previous(old_key), mob)
         self.assertEqual(history.back(old_key), mob)
@@ -120,6 +120,7 @@ class EntityNavigationTests(unittest.TestCase):
         history.transfer(old_key, new_key)
         self.assertIsNone(history.previous(old_key))
         self.assertEqual(history.previous(new_key), resource)
+        self.assertEqual(history.root_state(new_key), "root keyboard")
 
     def test_stale_source_resets_history(self):
         history = EntityNavigationHistory()
@@ -223,21 +224,12 @@ class CallbackParserTests(unittest.TestCase):
 
 
 class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_navigation_deletes_old_card_before_sending_new_one(self):
-        events = []
+    async def test_navigation_edits_existing_card_in_place(self):
         sent_message = object()
         bot = AsyncMock()
         current_message = AsyncMock()
-
-        async def delete_old():
-            events.append("delete")
-
-        async def send_new(**kwargs):
-            events.append("send")
-            return sent_message
-
-        current_message.delete.side_effect = delete_old
-        bot.send_rich_message.side_effect = send_new
+        current_message.message_id = 77
+        bot.edit_message_text.return_value = sent_message
 
         result = await present_rich_card(
             bot=bot,
@@ -245,12 +237,12 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
             card=CardView("Карточка", "Карточка"),
             reply_markup=object(),
             current_message=current_message,
-            mode=RichRenderMode.REPLACE,
         )
 
         self.assertIs(result, sent_message)
-        self.assertEqual(events, ["delete", "send"])
-        bot.edit_message_text.assert_not_awaited()
+        bot.edit_message_text.assert_awaited_once()
+        bot.send_rich_message.assert_not_awaited()
+        current_message.delete.assert_not_awaited()
 
 
 class OptionalNoteTests(unittest.TestCase):
