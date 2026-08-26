@@ -402,12 +402,17 @@ class MobCardTests(unittest.IsolatedAsyncioTestCase):
         ):
             card = await build_mob_card(db, 24)
 
+        rendered = card.rich_html
+        self.assertEqual(rendered.count(SECTION_DIVIDER), 2)
+        self.assertLess(rendered.index("📦 Падает:"), rendered.index(SECTION_DIVIDER))
+        self.assertLess(rendered.index(SECTION_DIVIDER), rendered.index("⚔️ Снаряжение:"))
+        self.assertLess(rendered.index("⚔️ Снаряжение:"), rendered.rindex(SECTION_DIVIDER))
+        self.assertLess(rendered.rindex(SECTION_DIVIDER), rendered.index("🃏 Карты:"))
+
+        self.assertNotIn(SECTION_DIVIDER, card.fallback_html)
         for rendered in (card.rich_html, card.fallback_html):
-            self.assertEqual(rendered.count(SECTION_DIVIDER), 2)
-            self.assertLess(rendered.index("📦 Падает:"), rendered.index(SECTION_DIVIDER))
-            self.assertLess(rendered.index(SECTION_DIVIDER), rendered.index("⚔️ Снаряжение:"))
-            self.assertLess(rendered.index("⚔️ Снаряжение:"), rendered.rindex(SECTION_DIVIDER))
-            self.assertLess(rendered.rindex(SECTION_DIVIDER), rendered.index("🃏 Карты:"))
+            self.assertLess(rendered.index("📦 Падает:"), rendered.index("⚔️ Снаряжение:"))
+            self.assertLess(rendered.index("⚔️ Снаряжение:"), rendered.index("🃏 Карты:"))
 
         mob["gear_drops"] = []
         mob["card_drops"] = []

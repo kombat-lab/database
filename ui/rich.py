@@ -13,7 +13,7 @@ from utils import RICH_TABLE_OPEN
 from .links import MarkupPair
 
 logger = logging.getLogger(__name__)
-SECTION_DIVIDER = "────────────"
+SECTION_DIVIDER = "<hr/>"
 
 
 def _pair(value: MarkupPair | str) -> MarkupPair:
@@ -45,7 +45,7 @@ class CardComposer:
         self._sections.append(_pair(value))
 
     def add_divider(self) -> None:
-        self._sections.append(MarkupPair.same(SECTION_DIVIDER))
+        self._sections.append(MarkupPair(SECTION_DIVIDER, ""))
 
     def add_list(
         self,
@@ -117,9 +117,11 @@ class CardComposer:
 
     def build(self) -> CardView:
         return CardView(
-            rich_html="<br>".join(section.rich for section in self._sections).strip(),
+            rich_html="<br>".join(
+                section.rich for section in self._sections if section.rich
+            ).strip(),
             fallback_html="\n\n".join(
-                section.fallback for section in self._sections
+                section.fallback for section in self._sections if section.fallback
             ).strip(),
         )
 
