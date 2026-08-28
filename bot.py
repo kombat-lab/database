@@ -14,7 +14,10 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InputMediaPhoto,
+    InputRichMessage,
     InputRichMessageContent,
+    InputRichMessageMedia,
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
@@ -588,12 +591,31 @@ async def mobs_button(message: types.Message):
         )
         return
 
-    await message.answer_photo(
-        photo=FSInputFile(map_path),
-        caption="🐾 <b>Выбери локацию мобов:</b>",
-        reply_markup=await get_locations_keyboard("mobs"),
-        parse_mode="HTML",
+    keyboard = await get_locations_keyboard("mobs")
+    rich_message = InputRichMessage(
+        html=(
+            '<figure><img src="tg://photo?id=world_map"/>'
+            '<figcaption>🐾 <b>Выбери локацию мобов:</b></figcaption>'
+            '</figure>'
+        ),
+        media=[InputRichMessageMedia(
+            id="world_map",
+            media=InputMediaPhoto(media=FSInputFile(map_path)),
+        )],
     )
+    try:
+        await message.bot.send_rich_message(
+            chat_id=message.chat.id,
+            rich_message=rich_message,
+            reply_markup=keyboard,
+        )
+    except TelegramAPIError as error:
+        logger.warning("World map RichMessage failed, using text fallback: %s", error)
+        await message.answer(
+            "🐾 <b>Выбери локацию мобов:</b>",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message):
@@ -752,32 +774,14 @@ async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult):
     )
 
 
-async def replace_callback_message_text(
+async def edit_callback_window(
     callback: types.CallbackQuery,
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
     parse_mode: str | None = None,
 ) -> None:
-    """Показывает следующий экран независимо от типа исходного сообщения.
-
-    Telegram не позволяет вызывать edit_text() для сообщения с фотографией.
-    Поэтому пост с картой удаляется и заменяется обычным текстовым сообщением.
-    Обычные текстовые сообщения по-прежнему редактируются на месте.
-    """
-    message = callback.message
-    if message.photo:
-        await message.answer(
-            text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-        )
-        try:
-            await message.delete()
-        except TelegramAPIError:
-            logger.debug("Could not delete world-map message", exc_info=True)
-        return
-
-    await message.edit_text(
+    """Редактирует текущее inline-окно, не создавая новое сообщение."""
+    await callback.message.edit_text(
         text,
         reply_markup=reply_markup,
         parse_mode=parse_mode,
@@ -847,7 +851,7 @@ async def gear_rarities_callback(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "mobs_dead_forest_locations")
 async def mobs_dead_forest_locations(callback: types.CallbackQuery):
     keyboard = await get_dead_forest_locations_keyboard()
-    await replace_callback_message_text(
+    await edit_callback_window(
         callback,
         "🪾 <b>Мертвый лес</b>\nВыбери локацию мобов:",
         parse_mode=ParseMode.HTML,
@@ -860,7 +864,7 @@ async def back_to_locations(callback: types.CallbackQuery):
     category = callback.data.split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
-    await replace_callback_message_text(callback, text, reply_markup=keyboard)
+    await edit_callback_window(callback, text, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
@@ -871,7 +875,7 @@ async def list_or_page_callback(callback: types.CallbackQuery):
     location = await db.get_location_by_id(loc_id)
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = get_location_list_title(location, category, page)
-    await replace_callback_message_text(callback, title, reply_markup=keyboard)
+    await edit_callback_window(callback, title, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("gear_slots_"))
@@ -1090,7 +1094,7 @@ async def render_gear_card(
 ) -> bool:
     data = await db.get_gear_card(gear_id)
     if not data:
-        await replace_callback_message_text(callback, "Предмет не найден.")
+        await edit_callback_window(callback, "Предмет не найден.")
         return False
 
     # Данные карточки являются источником истины: старые кнопки могут содержать
@@ -1326,8 +1330,7 @@ async def view_resource_by_type(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery):
     entity_navigation.clear(get_navigation_key(callback))
-    await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
-    await callback.message.delete()
+    await edit_callback_window(callback, "📋 Главное меню")
     await callback.answer()
 
 # ---------- Запуск ----------

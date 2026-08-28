@@ -1,6 +1,7 @@
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
@@ -21,8 +22,11 @@ from admin_mobs import (
 )
 from database import db
 from bot import (
+    back_to_main_menu,
     build_gear_card_keyboard,
+    edit_callback_window,
     get_location_list_title,
+    mobs_button,
 )
 from ui.callbacks import (
     EntityBackCallback,
@@ -244,6 +248,63 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
         bot.edit_message_text.assert_awaited_once()
         bot.send_rich_message.assert_not_awaited()
         current_message.delete.assert_not_awaited()
+
+    async def test_callback_window_is_edited_without_new_message(self):
+        message = AsyncMock()
+        callback = SimpleNamespace(message=message)
+
+        await edit_callback_window(callback, "Новый экран", reply_markup=object())
+
+        message.edit_text.assert_awaited_once_with(
+            "Новый экран",
+            reply_markup=ANY,
+            parse_mode=None,
+        )
+        message.answer.assert_not_awaited()
+        message.delete.assert_not_awaited()
+
+    async def test_main_menu_reuses_callback_window(self):
+        message = AsyncMock()
+        message.chat.id = 123
+        message.message_id = 77
+        callback = SimpleNamespace(
+            from_user=SimpleNamespace(id=10),
+            message=message,
+            answer=AsyncMock(),
+        )
+
+        with patch("bot.entity_navigation.clear", new=Mock()) as clear:
+            await back_to_main_menu(callback)
+
+        clear.assert_called_once_with((10, 123, 77))
+        message.edit_text.assert_awaited_once_with(
+            "📋 Главное меню",
+            reply_markup=None,
+            parse_mode=None,
+        )
+        message.answer.assert_not_awaited()
+        message.delete.assert_not_awaited()
+
+    async def test_mob_tab_uses_rich_media_instead_of_photo_message(self):
+        message = AsyncMock()
+        message.chat.id = 123
+        keyboard = object()
+
+        with (
+            patch("bot.os.path.isfile", return_value=True),
+            patch(
+                "bot.get_locations_keyboard",
+                new=AsyncMock(return_value=keyboard),
+            ),
+        ):
+            await mobs_button(message)
+
+        message.bot.send_rich_message.assert_awaited_once()
+        rich_message = message.bot.send_rich_message.await_args.kwargs["rich_message"]
+        self.assertIn('<img src="tg://photo?id=world_map"/>', rich_message.html)
+        self.assertEqual(rich_message.media[0].id, "world_map")
+        message.answer_photo.assert_not_awaited()
+        message.answer.assert_not_awaited()
 
 
 class OptionalNoteTests(unittest.TestCase):
