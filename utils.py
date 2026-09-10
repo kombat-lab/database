@@ -1,20 +1,28 @@
 import html
 
+import emoji
+
 
 def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""
     return username.lstrip('@') if username else ''
 
+
 def escape_html(text: object) -> str:
     """Экранирует HTML-спецсимволы."""
-    return html.escape(str(text or ""), quote=True)
+    return html.escape("" if text is None else str(text), quote=True)
+
 
 def is_valid_emoji(s: str) -> bool:
-    """
-    Проверяет, что строка не пустая и содержит хотя бы один символ,
-    который не является буквой или цифрой (простейшая проверка на эмодзи).
-    """
-    if not s or not s.strip():
+    """Разрешает до восьми Unicode emoji, включая составные последовательности."""
+    if not s or len(s) > 64:
         return False
-    # Убираем вариант с одним символом, который является буквой/цифрой
-    return not (len(s) == 1 and s.isalnum())
+    matches = emoji.emoji_list(s)
+    if not 1 <= len(matches) <= 8:
+        return False
+    end = 0
+    for match in matches:
+        if match["match_start"] != end:
+            return False
+        end = match["match_end"]
+    return end == len(s)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -8,12 +10,18 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import SimpleEventIsolation
+from catalog_types import (
+    RecipeOwnerEntry, ItemRow, MobCardRow, ResourceCardRow, GearCardRow, ResourceUsageRow,
+)
 from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InlineQueryResultsButton,
+    InlineQueryResultUnion,
     InputRichMessage,
     InputRichMessageContent,
     KeyboardButton,
@@ -42,15 +50,24 @@ from game_constants import (
     format_gear_classes,
 )
 from utils import clean_username, escape_html
-
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("BOT_TOKEN not set")
+from lifecycle import BackgroundTaskRegistry, UpdateTaskTracker, install_update_tracker
+from messaging import cleanup_card_fragments, replace_rich_card, upsert_rich_card
+from routing import CallbackMessageGuard
+from telegram_helpers import get_bound_bot, get_callback_data, get_callback_message
+from telegram_text import split_formatted_text
+from search_rendering import build_search_content, ranked_inline_items
+from navigation import (
+    MAX_SQLITE_ID, build_resource_return_param, build_gear_return_param,
+    parse_gear_view_callback, build_recipe_owner_callback, parse_recipe_owner_callback,
+    parse_return_param, parse_resource_page_callback, parse_resource_view_callback,
+    parse_location_callback, parse_gear_list_callback, parse_card_callback, return_button_data,
+)
 
 ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
 MAIN_MENU_BUTTONS = {"🐾 Мобы", "📦 Ресурсы", "⚔️ Снаряжение", "🔍 Поиск"}
-BOT_USERNAME = None
+BOT_USERNAME: str | None = None
+MAX_SEARCH_QUERY_LENGTH = 256
 
 RESOURCE_TYPE_NAMES = {
     "craft": "⚒️ Крафтовый",
@@ -101,7 +118,7 @@ def get_alchemy_craft_location(resource_name: str) -> str:
 
 
 def build_resource_usage_rows(
-    usages: list[dict],
+    usages: list[ResourceUsageRow],
     return_param: str | None,
 ) -> list[tuple[str, int]]:
     rows = []
@@ -132,170 +149,6 @@ def build_resource_usage_rows(
     return rows
 
 
-def build_resource_return_param(
-    resource_id: int,
-    context_type: str | None,
-    context_id: int | str | None,
-    page: int,
-) -> str | None:
-    if context_id is None:
-        return None
-    if context_type == "location":
-        return f"resource_loc_{resource_id}_{context_id}_{page}"
-    if context_type == "type":
-        return f"resource_type_{resource_id}_{context_id}_{page}"
-    return None
-
-
-def build_gear_return_param(gear_id: int, rarity: str | None, page: int) -> str | None:
-    return f"gear_{gear_id}_{rarity}_{page}" if rarity else None
-
-
-def parse_gear_view_callback(value: str) -> tuple[int, str, int | None, int] | None:
-    for prefix in ("view_gear_", "nav_gear_"):
-        if value.startswith(prefix):
-            parts = value.removeprefix(prefix).split("_")
-            break
-    else:
-        return None
-
-    if len(parts) not in (3, 4):
-        return None
-    try:
-        gear_id = int(parts[0])
-        rarity = parts[1]
-        slot_index = int(parts[2]) if len(parts) == 4 else None
-        page = int(parts[-1])
-    except ValueError:
-        return None
-    if (
-        gear_id < 1
-        or rarity not in RARITY_ORDER
-        or page < 1
-        or (slot_index is not None and not 0 <= slot_index < len(GEAR_SLOT_ORDER))
-    ):
-        return None
-    return gear_id, rarity, slot_index, page
-
-
-def build_recipe_owner_callback(
-    action: str,
-    recipe_id: int,
-    gear_id: int,
-    rarity: str,
-    page: int,
-    slot_index: int | None,
-) -> str:
-    slot = str(slot_index) if slot_index is not None else "x"
-    return f"recipe_{action}_{recipe_id}_{gear_id}_{rarity}_{slot}_{page}"
-
-
-def parse_recipe_owner_callback(
-    value: str,
-) -> tuple[str, int, int, str, int | None, int] | None:
-    parts = value.split("_")
-    if len(parts) not in (6, 7) or parts[0] != "recipe":
-        return None
-    action = parts[1]
-    if action not in {"claim", "relinquish"}:
-        return None
-    try:
-        recipe_id = int(parts[2])
-        gear_id = int(parts[3])
-        rarity = parts[4]
-        if len(parts) == 7:
-            slot_index = None if parts[5] == "x" else int(parts[5])
-            page = int(parts[6])
-        else:
-            slot_index = None
-            page = int(parts[5])
-    except ValueError:
-        return None
-    if (
-        recipe_id < 1
-        or gear_id < 1
-        or rarity not in RARITY_ORDER
-        or page < 1
-        or (slot_index is not None and not 0 <= slot_index < len(GEAR_SLOT_ORDER))
-    ):
-        return None
-    return action, recipe_id, gear_id, rarity, slot_index, page
-
-
-def parse_return_param(value: str | None) -> dict | None:
-    """Parse and validate the optional navigation context in a start payload."""
-    if not value:
-        return None
-
-    patterns = (
-        ("gear", r"gear_(\d+)_(common|rare|epic|legendary)_(\d+)"),
-        ("mob", r"mob_(\d+)_(\d+)_(\d+)"),
-        ("resource_loc", r"resource_loc_(\d+)_(\d+)_(\d+)"),
-        ("resource_type", r"resource_type_(\d+)_(craft|consumable|scroll_recipe|currency|alchemy)_(\d+)"),
-    )
-    for kind, pattern in patterns:
-        match = re.fullmatch(pattern, value)
-        if not match:
-            continue
-        groups = match.groups()
-        page = int(groups[-1])
-        if page < 1:
-            return None
-        item_id = int(groups[0])
-        if item_id < 1:
-            return None
-
-        result = {"kind": kind, "item_id": item_id, "page": page}
-        if kind == "gear":
-            result.update(context_type="gear", context_id=item_id, rarity=groups[1])
-        elif kind == "mob":
-            location_id = int(groups[1])
-            if location_id < 1:
-                return None
-            result.update(context_type="mob", context_id=item_id, location_id=location_id)
-        elif kind == "resource_loc":
-            location_id = int(groups[1])
-            if location_id < 1:
-                return None
-            result.update(context_type="location", context_id=location_id)
-        else:
-            result.update(context_type="type", context_id=groups[1])
-        return result
-    return None
-
-
-def parse_resource_page_callback(data: str, prefix: str) -> tuple[str, int] | None:
-    """Parse callbacks whose resource type may itself contain underscores."""
-    if not data.startswith(prefix):
-        return None
-    try:
-        resource_type, raw_page = data[len(prefix):].rsplit("_", 1)
-        page = int(raw_page)
-    except (ValueError, AttributeError):
-        return None
-    if resource_type not in RESOURCE_TYPE_NAMES or page < 1:
-        return None
-    return resource_type, page
-
-
-def parse_resource_view_callback(data: str) -> tuple[int, str, int] | None:
-    prefix = next(
-        (candidate for candidate in ("view_resource_", "nav_resource_") if data.startswith(candidate)),
-        None,
-    )
-    if prefix is None:
-        return None
-    try:
-        raw_id, remainder = data[len(prefix):].split("_", 1)
-        resource_type, raw_page = remainder.rsplit("_", 1)
-        resource_id = int(raw_id)
-        page = int(raw_page)
-    except (ValueError, AttributeError):
-        return None
-    if resource_id < 1 or page < 1 or resource_type not in RESOURCE_TYPE_NAMES:
-        return None
-    return resource_id, resource_type, page
-
 # Группа вложенных локаций во вкладке «Мобы».
 DEAD_FOREST_LOCATION_ID = 4
 DEAD_FOREST_CHILD_LOCATION_IDS = (8, 9, 10)
@@ -316,21 +169,21 @@ LOCATION_CONTENT_TITLES = {
 }
 
 
-def get_location_emoji(location: dict) -> str:
+def get_location_emoji(location: ItemRow) -> str:
     """Возвращает emoji локации с безопасным fallback на значение из БД."""
     return LOCATION_EMOJI_OVERRIDES.get(location["id"], location.get("emoji") or "📍")
 
 
-def get_location_button_text(location: dict) -> str:
+def get_location_button_text(location: ItemRow) -> str:
     return f"{get_location_emoji(location)} {location['name']}"
 
 
-def get_location_list_title(location: dict, category: str, page: int) -> str:
+def get_location_list_title(location: ItemRow, category: str, page: int) -> str:
     category_title = LOCATION_CONTENT_TITLES.get(category, category)
     return f"{get_location_emoji(location)} {location['name']} - {category_title}\nСтраница {page}"
 
 
-def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> str:
+def make_deep_link(item_type: str, item_id: int, return_param: str | None = None) -> str:
     """Формирует корректный Telegram start payload длиной до 64 символов."""
     payload = f"{item_type}_{item_id}"
     if return_param:
@@ -339,12 +192,13 @@ def make_deep_link(item_type: str, item_id: int, return_param: str = None) -> st
             payload = candidate
     return f"https://t.me/{BOT_USERNAME}?start={payload}"
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-inline_log_tasks = {}
-
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+inline_log_tasks: dict[int, asyncio.Task[None]] = {}
+background_tasks = BackgroundTaskRegistry()
+update_tasks = UpdateTaskTracker()
+dp = Dispatcher(events_isolation=SimpleEventIsolation())
+install_update_tracker(dp, update_tasks)
+dp.callback_query.outer_middleware(CallbackMessageGuard())
 
 async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     counts = await db.execute_query(
@@ -373,8 +227,9 @@ async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # ---------- Формирование карточек ----------
-async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int = 1) -> str:
-    data = await db.get_mob_full_card(mob_id)
+async def format_mob_card_plain(mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None) -> str:
+    if data is None:
+        data = await db.get_mob_full_card(mob_id)
     if not data:
         return "Моб не найден."
 
@@ -411,8 +266,9 @@ async def format_mob_card_plain(mob_id: int, location_id: int = None, page: int 
     return text
 
 
-async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -> InputRichMessage:
-    data = await db.get_mob_full_card(mob_id)
+async def format_mob_card(mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None) -> InputRichMessage:
+    if data is None:
+        data = await db.get_mob_full_card(mob_id)
     if not data:
         return InputRichMessage(html="Моб не найден.")
 
@@ -466,8 +322,9 @@ async def format_mob_card(mob_id: int, location_id: int = None, page: int = 1) -
     """
     return InputRichMessage(html=full_html.strip())
 
-async def format_resource_card(resource_id: int, context_type: str = None, context_id: int = None, page: int = 1) -> str:
-    data = await db.get_resource_card(resource_id)
+async def format_resource_card(resource_id: int, context_type: str | None = None, context_id: int | str | None = None, page: int = 1, *, data: ResourceCardRow | None = None) -> str:
+    if data is None:
+        data = await db.get_resource_card(resource_id)
     if not data:
         return "Ресурс не найден."
 
@@ -531,8 +388,9 @@ async def format_resource_card(resource_id: int, context_type: str = None, conte
     return text
 
 
-async def format_resource_card_rich(resource_id: int, context_type: str = None, context_id: int = None, page: int = 1) -> InputRichMessage:
-    data = await db.get_resource_card(resource_id)
+async def format_resource_card_rich(resource_id: int, context_type: str | None = None, context_id: int | str | None = None, page: int = 1, *, data: ResourceCardRow | None = None) -> InputRichMessage:
+    if data is None:
+        data = await db.get_resource_card(resource_id)
     if not data:
         return InputRichMessage(html="Ресурс не найден.")
 
@@ -616,12 +474,29 @@ async def format_resource_card_rich(resource_id: int, context_type: str = None, 
 
     return InputRichMessage(html=html.strip())
 
+def format_recipe_owner(owner: RecipeOwnerEntry) -> str:
+    username = owner["player_username"]
+    if username:
+        return f"@{escape_html(clean_username(username))}"
+    user_id = owner["user_id"]
+    if user_id is not None:
+        return f"<a href='tg://user?id={user_id}'>Игрок {user_id}</a>"
+    return "Неизвестный владелец"
+
+
+def recipe_owner_labels(data: GearCardRow) -> list[str]:
+    if "owner_entries" in data:
+        return [format_recipe_owner(owner) for owner in data["owner_entries"]]
+    return [f"@{escape_html(clean_username(username))}" for username in data.get("owners", [])]
+
+
 async def format_gear_card_plain(
     gear_id: int,
-    rarity: str = None,
+    rarity: str | None = None,
     page: int = 1,
     *,
-    data: dict | None = None,
+    data: GearCardRow | None = None,
+    slot_index: int | None = None,
 ) -> str:
     if data is None:
         data = await db.get_gear_card(gear_id)
@@ -638,7 +513,7 @@ async def format_gear_card_plain(
         text += f"\n📝 {escape_html(data['note'])}\n"
 
     # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
-    return_param = build_gear_return_param(gear_id, rarity, page)
+    return_param = build_gear_return_param(gear_id, rarity, page, slot_index)
 
     if data.get('craftable'):
         text += "Крафт: да\n"
@@ -649,11 +524,10 @@ async def format_gear_card_plain(
                 text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
         else:
             text += "\n<i>Рецепт пока не заполнен.</i>\n"
-        if data['owners']:
+        owners = recipe_owner_labels(data)
+        if owners:
             text += "\n👥 <b>Владельцы рецепта:</b>\n"
-            for username in data['owners']:
-                clean = clean_username(username)
-                text += f"@{escape_html(clean)}\n"
+            text += "\n".join(owners) + "\n"
     else:
         text += "Крафт: нет\n"
 
@@ -674,10 +548,11 @@ async def format_gear_card_plain(
 
 async def format_gear_card_rich(
     gear_id: int,
-    rarity: str = None,
+    rarity: str | None = None,
     page: int = 1,
     *,
-    data: dict | None = None,
+    data: GearCardRow | None = None,
+    slot_index: int | None = None,
 ) -> InputRichMessage:
     if data is None:
         data = await db.get_gear_card(gear_id)
@@ -709,7 +584,7 @@ async def format_gear_card_rich(
     if data.get('note'):
         html += f"<br>📝 <b>Примечание:</b> {escape_html(data['note'])}<br>"
 
-    return_param = build_gear_return_param(gear_id, rarity, page)
+    return_param = build_gear_return_param(gear_id, rarity, page, slot_index)
 
     if data.get('craftable'):
         if data['ingredients']:
@@ -727,8 +602,9 @@ async def format_gear_card_rich(
             """
         else:
             html += "<br><i>Рецепт пока не заполнен.</i><br>"
-        if data.get('owners'):
-            owners_list = "<br>".join(f"@{escape_html(clean_username(u))}" for u in data['owners'])
+        owners = recipe_owner_labels(data)
+        if owners:
+            owners_list = "<br>".join(owners)
             html += f"""
             <details>
                 <summary>👥 Владельцы рецепта</summary>
@@ -754,19 +630,14 @@ async def format_gear_card_rich(
 
     return InputRichMessage(html=html.strip())
 
-async def format_card_card(card_id: int, page: int = 1, context_type: str = None, context_id: int = None) -> str:
+async def format_card_card(card_id: int, page: int = 1, context_type: str | None = None, context_id: int | None = None) -> str:
     card = await db.get_card_by_id(card_id)
     if not card:
         return "Карта не найдена."
 
     slot_text = SLOT_NAMES.get(card['slot'], card['slot'])
 
-    return_param = None
-    if context_type and context_id:
-        if context_type == 'location':
-            return_param = f"card_loc_{card_id}_{context_id}_{page}"
-        elif context_type == 'type':
-            return_param = f"card_type_{card_id}_{context_id}_{page}"
+    return_param = f"card_{card_id}_{page}"
 
     text = f"🃏 {escape_html(card['emoji'])} <b>{escape_html(card['name'])}</b>\n"
     text += f"Слот: {escape_html(slot_text)}\n\n"
@@ -796,85 +667,12 @@ async def format_card_card(card_id: int, page: int = 1, context_type: str = None
     return text
 
 
-async def format_card_card_rich(card_id: int, page: int = 1, context_type: str = None,
-                                context_id: int = None) -> InputRichMessage:
+async def format_card_card_rich(card_id: int, page: int = 1, context_type: str | None = None,
+                                context_id: int | None = None) -> InputRichMessage:
     """Формирует Rich-карточку карты, используя проверенный HTML fallback."""
     plain = await format_card_card(card_id, page, context_type, context_id)
     return InputRichMessage(html=plain.replace("\n", "<br>"))
 
-
-async def upsert_rich_card(*, bot: Bot, chat_id: int, rich_message: InputRichMessage,
-                           plain_text: str, reply_markup: InlineKeyboardMarkup = None,
-                           current_message: types.Message = None) -> types.Message:
-    """Редактирует карточку на месте и безопасно откатывается к обычному HTML."""
-    if current_message:
-        try:
-            return await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=current_message.message_id,
-                rich_message=rich_message,
-                reply_markup=reply_markup,
-            )
-        except TelegramAPIError as error:
-            if isinstance(error, TelegramBadRequest) and "message is not modified" in str(error).lower():
-                return current_message
-            logger.info("Rich Message edit failed, using HTML fallback: %s", error)
-
-        try:
-            return await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=current_message.message_id,
-                text=plain_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-            )
-        except TelegramAPIError as error:
-            logger.info("HTML edit failed, sending a replacement: %s", error)
-
-    try:
-        sent = await bot.send_rich_message(
-            chat_id=chat_id,
-            rich_message=rich_message,
-            reply_markup=reply_markup,
-        )
-    except TelegramAPIError as error:
-        logger.warning("Rich Message send failed, using HTML fallback: %s", error)
-        sent = await bot.send_message(
-            chat_id=chat_id,
-            text=plain_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup,
-        )
-
-    if current_message:
-        try:
-            await current_message.delete()
-        except TelegramAPIError:
-            logger.debug("Old card could not be deleted", exc_info=True)
-    return sent
-
-
-async def replace_rich_card(*, bot: Bot, chat_id: int, rich_message: InputRichMessage,
-                            plain_text: str, reply_markup: InlineKeyboardMarkup,
-                            current_message: types.Message) -> types.Message:
-    """Заменяет Rich-карточку новым сообщением без редактирования старой.
-
-    Telegram на iOS может сохранять высоту предыдущей Rich-карточки после edit,
-    из-за чего таблицы исчезают, растягиваются или накладываются друг на друга.
-    Удаление исходного сообщения до отправки новой карточки сбрасывает её layout.
-    """
-    try:
-        await current_message.delete()
-    except TelegramAPIError:
-        logger.warning("Old Rich Message could not be deleted before replacement", exc_info=True)
-
-    return await upsert_rich_card(
-        bot=bot,
-        chat_id=chat_id,
-        rich_message=rich_message,
-        plain_text=plain_text,
-        reply_markup=reply_markup,
-    )
 
 # ---------- Клавиатуры ----------
 def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -1015,7 +813,7 @@ async def get_gear_by_slot_keyboard(rarity: str, slot_index: int, page: int) -> 
     keyboard.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def show_cards_list(target, page: int):
+async def show_cards_list(target: types.Message | types.CallbackQuery, page: int) -> None:
     offset = (page - 1) * ITEMS_PER_PAGE
     cards = await db.get_all_cards_sorted_by_slot(offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(cards) > ITEMS_PER_PAGE
@@ -1039,7 +837,7 @@ async def show_cards_list(target, page: int):
     if isinstance(target, types.Message):
         await target.answer("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        await target.message.edit_text("🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await replace_callback_message_text(target, "🃏 Список карт:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
@@ -1052,7 +850,7 @@ def get_resource_categories_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def show_resources_by_type(target, resource_type: str, page: int):
+async def show_resources_by_type(target: types.Message | types.CallbackQuery, resource_type: str, page: int) -> None:
     offset = (page - 1) * ITEMS_PER_PAGE
     items = await db.get_resources_by_type(resource_type, offset, ITEMS_PER_PAGE + FETCH_EXTRA)
     has_next = len(items) > ITEMS_PER_PAGE
@@ -1079,110 +877,108 @@ async def show_resources_by_type(target, resource_type: str, page: int):
     if isinstance(target, types.Message):
         await target.answer(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     else:
-        await target.message.edit_text(f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        await replace_callback_message_text(target, f"📦 Ресурсы — {type_display}", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
-async def delayed_log_inline_search(user_id: int, query: str, delay: float = 0.8):
-    await asyncio.sleep(delay)
-    if query.strip():
-        await log_inline_search(user_id, query)
-    inline_log_tasks.pop(user_id, None)
+async def delayed_log_inline_search(user_id: int, query: str, delay: float = 0.8) -> None:
+    try:
+        await asyncio.sleep(delay)
+        if query.strip():
+            await log_inline_search(user_id, query)
+    finally:
+        if inline_log_tasks.get(user_id) is asyncio.current_task():
+            inline_log_tasks.pop(user_id, None)
 
 # ---------- Обработчики ----------
+
 @dp.message(Command("start", "menu"))
-async def send_menu(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) > 1:
+async def send_menu(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
+    args = (message.text or "").split(maxsplit=1)
+    match = None
+    return_context = None
+    if len(args) > 1 and len(args[1]) <= 64:
         payload, separator, return_param = args[1].partition("-r-")
-        payload_match = re.fullmatch(r"(resource|mob|gear|card)_(\d+)", payload)
-        target_type = payload_match.group(1) if payload_match else None
-        target_id = int(payload_match.group(2)) if payload_match else None
-        if target_id is not None and target_id < 1:
-            target_type = target_id = None
+        match = re.fullmatch(r"(resource|mob|gear|card)_(\d+)", payload)
         return_context = parse_return_param(return_param if separator else None)
-
-        if target_type and target_id is not None:
-            # Определяем контекст для возврата (если есть)
-            context_type = return_context.get("context_type") if return_context else None
-            context_id = return_context.get("context_id") if return_context else None
-            page = return_context.get("page", 1) if return_context else 1
-            rarity = return_context.get("rarity") if return_context else None
-
-            # Формируем карточку в зависимости от типа
-            if target_type == "resource":
-                rich_msg = await format_resource_card_rich(
-                    target_id,
-                    context_type=context_type,
-                    context_id=context_id,
-                    page=page
-                )
-            elif target_type == "mob":
-                # Для мобов используем rich-формат (если нужно передать location_id и page)
-                # В формате mob_{id} мы не знаем location_id, поэтому передаём None
-                rich_msg = await format_mob_card(target_id, location_id=None, page=page)
-            elif target_type == "gear":
-                rich_msg = await format_gear_card_rich(target_id, rarity, page)
-            elif target_type == "card":
-                rich_msg = await format_card_card_rich(
-                    target_id,
-                    page=page,
-                    context_type=context_type,
-                    context_id=context_id
-                )
-            else:
-                await message.answer("Неизвестный тип объекта.")
+    if match and 1 <= int(match.group(2)) <= MAX_SQLITE_ID:
+        target_type, target_id = match.group(1), int(match.group(2))
+        keyboard: InlineKeyboardMarkup | None = None
+        if target_type == "mob":
+            mob_data = await db.get_mob_full_card(target_id)
+            if mob_data is None:
+                await message.answer("Моб не найден.")
                 return
-
-            # Строим кнопку возврата на основе проверенного контекста.
-            keyboard = None
-            if return_context:
-                kind = return_context["kind"]
-                item_id = return_context["item_id"]
-                if kind == "gear":
-                    callback_data = f"view_gear_{item_id}_{return_context['rarity']}_{page}"
-                    button_text = "🔙 Вернуться к снаряжению"
-                elif kind == "mob":
-                    callback_data = f"view_mobs_{item_id}_{return_context['location_id']}_{page}"
-                    button_text = "🔙 Вернуться к мобу"
-                elif kind == "resource_loc":
-                    callback_data = f"view_resources_{item_id}_{return_context['context_id']}_{page}"
-                    button_text = "🔙 Вернуться к ресурсу"
-                else:
-                    callback_data = f"view_resource_{item_id}_{return_context['context_id']}_{page}"
-                    button_text = "🔙 Вернуться к ресурсу"
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text=button_text, callback_data=callback_data)
-                ]])
-
-            plain_formatters = {
-                "resource": lambda: format_resource_card(target_id, context_type, context_id, page),
-                "mob": lambda: format_mob_card_plain(target_id, page=page),
-                "gear": lambda: format_gear_card_plain(target_id, rarity, page),
-                "card": lambda: format_card_card(target_id, page, context_type, context_id),
+            location_id = mob_data["location_id"]
+            rich_msg = await format_mob_card(target_id, location_id, data=mob_data)
+            plain_text = await format_mob_card_plain(target_id, location_id, data=mob_data)
+            target_callback = f"view_mobs_{target_id}_{location_id}_1"
+        elif target_type == "resource":
+            resource_data = await db.get_resource_card(target_id)
+            if resource_data is None:
+                await message.answer("Ресурс не найден.")
+                return
+            resource_type = resource_data["type"]
+            rich_msg = await format_resource_card_rich(target_id, "type", resource_type, data=resource_data)
+            plain_text = await format_resource_card(target_id, "type", resource_type, data=resource_data)
+            target_callback = f"view_resource_{target_id}_{resource_type}_1"
+        elif target_type == "gear":
+            gear_data = await db.get_gear_card(target_id)
+            if gear_data is None:
+                await message.answer("Предмет не найден.")
+                return
+            rarity = gear_data["rarity"]
+            slot_index = GEAR_SLOT_ORDER.index(gear_data["slot"]) if gear_data["slot"] in GEAR_SLOT_ORDER else None
+            rich_msg = await format_gear_card_rich(target_id, rarity, data=gear_data, slot_index=slot_index)
+            plain_text = await format_gear_card_plain(target_id, rarity, data=gear_data, slot_index=slot_index)
+            if message.from_user:
+                keyboard = await build_gear_card_keyboard(gear_data, message.from_user.id, 1, slot_index)
+            slot = f"{slot_index}_" if slot_index is not None else ""
+            target_callback = f"view_gear_{target_id}_{rarity}_{slot}1"
+        else:
+            card_data = await db.get_card_by_id(target_id)
+            if card_data is None:
+                await message.answer("Карта не найдена.")
+                return
+            rich_msg = await format_card_card_rich(target_id)
+            plain_text = await format_card_card(target_id)
+            target_callback = f"view_card_{target_id}_1"
+        if keyboard is None:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📋 Открыть в каталоге", callback_data=target_callback),
+            ]])
+        if return_context:
+            callback_data, button_text = return_button_data(return_context)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=button_text, callback_data=callback_data)],
+                *keyboard.inline_keyboard,
+            ])
+        await upsert_rich_card(
+            bot=get_bound_bot(message), chat_id=message.chat.id, rich_message=rich_msg,
+            plain_text=plain_text, reply_markup=keyboard, message_thread_id=message.message_thread_id,
+        )
+        if message.from_user:
+            view_loggers = {
+                "mob": log_view_mob, "resource": log_view_resource,
+                "gear": log_view_gear, "card": log_view_card,
             }
-            plain_text = await plain_formatters[target_type]()
-            await upsert_rich_card(
-                bot=message.bot,
-                chat_id=message.chat.id,
-                rich_message=rich_msg,
-                plain_text=plain_text,
-                reply_markup=keyboard,
-            )
-            try:
-                await message.delete()
-            except TelegramAPIError:
-                logger.debug("Deep-link command could not be deleted", exc_info=True)
-            return
-
-    # Если нет параметров – главное меню
-    await log_start(message.from_user.id)
+            await view_loggers[target_type](message.from_user.id, target_id)
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            logger.debug("Deep-link command could not be deleted", exc_info=True)
+        return
+    if message.from_user:
+        await log_start(message.from_user.id)
     await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
 
 @dp.message(Command("search"))
-async def search_command(message: types.Message):
+async def search_command(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer("🔎 Напиши название моба, ресурса, снаряжения или карты.")
 
 @dp.message(F.text == "🐾 Мобы")
-async def mobs_button(message: types.Message):
+async def mobs_button(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     map_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
@@ -1205,15 +1001,18 @@ async def mobs_button(message: types.Message):
     )
 
 @dp.message(F.text == "📦 Ресурсы")
-async def resources_button(message: types.Message):
+async def resources_button(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer("Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
 
 @dp.message(F.text == "⚔️ Снаряжение")
-async def gear_button(message: types.Message):
+async def gear_button(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
 
 @dp.message(F.text == "🔍 Поиск")
-async def search_button(message: types.Message):
+async def search_button(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer(
         "Нажми на кнопку ниже, чтобы включить поиск.\nЗатем просто введи запрос (например, <b>бронзовик</b> или <b>хитин</b>).",
         reply_markup=get_inline_search_button(),
@@ -1221,121 +1020,89 @@ async def search_button(message: types.Message):
     )
 
 @dp.callback_query(F.data == "resource_cat_alchemy")
-async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext):
+async def resource_cat_alchemy(callback: types.CallbackQuery, state: FSMContext) -> None:
     await show_resources_by_type(callback, 'alchemy', 1)
     await callback.answer()
 
 @dp.callback_query(F.data == "resource_cat_cards")
-async def resource_cat_cards(callback: types.CallbackQuery):
+async def resource_cat_cards(callback: types.CallbackQuery) -> None:
     await show_cards_list(callback, 1)
     await callback.answer()
 
 # ---------- Текстовый поиск ----------
 @dp.message(StateFilter(None), F.text & ~F.text.startswith('/') & ~F.text.in_(MAIN_MENU_BUTTONS) & ~F.via_bot)
-async def handle_search(message: types.Message, state: FSMContext):
-    query_text = message.text.strip()
+async def handle_search(message: types.Message, state: FSMContext) -> None:
+    query_text = (message.text or "").strip()
     if len(query_text) < 2:
         await message.answer("Введи хотя бы 2 символа для поиска.")
         return
 
-    await log_search(message.from_user.id, query_text)
+    if len(query_text) > MAX_SEARCH_QUERY_LENGTH:
+        await message.answer(f"Запрос слишком длинный. Максимум {MAX_SEARCH_QUERY_LENGTH} символов.")
+        return
+    if message.from_user:
+        await log_search(message.from_user.id, query_text)
 
     results = await db.search(query_text)
     if not any(results.values()):
         await message.answer("Ничего не найдено.")
         return
 
-    reply = "🔎 <b>Результаты поиска:</b>\n\n"
-    if results["mobs"]:
-        reply += "<b>Мобы:</b>\n"
-        for m in results["mobs"]:
-            loc_str = f"{m['location_emoji']} {escape_html(m['location_name'])}" if m.get('location_name') else "?"
-            reply += f"{m['emoji']} {escape_html(m['name'])} <i>{loc_str}</i>\n"
-        reply += "\n"
-    if results["resources"]:
-        reply += "<b>Ресурсы:</b>\n"
-        for r in results["resources"]:
-            reply += f"{r['emoji']} {escape_html(r['name'])}\n"
-        reply += "\n"
-    if results["gear"]:
-        reply += "<b>Снаряжение:</b>\n"
-        for g in results["gear"]:
-            reply += f"{g['emoji']} {escape_html(g['name'])} {get_rarity_emoji(g.get('rarity'))}\n"
-        reply += "\n"
-    if results["cards"]:
-        reply += "<b>🃏 Карты:</b>\n"
-        for c in results["cards"]:
-            reply += f"{c['emoji']} {escape_html(c['name'])} (слот: {c['slot']})\n"
-        reply += "\n"
-    await message.answer(reply, parse_mode="HTML")
+    content = build_search_content(results, BOT_USERNAME)
+    for chunk in split_formatted_text(content):
+        await message.answer(chunk.text, entities=list(chunk.entities), parse_mode=None)
 
 # ---------- Инлайн-поиск ----------
 @dp.inline_query()
-async def inline_search_handler(inline_query: InlineQuery):
+async def inline_search_handler(inline_query: InlineQuery) -> None:
     query = inline_query.query.strip()
-
-    if inline_query.from_user.id in inline_log_tasks:
-        inline_log_tasks[inline_query.from_user.id].cancel()
-
-    task = asyncio.create_task(delayed_log_inline_search(inline_query.from_user.id, query))
-    inline_log_tasks[inline_query.from_user.id] = task
-
-    if not query:
-        await inline_query.answer([], cache_time=5, switch_pm_text="🔍 Введи запрос для поиска", switch_pm_parameter="start")
+    try:
+        offset = int(inline_query.offset or "0")
+    except ValueError:
+        offset = -1
+    if offset == 0:
+        previous = inline_log_tasks.pop(inline_query.from_user.id, None)
+        if previous is not None:
+            previous.cancel()
+    if not 2 <= len(query) <= MAX_SEARCH_QUERY_LENGTH:
+        await inline_query.answer(
+            [], cache_time=5, is_personal=True,
+            button=InlineQueryResultsButton(text="Введи от 2 до 256 символов", start_parameter="start"),
+        )
         return
-
-    results = await db.search(query)
-    inline_results = []
-
-    for mob in results.get("mobs", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_mob_card(mob["id"])
-        desc = f"❤️ HP: {mob['hp']} | ✨ Пыль: {mob['dust_min']}-{mob['dust_max']} | ⭐ Опыт: {mob['exp']}"
+    if offset < 0 or offset > 150 or offset % 50:
+        await inline_query.answer([], cache_time=0, is_personal=True)
+        return
+    if offset == 0:
+        inline_log_tasks[inline_query.from_user.id] = background_tasks.create_task(
+            delayed_log_inline_search(inline_query.from_user.id, query),
+            name=f"inline-search-{inline_query.from_user.id}",
+        )
+    entries = ranked_inline_items(await db.search(query), query)
+    inline_results: list[InlineQueryResultUnion] = []
+    for item_type, item in entries[offset:offset + 50]:
+        if item_type == "mob":
+            rich_message = await format_mob_card(item["id"])
+            description = f"❤️ HP: {item.get('hp', 0)} | ⭐ Опыт: {item.get('exp', 0)}"
+        elif item_type == "resource":
+            rich_message = await format_resource_card_rich(item["id"])
+            description = "Ресурс"
+        elif item_type == "gear":
+            rich_message = await format_gear_card_rich(item["id"], item.get("rarity"))
+            description = f"{item.get('slot', '')} | {item.get('rarity', '')}"
+        else:
+            rich_message = await format_card_card_rich(item["id"])
+            description = f"Карта · {item.get('slot', '')}"
+        prefix = "res" if item_type == "resource" else item_type
         inline_results.append(InlineQueryResultArticle(
-            id=f"mob_{mob['id']}",
-            title=mob['name'],
-            description=desc,
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
+            id=f"{prefix}_{item['id']}", title=item["name"], description=description,
+            input_message_content=InputRichMessageContent(rich_message=rich_message),
         ))
-
-    for res in results.get("resources", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_resource_card_rich(res["id"])
-        inline_results.append(InlineQueryResultArticle(
-            id=f"res_{res['id']}",
-            title=res['name'],
-            description="Ресурс",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
-        ))
-
-    for gear in results.get("gear", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_gear_card_rich(gear["id"], gear.get("rarity"))
-        inline_results.append(InlineQueryResultArticle(
-            id=f"gear_{gear['id']}",
-            title=gear['name'],
-            description=f"{gear['slot']} | {gear['rarity']}",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
-        ))
-
-    for card in results.get("cards", [])[:50]:
-        if len(inline_results) >= 50:
-            break
-        rich_message = await format_card_card_rich(card["id"])
-        inline_results.append(InlineQueryResultArticle(
-            id=f"card_{card['id']}",
-            title=card['name'],
-            description=f"Слот: {card['slot']}",
-            input_message_content=InputRichMessageContent(rich_message=rich_message)
-        ))
-
-    await inline_query.answer(inline_results, cache_time=0, is_personal=True)
+    next_offset = str(offset + 50) if offset + 50 < len(entries) else ""
+    await inline_query.answer(inline_results, cache_time=0, is_personal=True, next_offset=next_offset)
 
 @dp.chosen_inline_result()
-async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult):
+async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult) -> None:
     from analytics import log_inline_result_chosen
     await log_inline_result_chosen(
         chosen_result.from_user.id,
@@ -1356,33 +1123,35 @@ async def replace_callback_message_text(
     Поэтому пост с картой удаляется и заменяется обычным текстовым сообщением.
     Обычные текстовые сообщения по-прежнему редактируются на месте.
     """
-    message = callback.message
+    message = get_callback_message(callback)
     if message.photo:
         await message.answer(
             text,
             reply_markup=reply_markup,
             parse_mode=parse_mode,
         )
+        await cleanup_card_fragments(get_bound_bot(callback), message.chat.id, message.message_id)
         try:
             await message.delete()
         except TelegramAPIError:
             logger.debug("Could not delete world-map message", exc_info=True)
         return
 
-    await message.edit_text(
-        text,
-        reply_markup=reply_markup,
-        parse_mode=parse_mode,
-    )
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest as error:
+        if "message is not modified" not in error.message.lower():
+            raise
+    await cleanup_card_fragments(get_bound_bot(callback), message.chat.id, message.message_id)
 
 # ---------- Callback-обработчики ----------
 @dp.callback_query(F.data == "gear_rarities")
-async def gear_rarities_callback(callback: types.CallbackQuery):
-    await callback.message.edit_text("Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
+async def gear_rarities_callback(callback: types.CallbackQuery) -> None:
+    await replace_callback_message_text(callback, "Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "mobs_dead_forest_locations")
-async def mobs_dead_forest_locations(callback: types.CallbackQuery):
+async def mobs_dead_forest_locations(callback: types.CallbackQuery) -> None:
     keyboard = await get_dead_forest_locations_keyboard()
     await replace_callback_message_text(
         callback,
@@ -1393,55 +1162,62 @@ async def mobs_dead_forest_locations(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("back_to_locations_"))
-async def back_to_locations(callback: types.CallbackQuery):
-    category = callback.data.split("_")[3]
+async def back_to_locations(callback: types.CallbackQuery) -> None:
+    category = get_callback_data(callback).split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
     await replace_callback_message_text(callback, text, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
-async def list_or_page_callback(callback: types.CallbackQuery):
-    _, category, raw_location_id, raw_page = callback.data.split("_")
-    loc_id = int(raw_location_id)
-    page = int(raw_page)
+async def list_or_page_callback(callback: types.CallbackQuery) -> None:
+    parsed = parse_location_callback(get_callback_data(callback))
+    if not parsed:
+        await callback.answer("Некорректная ссылка на локацию.", show_alert=True)
+        return
+    category, _, loc_id, page = parsed
     location = await db.get_location_by_id(loc_id)
+    if location is None:
+        await callback.answer("Локация удалена. Открой меню заново.", show_alert=True)
+        return
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = get_location_list_title(location, category, page)
     await replace_callback_message_text(callback, title, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("gear_slots_"))
-async def gear_slots_callback(callback: types.CallbackQuery):
-    rarity = callback.data.split("_", 2)[2]
+async def gear_slots_callback(callback: types.CallbackQuery) -> None:
+    rarity = get_callback_data(callback).split("_", 2)[2]
     keyboard = await get_gear_slots_keyboard(rarity)
-    await callback.message.edit_text("Выбери слот снаряжения:", reply_markup=keyboard)
+    await replace_callback_message_text(callback, "Выбери слот снаряжения:", reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data == "gear_empty_category")
-async def gear_empty_category_callback(callback: types.CallbackQuery):
+async def gear_empty_category_callback(callback: types.CallbackQuery) -> None:
     await callback.answer("В этой категории пока нет предметов.", show_alert=False)
 
 @dp.callback_query(F.data.startswith(("gear_slot_", "page_gear_")))
-async def gear_list_or_page_callback(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    if parts[0] == "gear":
-        rarity, slot_index, page = parts[2], int(parts[3]), 1
-    else:
-        rarity, slot_index, page = parts[2], int(parts[3]), int(parts[4])
+async def gear_list_or_page_callback(callback: types.CallbackQuery) -> None:
+    parsed = parse_gear_list_callback(get_callback_data(callback))
+    if not parsed:
+        await callback.answer("Некорректная ссылка на снаряжение.", show_alert=True)
+        return
+    rarity, slot_index, page = parsed
     slot = GEAR_SLOT_ORDER[slot_index]
     keyboard = await get_gear_by_slot_keyboard(rarity, slot_index, page)
     text = f"⚔️ <b>{RARITY_NAMES.get(rarity, rarity)} · {SLOT_NAMES[slot]}</b>\nСтраница {page}"
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await replace_callback_message_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_mobs_"))
-async def view_mob(callback: types.CallbackQuery):
+async def view_mob(callback: types.CallbackQuery) -> None:
     await callback.answer()
-    parts = callback.data.split("_")
-    mob_id = int(parts[2])
-    location_id = int(parts[3])
-    page = int(parts[4])
+    parsed = parse_location_callback(get_callback_data(callback))
+    if not parsed or parsed[1] is None:
+        return
+    _, mob_id, location_id, page = parsed
+    if mob_id is None:
+        return
 
     await log_view_mob(callback.from_user.id, mob_id)
 
@@ -1474,20 +1250,24 @@ async def view_mob(callback: types.CallbackQuery):
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     await upsert_rich_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
         rich_message=rich_msg,
         plain_text=plain_text,
         reply_markup=reply_markup,
-        current_message=callback.message,
+        current_message=get_callback_message(callback),
     )
 
 @dp.callback_query(F.data.startswith(("view_resources_", "nav_resources_")))
-async def view_resource(callback: types.CallbackQuery):
+async def view_resource(callback: types.CallbackQuery) -> None:
     await callback.answer()
-    is_navigation = callback.data.startswith("nav_resources_")
-    prefix = "nav_resources_" if is_navigation else "view_resources_"
-    res_id, location_id, page = map(int, callback.data.removeprefix(prefix).split("_"))
+    is_navigation = get_callback_data(callback).startswith("nav_resources_")
+    parsed = parse_location_callback(get_callback_data(callback))
+    if not parsed or parsed[1] is None:
+        return
+    _, res_id, location_id, page = parsed
+    if res_id is None:
+        return
     await log_view_resource(callback.from_user.id, res_id)
 
     rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
@@ -1519,17 +1299,17 @@ async def view_resource(callback: types.CallbackQuery):
 
     render_card = replace_rich_card if is_navigation else upsert_rich_card
     await render_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
         rich_message=rich_msg,
         plain_text=plain_text,
         reply_markup=reply_markup,
-        current_message=callback.message,
+        current_message=get_callback_message(callback),
     )
 
 async def build_gear_card_keyboard(
-    data: dict,
-    username: str | None,
+    data: GearCardRow,
+    user_id: int,
     page: int,
     slot_index: int | None,
 ) -> InlineKeyboardMarkup:
@@ -1545,11 +1325,10 @@ async def build_gear_card_keyboard(
     slot = GEAR_SLOT_ORDER[slot_index] if slot_index is not None else None
     neighbours = await db.get_prev_next_gear(gear_id, rarity, slot)
     nav_buttons = []
-    for key, text_label in (
-        ('prev_id', '◀️ Предыдущий'),
-        ('next_id', 'Следующий ▶️'),
+    for neighbour_id, text_label in (
+        (neighbours['prev_id'], '◀️ Предыдущий'),
+        (neighbours['next_id'], 'Следующий ▶️'),
     ):
-        neighbour_id = neighbours[key]
         if not neighbour_id:
             continue
         if slot_index is None:
@@ -1565,8 +1344,8 @@ async def build_gear_card_keyboard(
 
     keyboard = [nav_buttons] if nav_buttons else []
     recipe_id = data.get('recipe_id')
-    if rarity == 'epic' and recipe_id and username:
-        is_owner = username in data.get('owners', [])
+    if rarity == 'epic' and recipe_id:
+        is_owner = user_id in data.get('owner_user_ids', [])
         action = 'relinquish' if is_owner else 'claim'
         keyboard.append([InlineKeyboardButton(
             text="❌ У меня нет рецепта" if is_owner else "✅ У меня есть рецепт",
@@ -1609,39 +1388,46 @@ async def render_gear_card(
     # Данные карточки являются источником истины: старые кнопки могут содержать
     # редкость, которая уже изменилась в админке.
     rarity = data['rarity']
+    if slot_index is not None:
+        try:
+            slot_index = GEAR_SLOT_ORDER.index(data['slot'])
+        except ValueError:
+            slot_index = None
     rich_msg = await format_gear_card_rich(
         gear_id,
         rarity,
         page,
         data=data,
+        slot_index=slot_index,
     )
     plain_text = await format_gear_card_plain(
         gear_id,
         rarity,
         page,
         data=data,
+        slot_index=slot_index,
     )
     reply_markup = await build_gear_card_keyboard(
         data,
-        callback.from_user.username,
+        callback.from_user.id,
         page,
         slot_index,
     )
     render_card = replace_rich_card if replace else upsert_rich_card
     await render_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
         rich_message=rich_msg,
         plain_text=plain_text,
         reply_markup=reply_markup,
-        current_message=callback.message,
+        current_message=get_callback_message(callback),
     )
     return True
 
 
 @dp.callback_query(F.data.startswith(("view_gear_", "nav_gear_")))
-async def view_gear(callback: types.CallbackQuery):
-    parsed = parse_gear_view_callback(callback.data)
+async def view_gear(callback: types.CallbackQuery) -> None:
+    parsed = parse_gear_view_callback(get_callback_data(callback))
     if not parsed:
         await callback.answer("Некорректная ссылка на снаряжение.", show_alert=True)
         return
@@ -1654,25 +1440,32 @@ async def view_gear(callback: types.CallbackQuery):
         rarity,
         page,
         slot_index,
-        replace=callback.data.startswith("nav_gear_"),
+        replace=get_callback_data(callback).startswith("nav_gear_"),
     )
 
 # ---------- Карты ----------
 @dp.callback_query(F.data.startswith("cards_page_"))
-async def cards_page_callback(callback: types.CallbackQuery):
-    page = int(callback.data.split("_")[2])
+async def cards_page_callback(callback: types.CallbackQuery) -> None:
+    parsed = parse_card_callback(get_callback_data(callback))
+    if not parsed:
+        await callback.answer("Некорректная страница.", show_alert=True)
+        return
+    _, page = parsed
     await show_cards_list(callback, page)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("view_card_"))
-async def view_card(callback: types.CallbackQuery):
+async def view_card(callback: types.CallbackQuery) -> None:
     await callback.answer()
-    parts = callback.data.split("_")
-    card_id = int(parts[2])
-    page = int(parts[3]) if len(parts) > 3 else 1
+    parsed = parse_card_callback(get_callback_data(callback))
+    if not parsed or parsed[0] is None:
+        return
+    card_id, page = parsed
+    if card_id is None:
+        return
     await log_view_card(callback.from_user.id, card_id)
-    text = await format_card_card(card_id)
-    rich_msg = await format_card_card_rich(card_id)
+    text = await format_card_card(card_id, page)
+    rich_msg = await format_card_card_rich(card_id, page)
 
     neighbours = await db.get_prev_next_card_by_slot(card_id)
 
@@ -1699,29 +1492,21 @@ async def view_card(callback: types.CallbackQuery):
     keyboard.append([back_button])
 
     await upsert_rich_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
         rich_message=rich_msg,
         plain_text=text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-        current_message=callback.message,
+        current_message=get_callback_message(callback),
     )
 
 @dp.callback_query(F.data.startswith(("recipe_claim_", "recipe_relinquish_")))
-async def update_recipe_owner(callback: types.CallbackQuery):
-    parsed = parse_recipe_owner_callback(callback.data)
+async def update_recipe_owner(callback: types.CallbackQuery) -> None:
+    parsed = parse_recipe_owner_callback(get_callback_data(callback))
     if not parsed:
         await callback.answer("Некорректная кнопка рецепта.", show_alert=True)
         return
     action, recipe_id, gear_id, rarity, slot_index, page = parsed
-    username = callback.from_user.username
-    if not username:
-        await callback.answer(
-            "У тебя нет username. Установи его в настройках Telegram.",
-            show_alert=True,
-        )
-        return
-
     gear = await db.get_gear_card(gear_id)
     if not gear or gear.get('recipe_id') != recipe_id:
         await callback.answer(
@@ -1736,12 +1521,20 @@ async def update_recipe_owner(callback: types.CallbackQuery):
         )
         return
 
-    if action == 'claim':
-        await db.add_recipe_owner(recipe_id, username)
-        result_text = "✅ Ты добавлен в список владельцев рецепта!"
-    else:
-        await db.remove_recipe_owner(recipe_id, username)
-        result_text = "❌ Ты удалён из списка владельцев рецепта."
+    try:
+        if action == 'claim':
+            await db.claim_recipe_owner(
+                recipe_id, callback.from_user.id, callback.from_user.username,
+                expected_gear_id=gear_id,
+            )
+            result_text = "✅ Ты добавлен в список владельцев рецепта!"
+        else:
+            await db.relinquish_recipe_owner(recipe_id, callback.from_user.id)
+            result_text = "❌ Ты удалён из списка владельцев рецепта."
+    except ValueError as error:
+        await callback.answer(str(error), show_alert=True)
+        return
+    await callback.answer(result_text, show_alert=False)
 
     await render_gear_card(
         callback,
@@ -1751,12 +1544,11 @@ async def update_recipe_owner(callback: types.CallbackQuery):
         slot_index,
         replace=True,
     )
-    await callback.answer(result_text, show_alert=False)
 
 # ---------- Ресурсы по категориям ----------
 @dp.callback_query(F.data.startswith("resource_cat_"))
-async def resource_category_callback(callback: types.CallbackQuery):
-    resource_type = callback.data.removeprefix("resource_cat_")
+async def resource_category_callback(callback: types.CallbackQuery) -> None:
+    resource_type = get_callback_data(callback).removeprefix("resource_cat_")
     if resource_type not in RESOURCE_TYPE_NAMES:
         await callback.answer("Неверная категория.", show_alert=True)
         return
@@ -1764,8 +1556,8 @@ async def resource_category_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("res_page_"))
-async def resource_page_callback(callback: types.CallbackQuery):
-    parsed = parse_resource_page_callback(callback.data, "res_page_")
+async def resource_page_callback(callback: types.CallbackQuery) -> None:
+    parsed = parse_resource_page_callback(get_callback_data(callback), "res_page_")
     if not parsed:
         await callback.answer("Неверная страница.", show_alert=True)
         return
@@ -1774,18 +1566,18 @@ async def resource_page_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_resource_cats")
-async def back_to_resource_categories(callback: types.CallbackQuery):
-    await callback.message.edit_text("Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
+async def back_to_resource_categories(callback: types.CallbackQuery) -> None:
+    await replace_callback_message_text(callback, "Выбери категорию ресурсов:", reply_markup=get_resource_categories_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("view_resource_", "nav_resource_")))
-async def view_resource_by_type(callback: types.CallbackQuery):
-    parsed = parse_resource_view_callback(callback.data)
+async def view_resource_by_type(callback: types.CallbackQuery) -> None:
+    parsed = parse_resource_view_callback(get_callback_data(callback))
     if not parsed:
         await callback.answer("Неверная ссылка на ресурс.", show_alert=True)
         return
     resource_id, resource_type, page = parsed
-    is_navigation = callback.data.startswith("nav_resource_")
+    is_navigation = get_callback_data(callback).startswith("nav_resource_")
     await callback.answer()
     await log_view_resource(callback.from_user.id, resource_id)
 
@@ -1819,36 +1611,50 @@ async def view_resource_by_type(callback: types.CallbackQuery):
 
     render_card = replace_rich_card if is_navigation else upsert_rich_card
     await render_card(
-        bot=callback.bot,
-        chat_id=callback.message.chat.id,
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
         rich_message=rich_msg,
         plain_text=plain_text,
         reply_markup=reply_markup,
-        current_message=callback.message,
+        current_message=get_callback_message(callback),
     )
 
 @dp.callback_query(F.data == "back_to_main_menu")
-async def back_to_main_menu(callback: types.CallbackQuery):
-    await callback.message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
-    await callback.message.delete()
+async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    message = get_callback_message(callback)
+    await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
+    await cleanup_card_fragments(get_bound_bot(callback), message.chat.id, message.message_id)
+    await message.delete()
     await callback.answer()
 
 # ---------- Запуск ----------
-async def main():
+async def main() -> None:
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise ValueError("BOT_TOKEN not set")
+    logging.basicConfig(level=logging.INFO)
+    bot = Bot(token=token)
     try:
         await db.connect()
-
         global BOT_USERNAME
         me = await bot.me()
         BOT_USERNAME = me.username
-
         dp.update.middleware(AnalyticsMiddleware())
         dp.include_router(admin_router)
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot, close_bot_session=False)
+        await bot.delete_webhook(drop_pending_updates=False)
+        await dp.start_polling(bot, close_bot_session=False, tasks_concurrency_limit=64)
     finally:
-        await db.close()
-        await bot.session.close()
+        try:
+            await update_tasks.close(timeout=30.0)
+        finally:
+            try:
+                await background_tasks.close(timeout=2.0)
+            finally:
+                try:
+                    await db.close()
+                finally:
+                    await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

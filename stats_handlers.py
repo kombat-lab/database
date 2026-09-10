@@ -1,9 +1,16 @@
-from aiogram import F, Router, types
+import re
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from aiogram import BaseMiddleware, F, Router, types
+from aiogram.enums import ChatType
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from admin_utils import edit_admin_rich
 from analytics import (
+    UserIdentity,
     get_active_users_count,
     get_db_stats,
     get_retention,
@@ -13,11 +20,36 @@ from analytics import (
     get_users_page,
 )
 from utils import escape_html
+from navigation import MAX_SQLITE_ID
 
 stats_router = Router()
 
 
-async def show_stats_menu(target, edit: bool = False):
+class PrivateStatsMiddleware(BaseMiddleware):
+    """Keep user identities and search history out of shared chats."""
+
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        message = event.message if isinstance(event, types.CallbackQuery) else event
+        if isinstance(message, types.Message) and message.chat.type == ChatType.PRIVATE:
+            return await handler(event, data)
+        notice = "Статистика доступна только в личном чате с ботом."
+        if isinstance(event, types.CallbackQuery):
+            await event.answer(notice, show_alert=True)
+        elif isinstance(event, types.Message):
+            await event.answer(notice)
+        return None
+
+
+stats_router.message.middleware(PrivateStatsMiddleware())
+stats_router.callback_query.middleware(PrivateStatsMiddleware())
+
+
+async def show_stats_menu(target: types.Message | types.CallbackQuery, edit: bool = False) -> None:
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🐾 Топ-30 мобов", callback_data="stats_mobs")],
         [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
@@ -29,13 +61,20 @@ async def show_stats_menu(target, edit: bool = False):
         [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
     ])
     text = "📈 Выберите раздел статистики:"
-    if edit and isinstance(target, types.CallbackQuery):
-        await target.message.edit_text(text, reply_markup=keyboard)
+    if isinstance(target, types.CallbackQuery):
+        message = target.message
+        if not isinstance(message, types.Message):
+            await target.answer("Сообщение недоступно. Откройте /stats заново.", show_alert=True)
+            return
+        if edit:
+            await message.edit_text(text, reply_markup=keyboard)
+        else:
+            await message.answer(text, reply_markup=keyboard)
     else:
         await target.answer(text, reply_markup=keyboard)
 
 
-async def show_top_items(callback: types.CallbackQuery, item_type: str, type_name_ru: str):
+async def show_top_items(callback: types.CallbackQuery, item_type: str, type_name_ru: str) -> None:
     await callback.answer()
     items = await get_top_items_with_names(item_type, days=30, limit=30)
     if not items:
@@ -63,7 +102,7 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
-async def show_top_searches(callback: types.CallbackQuery):
+async def show_top_searches(callback: types.CallbackQuery) -> None:
     await callback.answer()
     items = await get_top_search_queries(days=30, limit=30, search_type='all')
     if not items:
@@ -90,7 +129,7 @@ async def show_top_searches(callback: types.CallbackQuery):
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
-async def show_general_stats(callback: types.CallbackQuery):
+async def show_general_stats(callback: types.CallbackQuery) -> None:
     await callback.answer()
     dau = await get_active_users_count(1)
     wau = await get_active_users_count(7)
@@ -136,14 +175,14 @@ async def show_general_stats(callback: types.CallbackQuery):
     await edit_admin_rich(callback, rich_html.strip(), keyboard, fallback_html=text)
 
 
-def _user_display_name(user: dict) -> str:
+def _user_display_name(user: UserIdentity) -> str:
     if user.get('username'):
         return f"@{user['username']}"
     full_name = " ".join(filter(None, (user.get('first_name'), user.get('last_name')))).strip()
     return full_name or f"ID {user['user_id']}"
 
 
-async def show_users(callback: types.CallbackQuery, page: int = 1):
+async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
     await callback.answer()
     page = max(page, 1)
     per_page = 10
@@ -151,7 +190,9 @@ async def show_users(callback: types.CallbackQuery, page: int = 1):
     has_next = len(rows) > per_page
     users = rows[:per_page]
 
-    rich_rows, fallback_lines, keyboard_rows = [], [], []
+    rich_rows: list[str] = []
+    fallback_lines: list[str] = []
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
     for user in users:
         display_name = _user_display_name(user)
         safe_name = escape_html(display_name)
@@ -191,7 +232,7 @@ async def show_users(callback: types.CallbackQuery, page: int = 1):
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
 
 
-async def show_user_details(callback: types.CallbackQuery, user_id: int, return_page: int):
+async def show_user_details(callback: types.CallbackQuery, user_id: int, return_page: int) -> None:
     await callback.answer()
     activity = await get_user_activity(user_id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -244,31 +285,40 @@ async def show_user_details(callback: types.CallbackQuery, user_id: int, return_
 
 
 @stats_router.message(Command("stats"))
-async def show_stats_command(message: types.Message):
+async def show_stats_command(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
     await show_stats_menu(message)
 
 
 @stats_router.callback_query(F.data == "admin_stats")
 @stats_router.callback_query(F.data == "back_to_stats")
-async def show_stats_callback(callback: types.CallbackQuery):
+async def show_stats_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 
 
 @stats_router.callback_query(F.data.startswith("stats_users_page_"))
-async def stats_users_page(callback: types.CallbackQuery):
-    await show_users(callback, int(callback.data.rsplit("_", 1)[1]))
+async def stats_users_page(callback: types.CallbackQuery) -> None:
+    match = re.fullmatch(r"stats_users_page_([1-9][0-9]{0,17})", callback.data or "")
+    if match is None or int(match[1]) > MAX_SQLITE_ID // 10:
+        await callback.answer("Неверная страница.", show_alert=True)
+        return
+    await show_users(callback, int(match[1]))
 
 
 @stats_router.callback_query(F.data.startswith("stats_user_"))
-async def stats_user_details(callback: types.CallbackQuery):
-    _, _, user_id, return_page = callback.data.split("_")
-    await show_user_details(callback, int(user_id), int(return_page))
+async def stats_user_details(callback: types.CallbackQuery) -> None:
+    match = re.fullmatch(r"stats_user_([1-9][0-9]{0,18})_([1-9][0-9]{0,17})", callback.data or "")
+    if match is None or int(match[1]) > MAX_SQLITE_ID or int(match[2]) > MAX_SQLITE_ID // 10:
+        await callback.answer("Неверная ссылка на пользователя.", show_alert=True)
+        return
+    await show_user_details(callback, int(match[1]), int(match[2]))
 
 
 @stats_router.callback_query(F.data.startswith("stats_"))
-async def stats_router_callback(callback: types.CallbackQuery):
-    action = callback.data.split("_")[1]
+async def stats_router_callback(callback: types.CallbackQuery) -> None:
+    action = (callback.data or "").removeprefix("stats_")
     if action == "mobs":
         await show_top_items(callback, 'mob', 'мобов')
     elif action == "resources":

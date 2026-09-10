@@ -127,7 +127,7 @@ class CallbackParserTests(unittest.TestCase):
 
 
 class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_navigation_deletes_old_card_before_sending_new_one(self):
+    async def test_navigation_replaces_old_card_only_after_success(self):
         events = []
         sent_message = object()
         bot = AsyncMock()
@@ -153,7 +153,7 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIs(result, sent_message)
-        self.assertEqual(events, ["delete", "send"])
+        self.assertEqual(events, ["send", "delete"])
         bot.edit_message_text.assert_not_awaited()
 
 
@@ -282,6 +282,7 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
             "slot": "шлем",
             "recipe_id": 36,
             "owners": ["tester"],
+            "owner_user_ids": [123],
         }
         with patch(
             "bot.db.get_prev_next_gear",
@@ -289,7 +290,7 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
         ) as neighbours:
             keyboard = await build_gear_card_keyboard(
                 gear_data,
-                "tester",
+                123,
                 page=3,
                 slot_index=0,
             )

@@ -43,7 +43,7 @@ GEAR_CLASS_ORDER = ("Аколит", "Бастион", "Маг", "Охотник"
 GEAR_CLASS_SET = frozenset(GEAR_CLASS_ORDER)
 
 
-def parse_gear_classes(value) -> tuple[str, ...]:
+def parse_gear_classes(value: object) -> tuple[str, ...]:
     selected = {
         class_name.strip()
         for class_name in str(value or "").split(",")
@@ -54,7 +54,7 @@ def parse_gear_classes(value) -> tuple[str, ...]:
     )
 
 
-def format_gear_classes(value) -> str:
+def format_gear_classes(value: object) -> str:
     selected = parse_gear_classes(value)
     if not selected or len(selected) == len(GEAR_CLASS_ORDER):
         return "Все классы"
