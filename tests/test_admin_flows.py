@@ -8,6 +8,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import admin_handlers as admin
 import admin_utils
+import admin_mobs as mobs
+import admin_recipes as recipes
+import admin_sessions
+import ui.rich
 
 
 class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -19,7 +23,8 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         self.message = types.Message(
             message_id=10, date=1, chat=types.Chat(id=1, type="private"), from_user=self.user,
             text="input",
-        )
+        ).as_(self.bot)
+        self.screen_token = None
         self.patches = [
             patch.object(admin, "ADMIN_IDS", [1]),
             patch.object(types.Message, "answer", new=AsyncMock(return_value=self.message)),
@@ -27,11 +32,11 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
             patch.object(types.Message, "edit_reply_markup", new=AsyncMock(return_value=self.message)),
             patch.object(types.Message, "delete", new=AsyncMock()),
             patch.object(types.CallbackQuery, "answer", new=AsyncMock()),
-            patch.object(admin_utils, "edit_admin_rich", new=AsyncMock()),
-            patch.object(admin, "edit_admin_rich", new=AsyncMock()),
+            patch.object(ui.rich, "present_rich_card", new=AsyncMock(return_value=self.message)),
         ]
         for item in self.patches:
             item.start()
+            self.addCleanup(item.stop)
 
     async def asyncTearDown(self):
         for item in reversed(self.patches):
@@ -41,20 +46,32 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def route(self, event):
         kind = "callback_query" if isinstance(event, types.CallbackQuery) else "message"
-        return await admin.admin_router.propagate_event(
+        result = await admin.admin_router.propagate_event(
             kind, event, bot=self.bot, state=self.state,
             raw_state=await self.state.get_state(), event_from_user=self.user,
         )
+        self.screen_token = (await self.state.get_data()).get('admin_screen', {}).get('token')
+        return result
+
+    async def bind(self):
+        data = await self.state.get_data()
+        context = {key: value for key in ('editing_entity','entity_id','edit_field','mob_id','recipe_id','temp_resource_id','edit_resource_id')
+                   if isinstance((value := data.get(key)), (str,int))}
+        self.screen_token = 'test0001'
+        await admin_sessions.remember_admin_screen(self.state, self.callback('fixture'), self.message, self.screen_token, context)
 
     def callback(self, data, message_id=10):
+        if self.screen_token and "~" not in data:
+            data = f"{data}~{self.screen_token}"
         return types.CallbackQuery(
             id="audit", from_user=self.user, chat_instance="test", data=data,
-            message=self.message.model_copy(update={"message_id": message_id}),
-        )
+            message=self.message.model_copy(update={"message_id": message_id}).as_(self.bot),
+        ).as_(self.bot)
 
     async def set_editing_resource(self):
         await self.state.set_state(admin_utils.GenericEditStates.new_value)
         await self.state.set_data({"editing_entity": "resource", "entity_id": 1, "edit_field": "name"})
+        await self.bind()
 
     async def test_kombat_cancels_input_instead_of_saving_command(self):
         await self.set_editing_resource()
@@ -83,14 +100,15 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.state.get_data(), {})
 
     async def test_old_mob_confirmation_cannot_delete_current_mob(self):
-        await self.state.set_state(admin.MobStates.edit_field)
+        await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
+        await self.bind()
         with patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[{"name": "Mob A"}])):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         old_data = "confirm_mob_delete_" + confirmation["token"]
         await self.route(self.message.model_copy(update={"text": "/kombat"}))
-        await self.state.set_state(admin.MobStates.edit_field)
+        await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.update_data(mob_id=2)
         with patch.object(admin.db, "delete_mob", new=AsyncMock()) as delete:
             await self.route(self.callback(old_data))
@@ -98,14 +116,15 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         delete.assert_not_awaited()
 
     async def test_mob_confirmation_deletes_once(self):
-        await self.state.set_state(admin.MobStates.edit_field)
+        await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
+        await self.bind()
         with patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[{"name": "Mob A"}])):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         callback = self.callback("confirm_mob_delete_" + confirmation["token"])
         with patch.object(admin.db, "delete_mob", new=AsyncMock()) as delete, patch.object(
-            admin, "get_mob_locations_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+            mobs, "get_mob_locations_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
         ):
             await self.route(callback)
             await self.route(callback)
@@ -115,13 +134,14 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         config = dict(
             admin.ENTITY_CONFIGS["resource"],
             get_by_id_func=AsyncMock(return_value={"id": 1, "name": "A"}),
-            delete_func=AsyncMock(),
+            delete_func=AsyncMock(), delete_impact_func=AsyncMock(return_value=""),
         )
         with patch.dict(admin.ENTITY_CONFIGS, {"resource": config}):
             for change in ("object", "message", "token"):
                 with self.subTest(change=change):
                     await self.state.set_state(admin_utils.GenericEditStates.select_field)
                     await self.state.set_data({"editing_entity": "resource", "entity_id": 1})
+                    await self.bind()
                     await self.route(self.callback("delete_entity"))
                     confirmation = (await self.state.get_data())["admin_delete_confirmation"]
                     old_callback = self.callback("confirm_delete_yes_" + confirmation["token"])
@@ -139,10 +159,11 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         config = dict(
             admin.ENTITY_CONFIGS["resource"],
             get_by_id_func=AsyncMock(return_value={"id": 1, "name": "A"}),
-            delete_func=AsyncMock(), get_page_func=AsyncMock(return_value=[]),
+            delete_func=AsyncMock(), delete_impact_func=AsyncMock(return_value=""), get_page_func=AsyncMock(return_value=[]),
         )
         await self.state.set_state(admin_utils.GenericEditStates.select_field)
         await self.state.set_data({"editing_entity": "resource", "entity_id": 1})
+        await self.bind()
         with patch.dict(admin.ENTITY_CONFIGS, {"resource": config}):
             await self.route(self.callback("delete_entity"))
             confirmation = (await self.state.get_data())["admin_delete_confirmation"]
@@ -152,13 +173,14 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         config["delete_func"].assert_awaited_once_with(1)
 
     async def test_recipe_confirmation_is_bound_to_recipe_and_message(self):
-        await self.state.set_state(admin.RecipeStates.view_recipe)
+        await self.state.set_state(recipes.RecipeStates.view_recipe)
         await self.state.set_data({"recipe_id": 1})
+        await self.bind()
         await self.route(self.callback("recipe_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         callback = self.callback("recipe_delete_yes_" + confirmation["token"])
         with patch.object(admin.db, "delete_recipe", new=AsyncMock()) as delete, patch.object(
-            admin, "get_recipe_list_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+            recipes, "get_recipe_list_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
         ):
             await self.route(self.callback(callback.data, message_id=99))
             delete.assert_not_awaited()
@@ -171,8 +193,9 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         delete.assert_awaited_once_with(1)
 
     async def test_owner_selection_uses_stable_id_and_confirms_recipe(self):
-        await self.state.set_state(admin.RecipeStates.manage_owners)
+        await self.state.set_state(recipes.RecipeStates.manage_owners)
         await self.state.set_data({"recipe_id": 7})
+        await self.bind()
         owners = [{"owner_id": 42, "user_id": 99, "player_username": "tester"}]
         with patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=owners)), patch.object(
             admin.db, "remove_recipe_owner_entry", new=AsyncMock(),
@@ -194,45 +217,44 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
             "ingredients": [], "owners": [],
             "owner_entries": [{"owner_id": 42, "user_id": 99, "player_username": None}],
         }
-        with patch.object(admin.db, "get_gear_by_id", new=AsyncMock(return_value={"name": "Gear", "emoji": ""})):
-            await admin.show_recipe(self.message, recipe, self.state)
-        text = types.Message.answer.await_args.args[0]
-        self.assertIn("Игрок 99", text)
-        self.assertNotIn("Нет владельцев", text)
+        self.assertEqual(recipes.admin_recipe_owner_labels(recipe), ['Игрок 99'])
         await self.state.update_data(recipe_id=7)
         with patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=recipe["owner_entries"])):
-            await admin.show_recipe_owners(self.callback("recipe_manage_owners"), self.state)
+            await recipes.show_recipe_owners(self.callback("recipe_manage_owners"), self.state)
         keyboard = types.Message.edit_text.await_args.kwargs["reply_markup"]
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "❌ Игрок 99")
 
     async def test_back_from_drop_returns_to_same_mob(self):
-        await self.state.set_state(admin.MobStates.drop_category)
+        await self.state.set_state(mobs.MobStates.drop_category)
         await self.state.set_data({"mob_id": 2})
+        await self.bind()
         mob = {"id": 2, "name": "A", "emoji": "", "hp": 1, "dust_min": 1, "dust_max": 2, "exp": 1}
-        with patch.object(admin, "get_mob_edit_data", new=AsyncMock(return_value=mob)):
+        with patch.object(mobs, "get_mob_edit_data", new=AsyncMock(return_value=mob)):
             await self.route(self.callback("back_to_mob_edit"))
-        self.assertEqual(await self.state.get_state(), admin.MobStates.edit_field.state)
+        self.assertEqual(await self.state.get_state(), mobs.MobStates.edit_field.state)
         self.assertEqual((await self.state.get_data())["mob_id"], 2)
 
     async def test_duplicate_ingredient_recovers_to_filtered_selection(self):
-        await self.state.set_state(admin.RecipeStates.edit_ingredient_quantity)
+        await self.state.set_state(recipes.RecipeStates.edit_ingredient_quantity)
         await self.state.set_data({"recipe_id": 7, "edit_action": "add", "temp_resource_id": 1})
+        await self.bind()
         with patch.object(admin.db, "add_ingredient", new=AsyncMock(side_effect=ValueError("Already exists"))), patch.object(
-            admin.db, "get_recipe_details", new=AsyncMock(return_value={"ingredients": [{"resource_id": 1}]}),
-        ), patch.object(admin.db, "get_all_resources_simple", new=AsyncMock(return_value=[
+            admin.db, "get_recipe_details", new=AsyncMock(return_value={"ingredients": [{"resource_id": 1}], "result_type": "gear", "result_id": 12}),
+        ), patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[
             {"id": 1, "name": "First", "emoji": ""}, {"id": 2, "name": "Second", "emoji": ""},
         ])):
             await self.route(self.message.model_copy(update={"text": "2"}))
-        self.assertEqual(await self.state.get_state(), admin.RecipeStates.add_ingredient.state)
+        self.assertEqual(await self.state.get_state(), recipes.RecipeStates.add_ingredient.state)
         self.assertEqual([row["id"] for row in (await self.state.get_data())["ingredient_resources"]], [2])
 
     async def test_ingredient_delete_rejects_old_message_and_wrong_recipe(self):
-        await self.state.set_state(admin.RecipeStates.edit_ingredient)
+        await self.state.set_state(recipes.RecipeStates.edit_ingredient)
         await self.state.set_data({"recipe_id": 7, "edit_action": "add", "temp_resource_id": 99})
+        await self.bind()
         recipe = {"ingredients": [{"resource_id": 3, "name": "Ingredient"}]}
         with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value=recipe)), patch.object(
             admin.db, "remove_ingredient", new=AsyncMock(),
-        ) as remove, patch.object(admin, "show_recipe", new=AsyncMock()):
+        ) as remove, patch.object(recipes, "show_recipe", new=AsyncMock()):
             await self.route(self.callback("recipe_edit_ing_3"))
             self.assertIsNone((await self.state.get_data())["edit_action"])
             confirmation = (await self.state.get_data())["admin_delete_confirmation"]
@@ -250,14 +272,15 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_mob_dust_edit_rejects_inverted_range(self):
         for field, value in (("dust_min", "30"), ("dust_max", "5")):
             with self.subTest(field=field):
-                await self.state.set_state(admin.MobStates.edit_new_value)
+                await self.state.set_state(mobs.MobStates.edit_new_value)
                 await self.state.set_data({"mob_id": 1, "edit_field": field})
-                with patch.object(admin, "get_mob_edit_data", new=AsyncMock(return_value={"dust_min": 10, "dust_max": 20})), patch.object(
+                await self.bind()
+                with patch.object(mobs, "get_mob_edit_data", new=AsyncMock(return_value={"dust_min": 10, "dust_max": 20})), patch.object(
                     admin.db, "update_mob_field", new=AsyncMock(),
                 ) as update:
                     await self.route(self.message.model_copy(update={"text": value}))
                 update.assert_not_awaited()
-                self.assertEqual(await self.state.get_state(), admin.MobStates.edit_new_value.state)
+                self.assertEqual(await self.state.get_state(), mobs.MobStates.edit_new_value.state)
 
 
 if __name__ == "__main__":

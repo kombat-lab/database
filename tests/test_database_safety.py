@@ -306,6 +306,8 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
     async def test_linked_owners_survive_rename_and_do_not_absorb_manual_names(self):
         gear_id = await self.db.add_gear("item", "epic", "helmet", "")
         recipe_id = await self.db.create_recipe("gear", gear_id)
+        scroll_id = await self.db.add_resource("scroll", "📜", "scroll_recipe")
+        await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
         await self.db.add_recipe_owner(recipe_id, "OldName")
         await self.db.add_recipe_owner(recipe_id, "oldname")
         await self.db.claim_recipe_owner(recipe_id, 101, "OldName", expected_gear_id=gear_id)
@@ -327,9 +329,11 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         await self.db.remove_recipe_owner(recipe_id, "OLDNAME")
         self.assertEqual(await self.db.get_recipe_owner_entries(recipe_id), [])
 
-    async def test_claim_is_idempotent_and_rechecks_result_gear_and_rarity(self):
+    async def test_claim_is_idempotent_and_requires_learning_regardless_of_rarity(self):
         gear_id = await self.db.add_gear("item", "epic", "helmet", "")
         recipe_id = await self.db.create_recipe("gear", gear_id)
+        scroll_id = await self.db.add_resource("scroll", "📜", "scroll_recipe")
+        await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
         await asyncio.gather(*(
             self.db.claim_recipe_owner(recipe_id, 101, "Owner", expected_gear_id=gear_id)
             for _ in range(3)
@@ -338,13 +342,17 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.db.claim_recipe_owner(recipe_id, 202, "Other", expected_gear_id=gear_id + 1)
         await self.db.update_gear(gear_id, rarity="rare")
-        with self.assertRaises(ValueError):
-            await self.db.claim_recipe_owner(recipe_id, 202, "Other")
+        await self.db.claim_recipe_owner(recipe_id, 202, "Other")
+        await self.db.relinquish_recipe_owner(recipe_id, 202)
         entry = (await self.db.get_recipe_owner_entries(recipe_id))[0]
         await self.db.remove_recipe_owner_entry(recipe_id + 1, entry["owner_id"])
         self.assertEqual(len(await self.db.get_recipe_owner_entries(recipe_id)), 1)
         await self.db.remove_recipe_owner_entry(recipe_id, entry["owner_id"])
         self.assertEqual(await self.db.get_recipe_owner_entries(recipe_id), [])
+
+        await self.db.set_recipe_learning_scroll(recipe_id, None)
+        with self.assertRaises(ValueError):
+            await self.db.claim_recipe_owner(recipe_id, 202, "Other")
 
 
 class OwnerMigrationTests(unittest.IsolatedAsyncioTestCase):

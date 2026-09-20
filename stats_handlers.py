@@ -19,7 +19,7 @@ from analytics import (
     get_user_activity,
     get_users_page,
 )
-from utils import escape_html
+from utils import RICH_TABLE_OPEN, escape_html
 from navigation import MAX_SQLITE_ID
 
 stats_router = Router()
@@ -92,7 +92,7 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
         text = f"🏆 <b>Топ-30 {type_name_ru} за 30 дней</b>\n\n" + "\n".join(lines)
         rich_html = (
             f"<b>🏆 Топ-30 {type_name_ru} за 30 дней</b><br>"
-            "<table><tbody><tr><th>№</th><th>Объект</th><th>Просмотры</th></tr>"
+            f"{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Объект</th><th>Просмотры</th></tr>"
             + "".join(rows) + "</tbody></table>"
         )
 
@@ -117,7 +117,7 @@ async def show_top_searches(callback: types.CallbackQuery) -> None:
         text = "🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
         rich_html = (
             "<b>🔍 Топ-30 поисковых запросов за 30 дней</b><br>"
-            "<table><tbody><tr><th>№</th><th>Запрос</th><th>Количество</th></tr>"
+            f"{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Запрос</th><th>Количество</th></tr>"
             + "".join(rows) + "</tbody></table>"
         )
     if not items:
@@ -159,7 +159,7 @@ async def show_general_stats(callback: types.CallbackQuery) -> None:
     ])
     rich_html = f"""
     <b>📊 Общая статистика бота</b>
-    <table><tbody>
+    {RICH_TABLE_OPEN}<tbody>
       <tr><th>Показатель</th><th>Значение</th></tr>
       <tr><td>DAU</td><td>{dau}</td></tr>
       <tr><td>WAU</td><td>{wau}</td></tr>
@@ -221,7 +221,7 @@ async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
     if users:
         rich_html = (
             f"<b>👥 Пользователи · страница {page}</b><br>"
-            "<table><tbody><tr><th>Пользователь</th><th>Всего</th><th>7 дней</th><th>Последняя активность</th></tr>"
+            f"{RICH_TABLE_OPEN}<tbody><tr><th>Пользователь</th><th>Всего</th><th>7 дней</th><th>Последняя активность</th></tr>"
             + "".join(rich_rows) + "</tbody></table>"
         )
         fallback = f"<b>👥 Пользователи · страница {page}</b>\n\n" + "\n".join(
@@ -256,7 +256,7 @@ async def show_user_details(callback: types.CallbackQuery, user_id: int, return_
     ) or "Нет поисковых запросов"
     rich_html = f"""
     <b>👤 {display_name}</b>
-    <table><tbody>
+    {RICH_TABLE_OPEN}<tbody>
       <tr><th>Поле</th><th>Значение</th></tr>
       <tr><td>Telegram ID</td><td>{user['user_id']}</td></tr>
       <tr><td>Имя</td><td>{full_name}</td></tr>
@@ -267,7 +267,7 @@ async def show_user_details(callback: types.CallbackQuery, user_id: int, return_
       <tr><td>За 7 дней</td><td>{totals['events_7d']}</td></tr>
       <tr><td>За 30 дней</td><td>{totals['events_30d']}</td></tr>
     </tbody></table>
-    <details><summary>📊 События по типам</summary><table><tbody>{type_rows}</tbody></table></details>
+    <details><summary>📊 События по типам</summary>{RICH_TABLE_OPEN}<tbody>{type_rows}</tbody></table></details>
     <details><summary>🔍 Последние поиски</summary>{searches}</details>
     """.strip()
     fallback = (

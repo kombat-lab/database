@@ -56,24 +56,24 @@ class CardFragmentNavigationTests(unittest.IsolatedAsyncioTestCase):
             await app.show_resources_by_type(self.callback, "craft", 1)
         self.assertEqual(cleaner.await_count, 2)
 
-    async def test_main_menu_cleans_fragments_only_after_send(self):
+    async def test_main_menu_reuses_anchor_and_cleans_fragments_after_edit(self):
         events = []
-        async def send(*args, **kwargs):
-            events.append("send")
+        async def edit(*args, **kwargs):
+            events.append("edit")
         async def cleanup(*args, **kwargs):
             events.append("cleanup")
         async def delete(*args, **kwargs):
             events.append("delete")
-        with patch.object(types.Message, "answer", new=AsyncMock(side_effect=send)), patch.object(
+        with patch.object(types.Message, "edit_text", new=AsyncMock(side_effect=edit)), patch.object(
             types.Message, "delete", new=AsyncMock(side_effect=delete),
         ), patch.object(types.CallbackQuery, "answer", new=AsyncMock()), patch.object(
             app, "cleanup_card_fragments", new=AsyncMock(side_effect=cleanup),
         ):
             await app.back_to_main_menu(self.callback, AsyncMock())
-        self.assertEqual(events, ["send", "cleanup", "delete"])
+        self.assertEqual(events, ["edit", "cleanup"])
 
     async def test_failed_main_menu_keeps_all_messages(self):
-        with patch.object(types.Message, "answer", new=AsyncMock(side_effect=self.failure)), patch.object(
+        with patch.object(types.Message, "edit_text", new=AsyncMock(side_effect=self.failure)), patch.object(
             types.Message, "delete", new=AsyncMock(),
         ) as delete, patch.object(app, "cleanup_card_fragments", new=AsyncMock()) as cleaner:
             with self.assertRaises(TelegramNetworkError):

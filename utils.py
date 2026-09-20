@@ -3,6 +3,9 @@ import html
 import emoji
 
 
+RICH_TABLE_OPEN = "<table bordered striped compact>"
+
+
 def clean_username(username: str) -> str:
     """Убирает символ @ в начале, если есть."""
     return username.lstrip('@') if username else ''

@@ -20,3 +20,6 @@ backups/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Full catalog audit exports remain local with the database
+/audit_data_*.json

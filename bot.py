@@ -6,7 +6,7 @@ import os
 import re
 
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -22,8 +22,10 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InlineQueryResultsButton,
     InlineQueryResultUnion,
+    InputMediaPhoto,
     InputRichMessage,
     InputRichMessageContent,
+    InputRichMessageMedia,
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
@@ -44,10 +46,11 @@ from game_constants import (
     GEAR_SLOT_ICONS as SLOT_ICONS,
     GEAR_SLOT_LABELS as SLOT_NAMES,
     GEAR_SLOTS as GEAR_SLOT_ORDER,
-    RARITY_EMOJIS,
     RARITY_KEYS as RARITY_ORDER,
     RARITY_NAMES,
-    format_gear_classes,
+    RARITY_EMOJIS,
+    LEGACY_ALCHEMY_CRAFT_LOCATIONS,
+    LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION,
 )
 from utils import clean_username, escape_html
 from lifecycle import BackgroundTaskRegistry, UpdateTaskTracker, install_update_tracker
@@ -57,11 +60,23 @@ from telegram_helpers import get_bound_bot, get_callback_data, get_callback_mess
 from telegram_text import split_formatted_text
 from search_rendering import build_search_content, ranked_inline_items
 from navigation import (
-    MAX_SQLITE_ID, build_resource_return_param, build_gear_return_param,
-    parse_gear_view_callback, build_recipe_owner_callback, parse_recipe_owner_callback,
+    MAX_SQLITE_ID,
+    build_resource_return_param as build_resource_return_param,
+    build_gear_return_param as build_gear_return_param,
+    build_recipe_owner_callback as build_recipe_owner_callback,
+    parse_gear_view_callback, parse_recipe_owner_callback,
     parse_return_param, parse_resource_page_callback, parse_resource_view_callback,
     parse_location_callback, parse_gear_list_callback, parse_card_callback, return_button_data,
 )
+from ui.callbacks import (
+    CardViewCallback, EntityBackCallback, EntityNavigateCallback,
+    GearViewCallback, RecipeOwnerCallback, MobViewCallback,
+    ResourceLocationViewCallback, ResourceViewCallback,
+)
+from ui.cards import build_card_card, build_gear_card, build_mob_card, build_resource_card
+from ui.links import EntityLinkMode
+from ui.navigation import EntityNavigationHistory, EntityRef
+from ui.rich import CardView, present_rich_card
 
 ITEMS_PER_PAGE = 10
 FETCH_EXTRA = 1
@@ -85,23 +100,9 @@ RESOURCE_TYPE_TITLES = {
     "alchemy": "Алхимия",
 }
 
-DEFAULT_ALCHEMY_CRAFT_LOCATION = (
-    "🏛 Алькасар - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
-)
-MEREDITH_ALCHEMY_CRAFT_LOCATION = (
-    "🏰 Торговый аванпост - 🛣 Центральная Аллея - 👤 Ученая Мередит - ⚗️ Алхимия"
-)
-MEREDITH_ALCHEMY_RESOURCES = frozenset(
-    name.casefold()
-    for name in (
-        "Дубленая кожа",
-        "Костяной куб",
-        "Пепельный материал",
-        "Прочная бечевка",
-        "Субстанция",
-        "Ядро земель",
-    )
-)
+DEFAULT_ALCHEMY_CRAFT_LOCATION = LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION
+MEREDITH_ALCHEMY_CRAFT_LOCATION = LEGACY_ALCHEMY_CRAFT_LOCATIONS["дубленая кожа"]
+MEREDITH_ALCHEMY_RESOURCES = frozenset(LEGACY_ALCHEMY_CRAFT_LOCATIONS)
 
 def get_rarity_emoji(rarity: str | None) -> str:
     return RARITY_EMOJIS.get(rarity or "common", RARITY_EMOJIS["common"])
@@ -196,9 +197,107 @@ logger = logging.getLogger(__name__)
 inline_log_tasks: dict[int, asyncio.Task[None]] = {}
 background_tasks = BackgroundTaskRegistry()
 update_tasks = UpdateTaskTracker()
+entity_navigation = EntityNavigationHistory()
 dp = Dispatcher(events_isolation=SimpleEventIsolation())
 install_update_tracker(dp, update_tasks)
 dp.callback_query.outer_middleware(CallbackMessageGuard())
+
+
+def get_card_link_mode(chat: types.Chat) -> EntityLinkMode:
+    return (
+        EntityLinkMode.CALLBACK
+        if chat.type == ChatType.PRIVATE
+        else EntityLinkMode.DEEP_LINK
+    )
+
+
+def get_navigation_key(callback: types.CallbackQuery) -> tuple[int, int, int]:
+    message = get_callback_message(callback)
+    return (
+        callback.from_user.id,
+        message.chat.id,
+        message.message_id,
+    )
+
+
+async def build_interactive_entity_card(entity: EntityRef) -> CardView:
+    if entity.entity_type == "mob":
+        return await build_mob_card(db, entity.entity_id, bot_username=BOT_USERNAME, link_mode=EntityLinkMode.CALLBACK)
+    if entity.entity_type == "resource":
+        return await build_resource_card(db, entity.entity_id, bot_username=BOT_USERNAME, link_mode=EntityLinkMode.CALLBACK)
+    if entity.entity_type == "gear":
+        return await build_gear_card(db, entity.entity_id, bot_username=BOT_USERNAME, link_mode=EntityLinkMode.CALLBACK)
+    if entity.entity_type == "card":
+        return await build_card_card(db, entity.entity_id, bot_username=BOT_USERNAME, link_mode=EntityLinkMode.CALLBACK)
+    raise ValueError("Unsupported entity type")
+
+
+def build_interactive_navigation_keyboard(
+    previous: EntityRef | None,
+) -> InlineKeyboardMarkup:
+    keyboard = []
+    if previous:
+        keyboard.append([InlineKeyboardButton(
+            text="↩️ Назад",
+            callback_data=EntityBackCallback(
+                entity_type=previous.entity_type,
+                entity_id=previous.entity_id,
+            ).pack(),
+        )])
+    keyboard.append([InlineKeyboardButton(
+        text="🏠 В главное меню",
+        callback_data="back_to_main_menu",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+async def log_interactive_entity_view(user_id: int, entity: EntityRef) -> None:
+    loggers = {
+        "mob": log_view_mob,
+        "resource": log_view_resource,
+        "gear": log_view_gear,
+        "card": log_view_card,
+    }
+    await loggers[entity.entity_type](user_id, entity.entity_id)
+
+
+async def present_interactive_entity(
+    callback: types.CallbackQuery,
+    entity: EntityRef,
+    previous: EntityRef | None,
+    root_markup: InlineKeyboardMarkup | None = None,
+) -> types.Message:
+    keyboard = (
+        root_markup if previous is None and root_markup is not None
+        else build_interactive_navigation_keyboard(previous)
+    )
+    if entity.entity_type == "gear":
+        data = await db.get_gear_card(entity.entity_id)
+        card_view = await build_gear_card(
+            db, entity.entity_id, data=data,
+            bot_username=BOT_USERNAME, link_mode=EntityLinkMode.CALLBACK,
+        )
+        if data:
+            gear_keyboard = await build_gear_card_keyboard(data, callback.from_user.id, 1, None)
+            owner_rows = [
+                row for row in gear_keyboard.inline_keyboard
+                if any((button.callback_data or "").startswith("recipe_") for button in row)
+            ]
+            other_rows = [
+                row for row in keyboard.inline_keyboard
+                if not any((button.callback_data or "").startswith("recipe_") for button in row)
+            ]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[*owner_rows, *other_rows])
+    else:
+        card_view = await build_interactive_entity_card(entity)
+    sent = await present_rich_card(
+        bot=get_bound_bot(callback),
+        chat_id=get_callback_message(callback).chat.id,
+        card=card_view,
+        reply_markup=keyboard,
+        current_message=get_callback_message(callback),
+    )
+    return sent
 
 async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
     counts = await db.execute_query(
@@ -228,251 +327,18 @@ async def get_gear_slots_keyboard(rarity: str) -> InlineKeyboardMarkup:
 
 # ---------- Формирование карточек ----------
 async def format_mob_card_plain(mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None) -> str:
-    if data is None:
-        data = await db.get_mob_full_card(mob_id)
-    if not data:
-        return "Моб не найден."
-
-    loc_str = f"{escape_html(data['loc_emoji'])} {escape_html(data['loc_name'])}"
-    text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
-    text += f"❤️ HP: {data['hp']}\n✨ Пыль: {data['dust_min']}-{data['dust_max']}\n⭐ Опыт: {data['exp']}\n📍 Локация: {loc_str}\n\n"
-
-    # return для возврата к этому мобу
-    return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
-
-    if data['resource_drops']:
-        text += "<b>📦 Падает:</b>\n"
-        for r in data['resource_drops']:
-            link = make_deep_link("resource", r['id'], return_param)
-            text += f"{escape_html(r['emoji'])} <a href='{link}'>{escape_html(r['name'])}</a>\n"
-        text += "\n"
-
-    if data['gear_drops']:
-        text += "<b>⚔️ Снаряжение:</b>\n"
-        for g in data['gear_drops']:
-            rarity_icon = get_rarity_emoji(g.get('rarity'))
-            link = make_deep_link("gear", g['id'], return_param)
-            text += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a>\n"
-        text += "\n"
-
-    if data['card_drops']:
-        text += "<b>🃏 Карты:</b>\n"
-        for c in data['card_drops']:
-            slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            link = make_deep_link("card", c['id'], return_param)
-            text += f"{escape_html(c['emoji'])} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}\n"
-        text += "\n"
-
-    return text
+    return (await build_mob_card(db, mob_id, location_id, page, data=data, bot_username=BOT_USERNAME)).fallback_html
 
 
 async def format_mob_card(mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None) -> InputRichMessage:
-    if data is None:
-        data = await db.get_mob_full_card(mob_id)
-    if not data:
-        return InputRichMessage(html="Моб не найден.")
-
-    loc_str = f"{escape_html(data['loc_emoji'])} {escape_html(data['loc_name'])}"
-    return_param = f"mob_{mob_id}_{location_id}_{page}" if location_id else None
-
-    # Таблица 2×2
-    table_html = f"""
-    <table border="1" cellspacing="0" cellpadding="5">
-        <tbody>
-            <tr>
-                <td><b>❤️ HP:</b> {data['hp']}</td>
-                <td><b>⭐ Опыт:</b> {data['exp']}</td>
-            </tr>
-            <tr>
-                <td><b>✨ Пыль:</b> {data['dust_min']}-{data['dust_max']}</td>
-                <td><b>{loc_str}</b></td>
-            </tr>
-        </tbody>
-    </table>
-    """
-
-    drops_html = ""
-    if data['resource_drops']:
-        drops_html += "<b>📦 Падает:</b><br>"
-        for r in data['resource_drops']:
-            link = make_deep_link("resource", r['id'], return_param)
-            drops_html += f"{escape_html(r['emoji'])} <a href='{link}'>{escape_html(r['name'])}</a><br>"
-        drops_html += "<br>"
-
-    if data['gear_drops']:
-        drops_html += "<b>⚔️ Снаряжение:</b><br>"
-        for g in data['gear_drops']:
-            rarity_icon = get_rarity_emoji(g.get('rarity'))
-            link = make_deep_link("gear", g['id'], return_param)
-            drops_html += f"{rarity_icon} {escape_html(g['emoji'])} <a href='{link}'>{escape_html(g['name'])}</a><br>"
-        drops_html += "<br>"
-
-    if data['card_drops']:
-        drops_html += "<b>🃏 Карты:</b><br>"
-        for c in data['card_drops']:
-            slot_icon = SLOT_ICONS.get(c.get('slot', ''), '')
-            link = make_deep_link("card", c['id'], return_param)
-            drops_html += f"{escape_html(c['emoji'])} <a href='{link}'>{escape_html(c['name'])}</a> {slot_icon}<br>"
-        drops_html += "<br>"
-
-    full_html = f"""
-    <div><b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b></div>
-    {table_html}
-    <div>{drops_html}</div>
-    """
-    return InputRichMessage(html=full_html.strip())
+    return (await build_mob_card(db, mob_id, location_id, page, data=data, bot_username=BOT_USERNAME)).rich_message
 
 async def format_resource_card(resource_id: int, context_type: str | None = None, context_id: int | str | None = None, page: int = 1, *, data: ResourceCardRow | None = None) -> str:
-    if data is None:
-        data = await db.get_resource_card(resource_id)
-    if not data:
-        return "Ресурс не найден."
-
-    type_str = get_resource_type_name(data.get('type'))
-    is_alchemy = (data.get('type') == 'alchemy')
-
-    text = f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
-    text += f"🏷 Тип: {type_str}\n"
-    if not is_alchemy:
-        text += "\n"
-
-    # return для возврата к этому ресурсу
-    return_param = build_resource_return_param(resource_id, context_type, context_id, page)
-
-    if data['mobs']:
-        text += "<b>Падает с мобов:</b>\n"
-        for m in data['mobs']:
-            loc_str = f"{escape_html(m.get('location_emoji', ''))} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            link = make_deep_link("mob", m['id'], return_param)
-            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
-        text += "\n"
-
-    usage_rows = build_resource_usage_rows(data.get('used_in', []), return_param)
-    if usage_rows:
-        text += "<tg-spoiler><b>🧩 Используется в рецептах:</b>\n"
-        text += "\n".join(
-            f"{result} — {quantity} шт."
-            for result, quantity in usage_rows
-        )
-        text += "</tg-spoiler>\n\n"
-
-    if data.get('note'):
-        text += f"\n📝 <i>{escape_html(data['note'])}</i>\n"
-
-    recipe = await db.get_recipe_for_resource(resource_id)
-    if recipe and recipe['ingredients']:
-        if not is_alchemy:
-            text += "\n⚗️ <b>Алхимия:</b>\n"
-        else:
-            if not data['mobs'] and not data.get('note'):
-                text += "\n"
-
-        dust = None
-        other = []
-        for ing in recipe['ingredients']:
-            if ing['resource_id'] == 71:
-                dust = ing
-            else:
-                other.append(ing)
-
-        if dust:
-            link = make_deep_link("resource", dust['resource_id'], return_param)
-            text += f"✨ <a href='{link}'>Пыль</a> — {dust['quantity']} шт.\n"
-        for ing in other:
-            link = make_deep_link("resource", ing['resource_id'], return_param)
-            text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
-
-        text += "\n🏛 <b>Где крафтить:</b>\n"
-        text += get_alchemy_craft_location(data['name'])
-
-    return text
+    return (await build_resource_card(db, resource_id, context_type, context_id, page, data=data, bot_username=BOT_USERNAME)).fallback_html
 
 
 async def format_resource_card_rich(resource_id: int, context_type: str | None = None, context_id: int | str | None = None, page: int = 1, *, data: ResourceCardRow | None = None) -> InputRichMessage:
-    if data is None:
-        data = await db.get_resource_card(resource_id)
-    if not data:
-        return InputRichMessage(html="Ресурс не найден.")
-
-    type_str = get_resource_type_name(data.get('type'))
-    is_alchemy = (data.get('type') == 'alchemy')
-
-    html = f"<b>{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
-    html += f"🏷 Тип: {type_str}<br>"
-
-    # Параметр для возврата к текущему ресурсу
-    return_param = build_resource_return_param(resource_id, context_type, context_id, page)
-
-    # ----- ТАБЛИЦА С МОБАМИ -----
-    if data['mobs']:
-        html += "<br><b>Падает с мобов:</b><br>"
-        rows = ""
-        for m in data['mobs']:
-            loc_str = f"{escape_html(m.get('location_emoji', ''))} {escape_html(m.get('location_name', ''))}" if m.get('location_name') else ""
-            link = make_deep_link("mob", m['id'], return_param)
-            mob_name = f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>"
-            rows += f"<tr><td>{mob_name}</td><td>{loc_str}</td></tr>"
-        html += f"""
-        <table border="1" cellspacing="0" cellpadding="5">
-            <tbody>
-                <tr><th>Моб</th><th>Локация</th></tr>
-                {rows}
-            </tbody>
-        </table>
-        """
-
-    usage_rows = build_resource_usage_rows(data.get('used_in', []), return_param)
-    if usage_rows:
-        rows = "".join(
-            f"<tr><td>{result}</td><td>{quantity} шт.</td></tr>"
-            for result, quantity in usage_rows
-        )
-        html += (
-            "<br><details>"
-            "<summary>🧩 Используется в рецептах:</summary>"
-            "<table border='1' cellspacing='0' cellpadding='5'><tbody>"
-            "<tr><th>Результат</th><th>Нужно</th></tr>"
-            f"{rows}</tbody></table>"
-            "</details>"
-        )
-
-    if data.get('note'):
-        html += f"<br>📝 <i>{escape_html(data['note'])}</i><br>"
-
-    # ----- АЛХИМИЯ / РЕЦЕПТ (таблица ингредиентов) -----
-    recipe = await db.get_recipe_for_resource(resource_id)
-    if recipe and recipe['ingredients']:
-        if not is_alchemy:
-            html += "<br>⚗️ <b>Алхимия:</b><br>"
-
-        dust = None
-        other = []
-        for ing in recipe['ingredients']:
-            if ing['resource_id'] == 71:
-                dust = ing
-            else:
-                other.append(ing)
-
-        rows = ""
-        if dust:
-            link = make_deep_link("resource", dust['resource_id'], return_param)
-            rows += f"<tr><td>✨ <a href='{link}'>Пыль</a></td><td>{dust['quantity']} шт.</td></tr>"
-        for ing in other:
-            link = make_deep_link("resource", ing['resource_id'], return_param)
-            rows += f"<tr><td>{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a></td><td>{ing['quantity']} шт.</td></tr>"
-
-        html += f"""
-        <table border="1" cellspacing="0" cellpadding="5">
-            <tbody>
-                <tr><th>Ресурс</th><th>Количество</th></tr>
-                {rows}
-            </tbody>
-        </table>
-        """
-        html += "<br>🏛 <b>Где крафтить:</b><br>"
-        html += get_alchemy_craft_location(data['name'])
-
-    return InputRichMessage(html=html.strip())
+    return (await build_resource_card(db, resource_id, context_type, context_id, page, data=data, bot_username=BOT_USERNAME)).rich_message
 
 def format_recipe_owner(owner: RecipeOwnerEntry) -> str:
     username = owner["player_username"]
@@ -491,187 +357,24 @@ def recipe_owner_labels(data: GearCardRow) -> list[str]:
 
 
 async def format_gear_card_plain(
-    gear_id: int,
-    rarity: str | None = None,
-    page: int = 1,
-    *,
-    data: GearCardRow | None = None,
-    slot_index: int | None = None,
+    gear_id: int, rarity: str | None = None, page: int = 1, *,
+    data: GearCardRow | None = None, slot_index: int | None = None,
 ) -> str:
-    if data is None:
-        data = await db.get_gear_card(gear_id)
-    if not data:
-        return "Предмет не найден."
-
-    text = (
-        f"{get_rarity_emoji(data.get('rarity'))} "
-        f"{escape_html(data['emoji'])} <b>{escape_html(data['name'])}</b>\n"
-    )
-    text += f"Уровень: {data.get('level', 1)}\n"
-    text += f"Класс: {escape_html(format_gear_classes(data.get('classes')))}\n"
-    if data.get('note'):
-        text += f"\n📝 {escape_html(data['note'])}\n"
-
-    # return для возврата к этому снаряжению (используется при клике на моба или ресурс)
-    return_param = build_gear_return_param(gear_id, rarity, page, slot_index)
-
-    if data.get('craftable'):
-        text += "Крафт: да\n"
-        if data['ingredients']:
-            text += "\n<b>Требуемые ресурсы:</b>\n"
-            for ing in data['ingredients']:
-                link = make_deep_link("resource", ing['id'], return_param)
-                text += f"{escape_html(ing['emoji'])} <a href='{link}'>{escape_html(ing['name'])}</a> — {ing['quantity']} шт.\n"
-        else:
-            text += "\n<i>Рецепт пока не заполнен.</i>\n"
-        owners = recipe_owner_labels(data)
-        if owners:
-            text += "\n👥 <b>Владельцы рецепта:</b>\n"
-            text += "\n".join(owners) + "\n"
-    else:
-        text += "Крафт: нет\n"
-
-    if data['scroll_mobs']:
-        text += "\n<b>📜 Свиток падает с мобов:</b>\n"
-        for m in data['scroll_mobs']:
-            link = make_deep_link("mob", m['id'], return_param)
-            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>\n"
-
-    if data['mobs']:
-        text += "\n<b>⚔️ Выпадает с мобов:</b>\n"
-        for m in data['mobs']:
-            link = make_deep_link("mob", m['id'], return_param)
-            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>\n"
-
-    return text
+    return (await build_gear_card(db, gear_id, rarity, page, data=data, slot_index=slot_index, bot_username=BOT_USERNAME)).fallback_html
 
 
 async def format_gear_card_rich(
-    gear_id: int,
-    rarity: str | None = None,
-    page: int = 1,
-    *,
-    data: GearCardRow | None = None,
-    slot_index: int | None = None,
+    gear_id: int, rarity: str | None = None, page: int = 1, *,
+    data: GearCardRow | None = None, slot_index: int | None = None,
 ) -> InputRichMessage:
-    if data is None:
-        data = await db.get_gear_card(gear_id)
-    if not data:
-        return InputRichMessage(html="Предмет не найден.")
-
-    craft_text = "да" if data.get('craftable') else "нет"
-
-    html = (
-        f"<b>{get_rarity_emoji(data.get('rarity'))} "
-        f"{escape_html(data['emoji'])} {escape_html(data['name'])}</b><br>"
-    )
-    html += f"""
-    <table border="1" cellspacing="0" cellpadding="5">
-        <tbody>
-            <tr>
-                <th align="center">Уровень</th>
-                <th align="center">Класс</th>
-                <th align="center">Крафт</th>
-            </tr>
-            <tr>
-                <td align="center">{data.get('level', 1)}</td>
-                <td align="center">{escape_html(format_gear_classes(data.get('classes')))}</td>
-                <td align="center">{craft_text}</td>
-            </tr>
-        </tbody>
-    </table>
-    """
-    if data.get('note'):
-        html += f"<br>📝 <b>Примечание:</b> {escape_html(data['note'])}<br>"
-
-    return_param = build_gear_return_param(gear_id, rarity, page, slot_index)
-
-    if data.get('craftable'):
-        if data['ingredients']:
-            html += "<b>Требуемые ресурсы:</b><br>"
-            rows = ""
-            for ing in data['ingredients']:
-                ing_name = f"{escape_html(ing['emoji'])} {escape_html(ing['name'])}"
-                link = make_deep_link("resource", ing['id'], return_param)
-                ing_link = f'<a href="{link}">{ing_name}</a>'
-                rows += f"<tr><td>{ing_link}</td><td>{ing['quantity']} шт.</td></tr>"
-            html += f"""
-            <table border="1" cellspacing="0" cellpadding="5">
-                <tbody>{rows}</tbody>
-            </table>
-            """
-        else:
-            html += "<br><i>Рецепт пока не заполнен.</i><br>"
-        owners = recipe_owner_labels(data)
-        if owners:
-            owners_list = "<br>".join(owners)
-            html += f"""
-            <details>
-                <summary>👥 Владельцы рецепта</summary>
-                {owners_list}
-            </details>
-            """
-
-    if data['scroll_mobs']:
-        html += "<br><b>📜 Свиток падает с мобов:</b><br>"
-        mobs_list = []
-        for m in data['scroll_mobs']:
-            link = make_deep_link("mob", m['id'], return_param)
-            mobs_list.append(f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>")
-        html += "<br>".join(mobs_list)
-
-    if data['mobs']:
-        html += "<br><b>⚔️ Выпадает с мобов:</b><br>"
-        mobs_list = []
-        for m in data['mobs']:
-            link = make_deep_link("mob", m['id'], return_param)
-            mobs_list.append(f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a>")
-        html += "<br>".join(mobs_list)
-
-    return InputRichMessage(html=html.strip())
+    return (await build_gear_card(db, gear_id, rarity, page, data=data, slot_index=slot_index, bot_username=BOT_USERNAME)).rich_message
 
 async def format_card_card(card_id: int, page: int = 1, context_type: str | None = None, context_id: int | None = None) -> str:
-    card = await db.get_card_by_id(card_id)
-    if not card:
-        return "Карта не найдена."
-
-    slot_text = SLOT_NAMES.get(card['slot'], card['slot'])
-
-    return_param = f"card_{card_id}_{page}"
-
-    text = f"🃏 {escape_html(card['emoji'])} <b>{escape_html(card['name'])}</b>\n"
-    text += f"Слот: {escape_html(slot_text)}\n\n"
-
-    bonuses = []
-    for i in range(1, 5):
-        bonus = card.get(f'bonus{i}', '')
-        if bonus:
-            bonuses.append(bonus)
-    if bonuses:
-        text += "<b>Бонусы:</b>\n"
-        for b in bonuses:
-            text += f"   • {escape_html(b)}\n"
-    if card.get('note'):
-        text += f"\n📰 <i>{escape_html(card['note'])}</i>\n"
-
-    mobs = await db.get_card_drop_mobs(card_id)
-    if mobs:
-        text += "\n<b>📜 Падает с мобов:</b>\n"
-        for m in mobs:
-            loc_str = f"{escape_html(m['location_emoji'])} {escape_html(m['location_name'])}" if m.get('location_name') else ""
-            link = make_deep_link("mob", m['id'], return_param)
-            text += f"{escape_html(m['emoji'])} <a href='{link}'>{escape_html(m['name'])}</a> <i>{loc_str}</i>\n"
-    else:
-        text += "\n<i>Нет информации</i>"
-
-    return text
+    return (await build_card_card(db, card_id, page, context_type, context_id, bot_username=BOT_USERNAME)).fallback_html
 
 
-async def format_card_card_rich(card_id: int, page: int = 1, context_type: str | None = None,
-                                context_id: int | None = None) -> InputRichMessage:
-    """Формирует Rich-карточку карты, используя проверенный HTML fallback."""
-    plain = await format_card_card(card_id, page, context_type, context_id)
-    return InputRichMessage(html=plain.replace("\n", "<br>"))
+async def format_card_card_rich(card_id: int, page: int = 1, context_type: str | None = None, context_id: int | None = None) -> InputRichMessage:
+    return (await build_card_card(db, card_id, page, context_type, context_id, bot_username=BOT_USERNAME)).rich_message
 
 
 # ---------- Клавиатуры ----------
@@ -683,6 +386,15 @@ def get_main_menu_reply_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True
     )
+
+def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐾 Мобы", callback_data="main_section_mobs"),
+         InlineKeyboardButton(text="📦 Ресурсы", callback_data="main_section_resources")],
+        [InlineKeyboardButton(text="⚔️ Снаряжение", callback_data="main_section_gear"),
+         InlineKeyboardButton(text="🔍 Поиск", callback_data="main_section_search")],
+    ])
+
 
 async def get_locations_keyboard(category: str) -> InlineKeyboardMarkup:
     locations = await db.get_locations()
@@ -763,7 +475,11 @@ async def get_items_keyboard(category: str, location_id: int, page: int) -> Inli
     keyboard = []
     for item in items:
         name = f"{item.get('emoji', '')} {item['name']}"
-        callback_data = f"view_{category}_{item['id']}_{location_id}_{page}"
+        callback_data = (
+            MobViewCallback(item['id'], location_id, page).pack()
+            if category == "mobs"
+            else ResourceLocationViewCallback(item['id'], location_id, page).pack()
+        )
         keyboard.append([InlineKeyboardButton(text=name, callback_data=callback_data)])
     nav = []
     if page > 1:
@@ -800,7 +516,9 @@ async def get_gear_by_slot_keyboard(rarity: str, slot_index: int, page: int) -> 
         name = f"{item.get('emoji', '')} {item['name']}"
         keyboard.append([InlineKeyboardButton(
             text=name,
-            callback_data=f"view_gear_{item['id']}_{rarity}_{slot_index}_{page}",
+            callback_data=GearViewCallback(
+                item['id'], rarity, slot_index, page
+            ).pack(),
         )])
     nav = []
     if page > 1:
@@ -822,7 +540,10 @@ async def show_cards_list(target: types.Message | types.CallbackQuery, page: int
     for card in cards:
         slot_icon = SLOT_ICONS.get(card['slot'], '❓')
         text = f"🃏{card['emoji']} {card['name']} {slot_icon}"
-        keyboard.append([InlineKeyboardButton(text=text, callback_data=f"view_card_{card['id']}_{page}")])
+        keyboard.append([InlineKeyboardButton(
+            text=text,
+            callback_data=CardViewCallback(card['id'], page).pack(),
+        )])
 
     nav = []
     if page > 1:
@@ -861,7 +582,9 @@ async def show_resources_by_type(target: types.Message | types.CallbackQuery, re
     keyboard = []
     for res in items:
         text = f"{res['emoji']} {res['name']}"
-        callback_data = f"view_resource_{res['id']}_{resource_type}_{page}"
+        callback_data = ResourceViewCallback(
+            res['id'], resource_type, page
+        ).pack()
         keyboard.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
     nav = []
@@ -902,6 +625,7 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
         return_context = parse_return_param(return_param if separator else None)
     if match and 1 <= int(match.group(2)) <= MAX_SQLITE_ID:
         target_type, target_id = match.group(1), int(match.group(2))
+        link_mode = get_card_link_mode(message.chat)
         keyboard: InlineKeyboardMarkup | None = None
         if target_type == "mob":
             mob_data = await db.get_mob_full_card(target_id)
@@ -909,8 +633,10 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
                 await message.answer("Моб не найден.")
                 return
             location_id = mob_data["location_id"]
-            rich_msg = await format_mob_card(target_id, location_id, data=mob_data)
-            plain_text = await format_mob_card_plain(target_id, location_id, data=mob_data)
+            card_view = await build_mob_card(
+                db, target_id, location_id, data=mob_data,
+                bot_username=BOT_USERNAME, link_mode=link_mode,
+            )
             target_callback = f"view_mobs_{target_id}_{location_id}_1"
         elif target_type == "resource":
             resource_data = await db.get_resource_card(target_id)
@@ -918,8 +644,10 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
                 await message.answer("Ресурс не найден.")
                 return
             resource_type = resource_data["type"]
-            rich_msg = await format_resource_card_rich(target_id, "type", resource_type, data=resource_data)
-            plain_text = await format_resource_card(target_id, "type", resource_type, data=resource_data)
+            card_view = await build_resource_card(
+                db, target_id, "type", resource_type, data=resource_data,
+                bot_username=BOT_USERNAME, link_mode=link_mode,
+            )
             target_callback = f"view_resource_{target_id}_{resource_type}_1"
         elif target_type == "gear":
             gear_data = await db.get_gear_card(target_id)
@@ -927,9 +655,12 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
                 await message.answer("Предмет не найден.")
                 return
             rarity = gear_data["rarity"]
+            target_id = gear_data["id"]
             slot_index = GEAR_SLOT_ORDER.index(gear_data["slot"]) if gear_data["slot"] in GEAR_SLOT_ORDER else None
-            rich_msg = await format_gear_card_rich(target_id, rarity, data=gear_data, slot_index=slot_index)
-            plain_text = await format_gear_card_plain(target_id, rarity, data=gear_data, slot_index=slot_index)
+            card_view = await build_gear_card(
+                db, target_id, rarity, data=gear_data, slot_index=slot_index,
+                bot_username=BOT_USERNAME, link_mode=link_mode,
+            )
             if message.from_user:
                 keyboard = await build_gear_card_keyboard(gear_data, message.from_user.id, 1, slot_index)
             slot = f"{slot_index}_" if slot_index is not None else ""
@@ -939,8 +670,9 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
             if card_data is None:
                 await message.answer("Карта не найдена.")
                 return
-            rich_msg = await format_card_card_rich(target_id)
-            plain_text = await format_card_card(target_id)
+            card_view = await build_card_card(
+                db, target_id, data=card_data, bot_username=BOT_USERNAME, link_mode=link_mode,
+            )
             target_callback = f"view_card_{target_id}_1"
         if keyboard is None:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[
@@ -953,8 +685,8 @@ async def send_menu(message: types.Message, state: FSMContext) -> None:
                 *keyboard.inline_keyboard,
             ])
         await upsert_rich_card(
-            bot=get_bound_bot(message), chat_id=message.chat.id, rich_message=rich_msg,
-            plain_text=plain_text, reply_markup=keyboard, message_thread_id=message.message_thread_id,
+            bot=get_bound_bot(message), chat_id=message.chat.id, rich_message=card_view.rich_message,
+            plain_text=card_view.fallback_html, reply_markup=keyboard, message_thread_id=message.message_thread_id,
         )
         if message.from_user:
             view_loggers = {
@@ -993,12 +725,31 @@ async def mobs_button(message: types.Message, state: FSMContext) -> None:
         )
         return
 
-    await message.answer_photo(
-        photo=FSInputFile(map_path),
-        caption="🐾 <b>Выбери локацию мобов:</b>",
-        reply_markup=await get_locations_keyboard("mobs"),
-        parse_mode="HTML",
+    keyboard = await get_locations_keyboard("mobs")
+    rich_message = InputRichMessage(
+        html=(
+            '<figure><img src="tg://photo?id=world_map"/>'
+            '<figcaption>🐾 <b>Выбери локацию мобов:</b></figcaption>'
+            '</figure>'
+        ),
+        media=[InputRichMessageMedia(
+            id="world_map",
+            media=InputMediaPhoto(media=FSInputFile(map_path)),
+        )],
     )
+    try:
+        await get_bound_bot(message).send_rich_message(
+            chat_id=message.chat.id,
+            rich_message=rich_message,
+            reply_markup=keyboard,
+        )
+    except TelegramAPIError as error:
+        logger.warning("World map RichMessage failed, using text fallback: %s", error)
+        await message.answer(
+            "🐾 <b>Выбери локацию мобов:</b>",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
 
 @dp.message(F.text == "📦 Ресурсы")
 async def resources_button(message: types.Message, state: FSMContext) -> None:
@@ -1111,7 +862,7 @@ async def chosen_inline_result_handler(chosen_result: types.ChosenInlineResult) 
     )
 
 
-async def replace_callback_message_text(
+async def edit_callback_window(
     callback: types.CallbackQuery,
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
@@ -1144,7 +895,62 @@ async def replace_callback_message_text(
             raise
     await cleanup_card_fragments(get_bound_bot(callback), message.chat.id, message.message_id)
 
+async def replace_callback_message_text(
+    callback: types.CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    await edit_callback_window(callback, text, reply_markup, parse_mode)
+    entity_navigation.clear(get_navigation_key(callback))
+
 # ---------- Callback-обработчики ----------
+@dp.callback_query(EntityNavigateCallback.filter())
+async def navigate_related_entity(
+    callback: types.CallbackQuery,
+    callback_data: EntityNavigateCallback,
+) -> None:
+    message = callback.message
+    if not isinstance(message, types.Message) or message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Открой карточку в личном чате с ботом.", show_alert=True)
+        return
+    source = EntityRef(callback_data.source_type, callback_data.source_id)
+    target = EntityRef(callback_data.entity_type, callback_data.entity_id)
+    if not source.is_valid or not target.is_valid:
+        await callback.answer("Некорректная ссылка.", show_alert=True)
+        return
+    key = get_navigation_key(callback)
+    await callback.answer()
+    sent = await present_interactive_entity(callback, target, source)
+    entity_navigation.visit(key, source, target, root_state=message.reply_markup)
+    entity_navigation.transfer(key, (callback.from_user.id, sent.chat.id, sent.message_id))
+    await log_interactive_entity_view(callback.from_user.id, target)
+
+
+@dp.callback_query(EntityBackCallback.filter())
+async def navigate_related_entity_back(
+    callback: types.CallbackQuery,
+    callback_data: EntityBackCallback,
+) -> None:
+    message = callback.message
+    if not isinstance(message, types.Message) or message.chat.type != ChatType.PRIVATE:
+        await callback.answer("Открой карточку в личном чате с ботом.", show_alert=True)
+        return
+    fallback = EntityRef(callback_data.entity_type, callback_data.entity_id)
+    if not fallback.is_valid:
+        await callback.answer("История переходов устарела.", show_alert=True)
+        return
+    key = get_navigation_key(callback)
+    target = entity_navigation.previous(key) or fallback
+    previous = entity_navigation.previous_after_back(key)
+    root_markup = entity_navigation.root_state(key) if previous is None else None
+    await callback.answer()
+    sent = await present_interactive_entity(callback, target, previous, root_markup=root_markup)
+    entity_navigation.back(key)
+    entity_navigation.transfer(key, (callback.from_user.id, sent.chat.id, sent.message_id))
+    await log_interactive_entity_view(callback.from_user.id, target)
+
+
 @dp.callback_query(F.data == "gear_rarities")
 async def gear_rarities_callback(callback: types.CallbackQuery) -> None:
     await replace_callback_message_text(callback, "Выбери редкость снаряжения:", reply_markup=get_rarities_keyboard())
@@ -1153,7 +959,7 @@ async def gear_rarities_callback(callback: types.CallbackQuery) -> None:
 @dp.callback_query(F.data == "mobs_dead_forest_locations")
 async def mobs_dead_forest_locations(callback: types.CallbackQuery) -> None:
     keyboard = await get_dead_forest_locations_keyboard()
-    await replace_callback_message_text(
+    await edit_callback_window(
         callback,
         "🪾 <b>Мертвый лес</b>\nВыбери локацию мобов:",
         parse_mode=ParseMode.HTML,
@@ -1166,7 +972,7 @@ async def back_to_locations(callback: types.CallbackQuery) -> None:
     category = get_callback_data(callback).split("_")[3]
     text = "Выбери локацию для мобов:" if category == "mobs" else "Выбери локацию для ресурсов:"
     keyboard = await get_locations_keyboard(category)
-    await replace_callback_message_text(callback, text, reply_markup=keyboard)
+    await edit_callback_window(callback, text, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith(("list_mobs_", "list_resources_", "page_mobs_", "page_resources_")))
@@ -1182,7 +988,7 @@ async def list_or_page_callback(callback: types.CallbackQuery) -> None:
         return
     keyboard = await get_items_keyboard(category, loc_id, page)
     title = get_location_list_title(location, category, page)
-    await replace_callback_message_text(callback, title, reply_markup=keyboard)
+    await edit_callback_window(callback, title, reply_markup=keyboard)
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("gear_slots_"))
@@ -1221,22 +1027,34 @@ async def view_mob(callback: types.CallbackQuery) -> None:
 
     await log_view_mob(callback.from_user.id, mob_id)
 
-    # Создаём InputRichMessage
-    rich_msg = await format_mob_card(mob_id, location_id, page)
-    plain_text = await format_mob_card_plain(mob_id, location_id, page)
+    card_view = await build_mob_card(
+        db,
+        mob_id,
+        location_id,
+        page,
+        bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(get_callback_message(callback).chat),
+    )
 
     # Формируем клавиатуру
-    neighbours = await db.get_prev_next_mob_by_hp(mob_id, location_id)
+    neighbours = await db.get_prev_next_mob_by_hp(
+        mob_id,
+        location_id,
+    )
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"view_mobs_{neighbours['prev_id']}_{location_id}_{page}"
+            callback_data=MobViewCallback(
+                neighbours['prev_id'], location_id, page
+            ).pack()
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"view_mobs_{neighbours['next_id']}_{location_id}_{page}"
+            callback_data=MobViewCallback(
+                neighbours['next_id'], location_id, page
+            ).pack()
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
@@ -1252,8 +1070,8 @@ async def view_mob(callback: types.CallbackQuery) -> None:
     await upsert_rich_card(
         bot=get_bound_bot(callback),
         chat_id=get_callback_message(callback).chat.id,
-        rich_message=rich_msg,
-        plain_text=plain_text,
+        rich_message=card_view.rich_message,
+        plain_text=card_view.fallback_html,
         reply_markup=reply_markup,
         current_message=get_callback_message(callback),
     )
@@ -1270,21 +1088,35 @@ async def view_resource(callback: types.CallbackQuery) -> None:
         return
     await log_view_resource(callback.from_user.id, res_id)
 
-    rich_msg = await format_resource_card_rich(res_id, context_type='location', context_id=location_id, page=page)
-    plain_text = await format_resource_card(res_id, context_type='location', context_id=location_id, page=page)
+    card_view = await build_resource_card(
+        db,
+        res_id,
+        context_type='location',
+        context_id=location_id,
+        page=page,
+        bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(get_callback_message(callback).chat),
+    )
 
-    neighbours = await db.get_prev_next_resource_by_location(res_id, location_id)
+    neighbours = await db.get_prev_next_resource_by_location(
+        res_id,
+        location_id,
+    )
 
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"nav_resources_{neighbours['prev_id']}_{location_id}_{page}"
+            callback_data=ResourceLocationViewCallback(
+                neighbours['prev_id'], location_id, page
+            ).pack(navigation=True)
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"nav_resources_{neighbours['next_id']}_{location_id}_{page}"
+            callback_data=ResourceLocationViewCallback(
+                neighbours['next_id'], location_id, page
+            ).pack(navigation=True)
         ))
     back_button = InlineKeyboardButton(
         text="🔙 Назад к списку",
@@ -1301,8 +1133,8 @@ async def view_resource(callback: types.CallbackQuery) -> None:
     await render_card(
         bot=get_bound_bot(callback),
         chat_id=get_callback_message(callback).chat.id,
-        rich_message=rich_msg,
-        plain_text=plain_text,
+        rich_message=card_view.rich_message,
+        plain_text=card_view.fallback_html,
         reply_markup=reply_markup,
         current_message=get_callback_message(callback),
     )
@@ -1332,11 +1164,13 @@ async def build_gear_card_keyboard(
         if not neighbour_id:
             continue
         if slot_index is None:
-            callback_data = f"nav_gear_{neighbour_id}_{rarity}_{page}"
+            callback_data = GearViewCallback(
+                neighbour_id, rarity, None, page
+            ).pack(navigation=True)
         else:
-            callback_data = (
-                f"nav_gear_{neighbour_id}_{rarity}_{slot_index}_{page}"
-            )
+            callback_data = GearViewCallback(
+                neighbour_id, rarity, slot_index, page
+            ).pack(navigation=True)
         nav_buttons.append(InlineKeyboardButton(
             text=text_label,
             callback_data=callback_data,
@@ -1344,19 +1178,19 @@ async def build_gear_card_keyboard(
 
     keyboard = [nav_buttons] if nav_buttons else []
     recipe_id = data.get('recipe_id')
-    if rarity == 'epic' and recipe_id:
+    if data.get('can_learn', False) and recipe_id:
         is_owner = user_id in data.get('owner_user_ids', [])
         action = 'relinquish' if is_owner else 'claim'
         keyboard.append([InlineKeyboardButton(
-            text="❌ У меня нет рецепта" if is_owner else "✅ У меня есть рецепт",
-            callback_data=build_recipe_owner_callback(
-                action,
-                recipe_id,
-                gear_id,
-                rarity,
-                page,
-                slot_index,
-            ),
+            text="❌ Я не изучал рецепт" if is_owner else "✅ Я изучил рецепт",
+            callback_data=RecipeOwnerCallback(
+                action=action,
+                recipe_id=recipe_id,
+                gear_id=gear_id,
+                rarity=rarity,
+                page=page,
+                slot_index=slot_index,
+            ).pack(),
         )])
 
     back_callback = (
@@ -1382,7 +1216,7 @@ async def render_gear_card(
 ) -> bool:
     data = await db.get_gear_card(gear_id)
     if not data:
-        await replace_callback_message_text(callback, "Предмет не найден.")
+        await edit_callback_window(callback, "Предмет не найден.")
         return False
 
     # Данные карточки являются источником истины: старые кнопки могут содержать
@@ -1393,19 +1227,10 @@ async def render_gear_card(
             slot_index = GEAR_SLOT_ORDER.index(data['slot'])
         except ValueError:
             slot_index = None
-    rich_msg = await format_gear_card_rich(
-        gear_id,
-        rarity,
-        page,
-        data=data,
-        slot_index=slot_index,
-    )
-    plain_text = await format_gear_card_plain(
-        gear_id,
-        rarity,
-        page,
-        data=data,
-        slot_index=slot_index,
+    card_view = await build_gear_card(
+        db, data['id'], rarity, page, data=data, slot_index=slot_index,
+        bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(get_callback_message(callback).chat),
     )
     reply_markup = await build_gear_card_keyboard(
         data,
@@ -1417,8 +1242,8 @@ async def render_gear_card(
     await render_card(
         bot=get_bound_bot(callback),
         chat_id=get_callback_message(callback).chat.id,
-        rich_message=rich_msg,
-        plain_text=plain_text,
+        rich_message=card_view.rich_message,
+        plain_text=card_view.fallback_html,
         reply_markup=reply_markup,
         current_message=get_callback_message(callback),
     )
@@ -1464,8 +1289,10 @@ async def view_card(callback: types.CallbackQuery) -> None:
     if card_id is None:
         return
     await log_view_card(callback.from_user.id, card_id)
-    text = await format_card_card(card_id, page)
-    rich_msg = await format_card_card_rich(card_id, page)
+    card_view = await build_card_card(
+        db, card_id, page, bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(get_callback_message(callback).chat),
+    )
 
     neighbours = await db.get_prev_next_card_by_slot(card_id)
 
@@ -1473,12 +1300,16 @@ async def view_card(callback: types.CallbackQuery) -> None:
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущая",
-            callback_data=f"view_card_{neighbours['prev_id']}_{page}"
+            callback_data=CardViewCallback(
+                neighbours['prev_id'], page
+            ).pack()
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующая ▶️",
-            callback_data=f"view_card_{neighbours['next_id']}_{page}"
+            callback_data=CardViewCallback(
+                neighbours['next_id'], page
+            ).pack()
         ))
 
     back_button = InlineKeyboardButton(
@@ -1494,8 +1325,8 @@ async def view_card(callback: types.CallbackQuery) -> None:
     await upsert_rich_card(
         bot=get_bound_bot(callback),
         chat_id=get_callback_message(callback).chat.id,
-        rich_message=rich_msg,
-        plain_text=text,
+        rich_message=card_view.rich_message,
+        plain_text=card_view.fallback_html,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         current_message=get_callback_message(callback),
     )
@@ -1514,7 +1345,7 @@ async def update_recipe_owner(callback: types.CallbackQuery) -> None:
             show_alert=True,
         )
         return
-    if gear.get('rarity') != 'epic':
+    if not gear.get('can_learn', False):
         await callback.answer(
             "Для этого снаряжения учёт владельцев рецепта недоступен.",
             show_alert=True,
@@ -1527,22 +1358,31 @@ async def update_recipe_owner(callback: types.CallbackQuery) -> None:
                 recipe_id, callback.from_user.id, callback.from_user.username,
                 expected_gear_id=gear_id,
             )
-            result_text = "✅ Ты добавлен в список владельцев рецепта!"
+            result_text = "✅ Отмечено: ты изучил рецепт."
         else:
             await db.relinquish_recipe_owner(recipe_id, callback.from_user.id)
-            result_text = "❌ Ты удалён из списка владельцев рецепта."
+            result_text = "Отметка об изучении рецепта удалена."
     except ValueError as error:
         await callback.answer(str(error), show_alert=True)
         return
     await callback.answer(result_text, show_alert=False)
 
+    key = get_navigation_key(callback)
+    entity = entity_navigation.current(key)
+    if entity and entity.entity_type == "gear" and entity.entity_id in {gear_id, gear['id']}:
+        previous = entity_navigation.previous(key)
+        sent = await present_interactive_entity(
+            callback, EntityRef("gear", gear['id']), previous,
+            root_markup=entity_navigation.root_state(key) if previous is None else None,
+        )
+        entity_navigation.transfer(key, (callback.from_user.id, sent.chat.id, sent.message_id))
+        return
     await render_gear_card(
         callback,
         gear_id,
         rarity,
         page,
         slot_index,
-        replace=True,
     )
 
 # ---------- Ресурсы по категориям ----------
@@ -1581,21 +1421,35 @@ async def view_resource_by_type(callback: types.CallbackQuery) -> None:
     await callback.answer()
     await log_view_resource(callback.from_user.id, resource_id)
 
-    rich_msg = await format_resource_card_rich(resource_id, context_type='type', context_id=resource_type, page=page)
-    plain_text = await format_resource_card(resource_id, context_type='type', context_id=resource_type, page=page)
+    card_view = await build_resource_card(
+        db,
+        resource_id,
+        context_type='type',
+        context_id=resource_type,
+        page=page,
+        bot_username=BOT_USERNAME,
+        link_mode=get_card_link_mode(get_callback_message(callback).chat),
+    )
 
-    neighbours = await db.get_prev_next_resource_by_type(resource_id, resource_type)
+    neighbours = await db.get_prev_next_resource_by_type(
+        resource_id,
+        resource_type,
+    )
 
     nav_buttons = []
     if neighbours['prev_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="◀️ Предыдущий",
-            callback_data=f"nav_resource_{neighbours['prev_id']}_{resource_type}_{page}"
+            callback_data=ResourceViewCallback(
+                neighbours['prev_id'], resource_type, page
+            ).pack(navigation=True)
         ))
     if neighbours['next_id']:
         nav_buttons.append(InlineKeyboardButton(
             text="Следующий ▶️",
-            callback_data=f"nav_resource_{neighbours['next_id']}_{resource_type}_{page}"
+            callback_data=ResourceViewCallback(
+                neighbours['next_id'], resource_type, page
+            ).pack(navigation=True)
         ))
 
     back_button = InlineKeyboardButton(
@@ -1613,8 +1467,8 @@ async def view_resource_by_type(callback: types.CallbackQuery) -> None:
     await render_card(
         bot=get_bound_bot(callback),
         chat_id=get_callback_message(callback).chat.id,
-        rich_message=rich_msg,
-        plain_text=plain_text,
+        rich_message=card_view.rich_message,
+        plain_text=card_view.fallback_html,
         reply_markup=reply_markup,
         current_message=get_callback_message(callback),
     )
@@ -1622,10 +1476,32 @@ async def view_resource_by_type(callback: types.CallbackQuery) -> None:
 @dp.callback_query(F.data == "back_to_main_menu")
 async def back_to_main_menu(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    message = get_callback_message(callback)
-    await message.answer("📋 Главное меню", reply_markup=get_main_menu_reply_keyboard())
-    await cleanup_card_fragments(get_bound_bot(callback), message.chat.id, message.message_id)
-    await message.delete()
+    await replace_callback_message_text(callback, "📋 Главное меню", reply_markup=get_main_menu_inline_keyboard())
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("main_section_"))
+async def main_menu_section(callback: types.CallbackQuery, state: FSMContext) -> None:
+    section = get_callback_data(callback).removeprefix("main_section_")
+    if section not in {"mobs", "resources", "gear", "search"}:
+        await callback.answer("Неизвестный раздел.", show_alert=True)
+        return
+    await state.clear()
+    if section == "mobs":
+        text = "Выбери локацию для мобов:"
+        keyboard = await get_locations_keyboard("mobs")
+    elif section == "resources":
+        text = "Выбери категорию ресурсов:"
+        keyboard = get_resource_categories_keyboard()
+    elif section == "gear":
+        text = "Выбери редкость снаряжения:"
+        keyboard = get_rarities_keyboard()
+    else:
+        text = "Нажми кнопку поиска и введи название моба, ресурса, снаряжения или карты."
+        keyboard = get_inline_search_button()
+    rows = list(keyboard.inline_keyboard)
+    if not any(button.callback_data == "back_to_main_menu" for row in rows for button in row):
+        rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_main_menu")])
+    await replace_callback_message_text(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     await callback.answer()
 
 # ---------- Запуск ----------

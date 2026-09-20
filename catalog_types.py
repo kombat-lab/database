@@ -1,5 +1,7 @@
 """Shared typed shapes for catalog records and presentation boundaries."""
 
+from __future__ import annotations
+
 from typing import NotRequired, TypedDict
 
 
@@ -94,8 +96,10 @@ class ResourceUsageRow(TypedDict):
 
 
 class ResourceCardRow(ResourceRow):
+    craft_location: str
     mobs: list[ResourceDropMobRow]
     used_in: list[ResourceUsageRow]
+    learning_recipes: list[LearningRecipeRow]
 
 
 class GearIngredientRow(ItemRow):
@@ -104,6 +108,7 @@ class GearIngredientRow(ItemRow):
 
 
 class GearCardRow(GearRow):
+    craft_quantity: int
     recipe_id: int | None
     mobs: list[ItemRow]
     scroll_mobs: list[ItemRow]
@@ -112,6 +117,8 @@ class GearCardRow(GearRow):
     owner_entries: NotRequired[list[RecipeOwnerEntry]]
     owner_user_ids: list[int]
     craftable: bool
+    learning_scroll: ResourceRow | None
+    can_learn: bool
 
 
 class RecipeIngredientRow(TypedDict):
@@ -122,4 +129,31 @@ class RecipeIngredientRow(TypedDict):
 
 
 class ResourceRecipeRow(TypedDict):
+    quantity: int
+    craft_location: str
     ingredients: list[RecipeIngredientRow]
+
+
+class LearningRecipeRow(TypedDict):
+    recipe_id: int
+    result_id: int
+    result_name: str
+    result_emoji: str
+    result_rarity: str
+    quantity: int
+    ingredients: list[RecipeIngredientRow]
+    owner_entries: list[RecipeOwnerEntry]
+    owner_user_ids: list[int]
+
+
+class RecipeDetailsRow(TypedDict):
+    craft_location: str
+    id: int
+    result_type: str
+    result_id: int
+    quantity: int
+    ingredients: list[RecipeIngredientRow]
+    owners: list[str]
+    owner_entries: list[RecipeOwnerEntry]
+    learning_scroll: ResourceRow | None
+    can_learn: bool

@@ -39,6 +39,19 @@ RESOURCE_TYPE_KEYS = (
     "currency",
     "alchemy",
 )
+
+# Preserve the former renderer's locations during migration only. New recipes
+# receive their craft location explicitly from the administrator.
+LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION = (
+    "🏛 Алькасар - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
+)
+LEGACY_ALCHEMY_CRAFT_LOCATIONS = {
+    name.casefold(): "🏰 Торговый аванпост - 🛣 Центральная Аллея - 👤 Ученая Мередит - ⚗️ Алхимия"
+    for name in (
+        "Дубленая кожа", "Костяной куб", "Пепельный материал",
+        "Прочная бечевка", "Субстанция", "Ядро земель",
+    )
+}
 GEAR_CLASS_ORDER = ("Аколит", "Бастион", "Маг", "Охотник", "Тень")
 GEAR_CLASS_SET = frozenset(GEAR_CLASS_ORDER)
 

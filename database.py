@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import hashlib
+import secrets
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Awaitable
 from typing import Any, TypeAlias, TypeVar
@@ -26,13 +28,22 @@ from catalog_types import (
     GearCardRow as GearCardRow,
     RecipeIngredientRow as RecipeIngredientRow,
     ResourceRecipeRow as ResourceRecipeRow,
+    LearningRecipeRow as LearningRecipeRow,
+    RecipeDetailsRow as RecipeDetailsRow,
 )
-from game_constants import GEAR_SLOTS, RARITY_KEYS
+from game_constants import (
+    GEAR_SLOTS, RARITY_KEYS, RESOURCE_TYPE_KEYS,
+    LEGACY_ALCHEMY_CRAFT_LOCATIONS, LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION,
+)
+from recipe_domain import (
+    DomainError, DraftConflictError, GearDraft, GearDraftPayload, GearSaveResult,
+    LearningScrollInput, MaterialInput, ResourceDependencies, positive_integer, validate_draft_payload, validate_craft_location,
+)
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DATABASE_PATH", "game.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _T = TypeVar("_T")
 # Arbitrary SQL may return differently shaped rows; entity methods narrow them.
 SqlValue: TypeAlias = int | float | str | bytes | None
@@ -271,7 +282,94 @@ class Database:
                 ON recipe_owners(recipe_id, player_username COLLATE NOCASE)
                 WHERE user_id IS NULL
             """)
+            await self._migrate_learning_and_drafts()
             await self.execute_query(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    async def _migrate_learning_and_drafts(self) -> None:
+        recipe_columns = {str(row['name']) for row in await self.execute_query('PRAGMA table_info(recipes)')}
+        if 'craft_location' not in recipe_columns:
+            await self.execute_query("ALTER TABLE recipes ADD COLUMN craft_location TEXT NOT NULL DEFAULT ''")
+            for recipe in await self.execute_query(
+                "SELECT rec.id,s.name FROM recipes rec JOIN resources s ON rec.result_type='resource' AND s.id=rec.result_id",
+            ):
+                craft_location = LEGACY_ALCHEMY_CRAFT_LOCATIONS.get(str(recipe['name']).casefold(), LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION)
+                await self.execute_query('UPDATE recipes SET craft_location=? WHERE id=?', (craft_location, recipe['id']))
+        # Validate before moving any legacy edge: one scroll teaches one formula.
+        legacy = await self.execute_query("""
+            SELECT ri.recipe_id, ri.resource_id, ri.quantity, rec.result_type, g.id AS gear_id
+            FROM recipe_ingredients ri
+            JOIN resources s ON s.id = ri.resource_id AND s.type = 'scroll_recipe'
+            JOIN recipes rec ON rec.id = ri.recipe_id
+            LEFT JOIN gear g ON rec.result_type = 'gear' AND g.id = rec.result_id
+        """)
+        if (any(row['quantity'] != 1 or row['result_type'] != 'gear' or row['gear_id'] is None
+                for row in legacy)
+                or len({row['recipe_id'] for row in legacy}) != len(legacy)
+                or len({row['resource_id'] for row in legacy}) != len(legacy)):
+            raise DomainError('Неоднозначные старые связи изучаемых свитков; миграция отменена.')
+        if await self.execute_query("""
+            SELECT 1 FROM recipes rec JOIN resources s
+            ON rec.result_type = 'resource' AND rec.result_id = s.id
+            WHERE s.type = 'scroll_recipe' LIMIT 1
+        """):
+            raise DomainError('Найден рецепт изготовления изучаемого свитка; требуется проверка данных.')
+        for sql in (
+            """CREATE TABLE IF NOT EXISTS recipe_learning_requirements (
+                recipe_id INTEGER PRIMARY KEY,
+                scroll_resource_id INTEGER NOT NULL UNIQUE,
+                FOREIGN KEY(recipe_id) REFERENCES recipes(id) ON DELETE CASCADE,
+                FOREIGN KEY(scroll_resource_id) REFERENCES resources(id) ON DELETE RESTRICT
+            )""",
+            """CREATE TABLE IF NOT EXISTS gear_aliases (
+                alias_id INTEGER PRIMARY KEY,
+                canonical_gear_id INTEGER NOT NULL,
+                FOREIGN KEY(canonical_gear_id) REFERENCES gear(id) ON DELETE RESTRICT,
+                CHECK(alias_id != canonical_gear_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS gear_drafts (
+                draft_id TEXT PRIMARY KEY,
+                owner_user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'editing' CHECK(status IN ('editing','saved','cancelled')),
+                target_gear_id INTEGER,
+                base_fingerprint TEXT,
+                base_owner_fingerprint TEXT,
+                reference_fingerprints_json TEXT NOT NULL DEFAULT '{}',
+                payload_json TEXT NOT NULL,
+                saved_result_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_gear_drafts_owner_chat ON gear_drafts(owner_user_id,chat_id,status)",
+        ):
+            await self.execute_query(sql)
+        for row in legacy:
+            await self.execute_query(
+                'INSERT INTO recipe_learning_requirements(recipe_id,scroll_resource_id) VALUES (?,?)',
+                (row['recipe_id'], row['resource_id']),
+            )
+            await self.execute_query(
+                'DELETE FROM recipe_ingredients WHERE recipe_id=? AND resource_id=?',
+                (row['recipe_id'], row['resource_id']),
+            )
+        await self._validate_resource_graph()
+        for row in await self.execute_query('SELECT quantity FROM recipes'):
+            positive_integer(row['quantity'], 'Количество результата')
+        # Existing resource foreign keys used CASCADE. A material must never disappear
+        # silently when a resource is deleted, including through direct maintenance SQL.
+        await self.execute_query("""CREATE TABLE recipe_ingredients_v2 (
+            recipe_id INTEGER NOT NULL,
+            resource_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK(typeof(quantity)='integer' AND quantity>0),
+            PRIMARY KEY(recipe_id,resource_id),
+            FOREIGN KEY(recipe_id) REFERENCES recipes(id) ON DELETE CASCADE,
+            FOREIGN KEY(resource_id) REFERENCES resources(id) ON DELETE RESTRICT
+        )""")
+        await self.execute_query('INSERT INTO recipe_ingredients_v2 SELECT recipe_id,resource_id,quantity FROM recipe_ingredients')
+        await self.execute_query('DROP TABLE recipe_ingredients')
+        await self.execute_query('ALTER TABLE recipe_ingredients_v2 RENAME TO recipe_ingredients')
 
     async def _ensure_schema(self) -> None:
         """Create a complete empty database without touching existing rows."""
@@ -704,6 +802,7 @@ class Database:
     async def get_resource_card(self, resource_id: int) -> ResourceCardRow | None:
         query = """
             SELECT r.id, r.name, r.emoji, r.type, r.note,
+                   COALESCE((SELECT craft_location FROM recipes WHERE result_type='resource' AND result_id=r.id),'') AS craft_location,
                    (SELECT json_group_array(json_object(
                         'id', m.id, 'name', m.name, 'emoji', m.emoji,
                         'location_id', l.id,
@@ -761,7 +860,24 @@ class Database:
             result_emoji=str(usage['result_emoji']), quantity=int(usage['quantity']),
             result_rarity=str(usage['result_rarity']) if usage['result_rarity'] is not None else None,
         ) for usage in _json_rows(row['used_in'])]
-        return ResourceCardRow(**_resource_row(row), mobs=mobs, used_in=usages)
+        learning_recipes: list[LearningRecipeRow] = []
+        for link in await self.execute_query("""
+            SELECT rec.id, rec.result_id, rec.quantity, g.name, g.emoji, g.rarity
+            FROM recipe_learning_requirements lr JOIN recipes rec ON rec.id=lr.recipe_id
+            JOIN gear g ON rec.result_type='gear' AND g.id=rec.result_id
+            WHERE lr.scroll_resource_id=? ORDER BY rec.id
+        """, (resource_id,)):
+            details = await self.get_recipe_details(int(link['id']))
+            if details is not None:
+                entries = details['owner_entries']
+                learning_recipes.append(LearningRecipeRow(
+                    recipe_id=int(link['id']), result_id=int(link['result_id']),
+                    result_name=str(link['name']), result_emoji=str(link['emoji']),
+                    result_rarity=str(link['rarity']), quantity=int(link['quantity']),
+                    ingredients=details['ingredients'], owner_entries=entries,
+                    owner_user_ids=[entry['user_id'] for entry in entries if entry['user_id'] is not None],
+                ))
+        return ResourceCardRow(**_resource_row(row), mobs=mobs, used_in=usages, learning_recipes=learning_recipes, craft_location=str(row['craft_location']))
 
     async def get_resources_by_location(self, location_id: int, offset: int, limit: int) -> list[DbRow]:
         query = """
@@ -802,6 +918,14 @@ class Database:
             new_emoji = emoji if emoji is not None else current['emoji']
             new_type = resource_type if resource_type is not None else current['type']
             new_note = note if note is not None else current['note']
+            if new_type not in RESOURCE_TYPE_KEYS:
+                raise DomainError('Неизвестный тип ресурса.')
+            if new_type != current['type']:
+                dependencies = await self.get_resource_dependencies(resource_id)
+                if (dependencies['learning_recipe_ids'] and new_type != 'scroll_recipe') or (
+                    new_type == 'scroll_recipe' and (dependencies['ingredient_recipe_ids'] or dependencies['result_recipe_ids'])
+                ):
+                    raise DomainError('Тип ресурса несовместим с существующими материалами или изучением.')
             await self.execute_query(
                 "UPDATE resources SET name=?, emoji=?, type=?, note=? WHERE id=?",
                 (new_name, new_emoji, new_type, new_note, resource_id)
@@ -825,12 +949,24 @@ class Database:
             (result_type, result_id),
         )
 
+    async def get_resource_dependencies(self, resource_id: int) -> ResourceDependencies:
+        return ResourceDependencies(
+            ingredient_recipe_ids=[int(row['recipe_id']) for row in await self.execute_query(
+                'SELECT recipe_id FROM recipe_ingredients WHERE resource_id=? ORDER BY recipe_id', (resource_id,))],
+            learning_recipe_ids=[int(row['recipe_id']) for row in await self.execute_query(
+                'SELECT recipe_id FROM recipe_learning_requirements WHERE scroll_resource_id=?', (resource_id,))],
+            result_recipe_ids=[int(row['id']) for row in await self.execute_query(
+                "SELECT id FROM recipes WHERE result_type='resource' AND result_id=?", (resource_id,))],
+            drop_mob_ids=[int(row['mob_id']) for row in await self.execute_query(
+                "SELECT mob_id FROM drops WHERE item_type='resource' AND item_id=? ORDER BY mob_id", (resource_id,))],
+        )
+
     async def delete_resource(self, resource_id: int) -> None:
         async with self.transaction():
-            await self.execute_query("DELETE FROM drops WHERE item_type = 'resource' AND item_id = ?", (resource_id,))
-            await self.execute_query("DELETE FROM recipe_ingredients WHERE resource_id = ?", (resource_id,))
-            await self._delete_recipes_by_result('resource', resource_id)
-            await self.execute_query("DELETE FROM resources WHERE id = ?", (resource_id,))
+            dependencies = await self.get_resource_dependencies(resource_id)
+            if any(dependencies.values()):
+                raise DomainError('Ресурс используется в материалах, изучении, рецепте или источниках. Сначала явно удалите эти связи.')
+            await self.execute_query('DELETE FROM resources WHERE id=?', (resource_id,))
 
     async def get_resources_by_type(self, resource_type: str, offset: int, limit: int) -> list[DbRow]:
         return await self.execute_query(
@@ -933,6 +1069,7 @@ class Database:
         )
 
     async def get_gear_by_id(self, gear_id: int) -> GearRow | None:
+        gear_id = await self.resolve_gear_id(gear_id)
         res = await self.execute_query("SELECT * FROM gear WHERE id = ?", (gear_id,))
         if not res:
             return None
@@ -951,6 +1088,7 @@ class Database:
 
     async def update_gear(self, gear_id: int, name: str | None = None, rarity: str | None = None, slot: str | None = None, emoji: str | None = None, level: int | None = None, classes: str | None = None, note: str | None = None) -> None:
         async with self.transaction():
+            gear_id = await self.resolve_gear_id(gear_id)
             current = await self.get_gear_by_id(gear_id)
             if not current:
                 raise ValueError("Gear not found")
@@ -968,15 +1106,21 @@ class Database:
 
     async def delete_gear(self, gear_id: int) -> None:
         async with self.transaction():
+            gear_id = await self.resolve_gear_id(gear_id)
+            if await self.execute_query('SELECT 1 FROM gear_aliases WHERE canonical_gear_id=?', (gear_id,)):
+                raise DomainError('Предмет сохраняет старые ссылки после объединения. Его удаление требует проверки алиасов.')
             await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (gear_id,))
             await self._delete_recipes_by_result('gear', gear_id)
             await self.execute_query("DELETE FROM gear WHERE id=?", (gear_id,))
 
     async def get_gear_card(self, gear_id: int) -> GearCardRow | None:
+        gear_id = await self.resolve_gear_id(gear_id)
         query = """
             SELECT g.id, g.name, g.rarity, g.slot, g.emoji, g.level, g.classes, g.note,
                    (SELECT rc.id FROM recipes rc
                     WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as recipe_id,
+                   (SELECT rc.quantity FROM recipes rc
+                    WHERE rc.result_type = 'gear' AND rc.result_id = g.id) as craft_quantity,
                    (SELECT json_group_array(json_object(
                        'id', source.id, 'name', source.name, 'emoji', source.emoji
                     )) FROM (
@@ -990,8 +1134,8 @@ class Database:
                     )) FROM (
                        SELECT m.id, m.name, m.emoji
                        FROM recipes rc
-                       JOIN recipe_ingredients ri ON ri.recipe_id = rc.id
-                       JOIN resources scroll ON scroll.id = ri.resource_id
+                       JOIN recipe_learning_requirements lr ON lr.recipe_id = rc.id
+                       JOIN resources scroll ON scroll.id = lr.scroll_resource_id
                        JOIN drops d ON d.item_type = 'resource' AND d.item_id = scroll.id
                        JOIN mobs m ON m.id = d.mob_id
                        WHERE rc.result_type = 'gear'
@@ -1030,8 +1174,10 @@ class Database:
             return None
         row = res[0]
         owners = [_owner_entry(owner) for owner in _json_rows(row['owner_entries'])]
+        learning_scroll = await self.get_recipe_learning_scroll(int(row['recipe_id'])) if row['recipe_id'] is not None else None
         return GearCardRow(
             **_gear_row(row), recipe_id=int(row['recipe_id']) if row['recipe_id'] is not None else None,
+            craft_quantity=int(row['craft_quantity']) if row['craft_quantity'] is not None else 1,
             mobs=[_item_row(mob) for mob in _json_rows(row['mobs'])],
             scroll_mobs=[_item_row(mob) for mob in _json_rows(row['scroll_mobs'])],
             ingredients=[GearIngredientRow(
@@ -1040,7 +1186,7 @@ class Database:
             owners=[owner['player_username'] for owner in owners if owner['player_username']],
             owner_entries=owners,
             owner_user_ids=[owner['user_id'] for owner in owners if owner['user_id'] is not None],
-            craftable=row['recipe_id'] is not None,
+            craftable=row['recipe_id'] is not None, learning_scroll=learning_scroll, can_learn=learning_scroll is not None,
         )
 
     async def get_prev_next_gear(
@@ -1109,51 +1255,70 @@ class Database:
         )
         return [row['player_username'] for row in rows if row['player_username']]
 
-    async def get_recipe_details(self, recipe_id: int) -> DbRow | None:
-        recipe_rows = await self.execute_query("SELECT * FROM recipes WHERE id=?", (recipe_id,))
+    async def get_recipe_learning_scroll(self, recipe_id: int) -> ResourceRow | None:
+        rows = await self.execute_query(
+            'SELECT s.* FROM recipe_learning_requirements lr JOIN resources s ON s.id=lr.scroll_resource_id WHERE lr.recipe_id=?',
+            (recipe_id,),
+        )
+        return _resource_row(rows[0]) if rows else None
+
+    async def get_recipe_details(self, recipe_id: int) -> RecipeDetailsRow | None:
+        recipe_rows = await self.execute_query('SELECT * FROM recipes WHERE id=?', (recipe_id,))
         if not recipe_rows:
             return None
         recipe = recipe_rows[0]
         ingredients = await self.execute_query(
-            "SELECT ri.resource_id, r.name, r.emoji, ri.quantity FROM recipe_ingredients ri "
-            "JOIN resources r ON ri.resource_id = r.id WHERE ri.recipe_id=? ORDER BY ri.resource_id",
-            (recipe_id,)
+            'SELECT ri.resource_id, r.name, r.emoji, ri.quantity FROM recipe_ingredients ri '
+            'JOIN resources r ON ri.resource_id=r.id WHERE ri.recipe_id=? ORDER BY ri.resource_id',
+            (recipe_id,),
         )
-        owners = await self.execute_query(
-            "SELECT player_username FROM recipe_owners WHERE recipe_id=?",
-            (recipe_id,)
+        entries = await self.get_recipe_owner_entries(recipe_id)
+        scroll = await self.get_recipe_learning_scroll(recipe_id)
+        return RecipeDetailsRow(
+            id=int(recipe['id']), result_type=str(recipe['result_type']), result_id=int(recipe['result_id']),
+            quantity=int(recipe['quantity']), ingredients=[_recipe_ingredient(row) for row in ingredients],
+            owners=[entry['player_username'] for entry in entries if entry['player_username']],
+            owner_entries=entries, learning_scroll=scroll, can_learn=scroll is not None, craft_location=str(recipe['craft_location']),
         )
-        owners = [o['player_username'] for o in owners if o['player_username']]
-        return {
-            'id': recipe['id'],
-            'result_type': recipe['result_type'],
-            'result_id': recipe['result_id'],
-            'quantity': recipe['quantity'],
-            'ingredients': ingredients,
-            'owners': owners,
-            'owner_entries': await self.get_recipe_owner_entries(recipe_id),
-        }
 
     async def create_recipe(self, result_type: str, result_id: int, quantity: int = 1) -> int:
         tables = {'gear': 'gear', 'resource': 'resources'}
         if result_type not in tables:
-            raise ValueError("Недопустимый тип результата рецепта.")
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
-            raise ValueError("Количество результата должно быть положительным целым числом.")
+            raise DomainError("Недопустимый тип результата рецепта.")
+        positive_integer(quantity, 'Количество результата')
+        positive_integer(result_id, 'Предмет результата')
         async with self.transaction():
+            if result_type == 'resource':
+                resource = await self.get_resource_by_id(result_id)
+                if resource is not None and resource['type'] == 'scroll_recipe':
+                    raise DomainError('Изучаемый свиток не может быть результатом изготовления.')
             if not await self.execute_query(
                 f"SELECT 1 FROM {tables[result_type]} WHERE id = ?", (result_id,)
             ):
-                raise ValueError("Предмет результата уже удалён. Откройте список заново.")
+                raise DomainError("Предмет результата уже удалён. Откройте список заново.")
             if await self.execute_query(
                 "SELECT 1 FROM recipes WHERE result_type = ? AND result_id = ?",
                 (result_type, result_id),
             ):
-                raise ValueError("Для этого предмета рецепт уже существует.")
+                raise DomainError("Для этого предмета рецепт уже существует.")
             return await self.execute_insert(
                 "INSERT INTO recipes (result_type, result_id, quantity) VALUES (?, ?, ?)",
                 (result_type, result_id, quantity)
             )
+
+    async def update_recipe_quantity(self, recipe_id: int, quantity: int) -> None:
+        positive_integer(quantity, 'Количество результата')
+        async with self.transaction():
+            if not await self.execute_query('SELECT 1 FROM recipes WHERE id=?', (recipe_id,)):
+                raise DomainError('Рецепт уже удалён.')
+            await self.execute_query('UPDATE recipes SET quantity=? WHERE id=?', (quantity, recipe_id))
+
+    async def update_recipe_craft_location(self, recipe_id: int, craft_location: str) -> None:
+        value = validate_craft_location(craft_location)
+        async with self.transaction():
+            if not await self.execute_query("SELECT 1 FROM recipes WHERE id=? AND result_type='resource'", (recipe_id,)):
+                raise DomainError('Место изготовления задаётся для существующего рецепта ресурса.')
+            await self.execute_query('UPDATE recipes SET craft_location=? WHERE id=?', (value, recipe_id))
 
     async def delete_recipe(self, recipe_id: int) -> None:
         async with self.transaction():
@@ -1162,34 +1327,41 @@ class Database:
             await self.execute_query("DELETE FROM recipes WHERE id=?", (recipe_id,))
 
     async def add_ingredient(self, recipe_id: int, resource_id: int, quantity: int) -> None:
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
-            raise ValueError("Количество ингредиента должно быть положительным целым числом.")
+        positive_integer(quantity, 'Количество ингредиента')
         async with self.transaction():
             if not await self.execute_query("SELECT 1 FROM recipes WHERE id = ?", (recipe_id,)):
-                raise ValueError("Рецепт уже удалён. Откройте список заново.")
-            if not await self.execute_query("SELECT 1 FROM resources WHERE id = ?", (resource_id,)):
-                raise ValueError("Ресурс уже удалён. Откройте список заново.")
+                raise DomainError("Рецепт уже удалён. Откройте список заново.")
+            resource = await self.get_resource_by_id(resource_id)
+            if resource is None:
+                raise DomainError('Ресурс уже удалён. Откройте список заново.')
+            if resource['type'] == 'scroll_recipe':
+                raise DomainError('Свиток изучается один раз: укажите его в разделе изучения, а не материалов.')
             if await self.execute_query(
                 "SELECT 1 FROM recipe_ingredients WHERE recipe_id = ? AND resource_id = ?",
                 (recipe_id, resource_id),
             ):
-                raise ValueError("Этот ресурс уже есть в рецепте. Измените его количество через редактирование ингредиентов.")
+                raise DomainError("Этот ресурс уже есть в рецепте. Измените его количество через редактирование ингредиентов.")
             await self.execute_query(
                 "INSERT INTO recipe_ingredients (recipe_id, resource_id, quantity) VALUES (?, ?, ?)",
                 (recipe_id, resource_id, quantity)
             )
+            await self._validate_resource_graph()
 
     async def update_ingredient(self, recipe_id: int, resource_id: int, quantity: int) -> None:
+        positive_integer(quantity, 'Количество ингредиента')
         await self.execute_query(
             "UPDATE recipe_ingredients SET quantity=? WHERE recipe_id=? AND resource_id=?",
             (quantity, recipe_id, resource_id)
         )
 
     async def remove_ingredient(self, recipe_id: int, resource_id: int) -> None:
-        await self.execute_query(
-            "DELETE FROM recipe_ingredients WHERE recipe_id=? AND resource_id=?",
-            (recipe_id, resource_id)
-        )
+        async with self.transaction():
+            if not await self.execute_query('SELECT 1 FROM recipe_ingredients WHERE recipe_id=? AND resource_id=?', (recipe_id, resource_id)):
+                return
+            count = await self.execute_query('SELECT COUNT(*) AS n FROM recipe_ingredients WHERE recipe_id=?', (recipe_id,))
+            if int(count[0]['n']) <= 1:
+                raise DomainError('Нельзя удалить последний материал из опубликованного рецепта. Удалите рецепт целиком или сначала добавьте другой материал.')
+            await self.execute_query('DELETE FROM recipe_ingredients WHERE recipe_id=? AND resource_id=?', (recipe_id, resource_id))
 
     async def get_recipe_owner_entries(self, recipe_id: int) -> list[RecipeOwnerEntry]:
         rows = await self.execute_query(
@@ -1227,11 +1399,14 @@ class Database:
     ) -> None:
         async with self.transaction():
             rows = await self.execute_query(
-                "SELECT g.id, g.rarity FROM recipes r JOIN gear g "
-                "ON r.result_type = 'gear' AND g.id = r.result_id WHERE r.id = ?",
+                "SELECT g.id FROM recipes r JOIN gear g "
+                "ON r.result_type = 'gear' AND g.id = r.result_id "
+                "JOIN recipe_learning_requirements lr ON lr.recipe_id=r.id WHERE r.id = ?",
                 (recipe_id,),
             )
-            if (not rows or rows[0]['rarity'] != 'epic'
+            if expected_gear_id is not None:
+                expected_gear_id = await self.resolve_gear_id(expected_gear_id)
+            if (not rows
                     or (expected_gear_id is not None and rows[0]['id'] != expected_gear_id)):
                 raise ValueError("Рецепт изменился или недоступен. Откройте карточку заново.")
             await self.execute_query(
@@ -1259,7 +1434,7 @@ class Database:
 
     async def get_recipe_for_resource(self, resource_id: int) -> ResourceRecipeRow | None:
         recipe_info = await self.execute_query(
-            "SELECT id FROM recipes WHERE result_type = 'resource' AND result_id = ?",
+            "SELECT id,quantity,craft_location FROM recipes WHERE result_type = 'resource' AND result_id = ?",
             (resource_id,)
         )
         if not recipe_info:
@@ -1271,7 +1446,457 @@ class Database:
             "WHERE ri.recipe_id = ? ORDER BY ri.resource_id",
             (recipe_id,)
         )
-        return ResourceRecipeRow(ingredients=[_recipe_ingredient(row) for row in ingredients])
+        return ResourceRecipeRow(ingredients=[_recipe_ingredient(row) for row in ingredients], quantity=int(recipe_info[0]['quantity']), craft_location=str(recipe_info[0]['craft_location']))
+
+    async def save_resource_recipe(self, result_id: int, quantity: int, materials: list[MaterialInput], *, craft_location: str = '') -> int:
+        """Publish a complete resource formula atomically; identical retries reuse its ID."""
+        positive_integer(quantity, 'Количество результата')
+        craft_location = validate_craft_location(craft_location)
+        validated = validate_draft_payload({'materials': materials})['materials']
+        if not validated:
+            raise DomainError('Добавьте хотя бы один расходуемый материал.')
+        async with self.transaction():
+            existing = await self.execute_query(
+                "SELECT id,quantity,craft_location FROM recipes WHERE result_type='resource' AND result_id=?", (result_id,),
+            )
+            resolved: list[tuple[int, int]] = []
+            for material in validated:
+                resource_id = material.get('resource_id')
+                if resource_id is None:
+                    matching = await self.execute_query(
+                        "SELECT id FROM resources WHERE LOWER_UNICODE(TRIM(name))=LOWER_UNICODE(?) AND type='craft'", (material['name'],),
+                    )
+                    if existing and len(matching) == 1:
+                        resource_id = int(matching[0]['id'])
+                    else:
+                        resource_id = await self._create_named_draft_resource(material['name'], material.get('emoji', ''), 'craft')
+                resolved.append((resource_id, material['quantity']))
+            if len({item[0] for item in resolved}) != len(resolved):
+                raise DomainError('В рецепте повторяется материал.')
+            if existing:
+                recipe_id = int(existing[0]['id'])
+                previous = await self.execute_query('SELECT resource_id,quantity FROM recipe_ingredients WHERE recipe_id=?', (recipe_id,))
+                if (existing[0]['quantity'] != quantity or existing[0]['craft_location'] != craft_location or sorted(resolved) != sorted(
+                    (int(item['resource_id']), int(item['quantity'])) for item in previous
+                )):
+                    raise DraftConflictError('Для этого результата уже существует другая формула. Откройте редактирование.')
+                return recipe_id
+            recipe_id = await self.create_recipe('resource', result_id, quantity)
+            await self.update_recipe_craft_location(recipe_id, craft_location)
+            for resource_id, amount in resolved:
+                await self.add_ingredient(recipe_id, resource_id, amount)
+            return recipe_id
+
+    async def _validate_resource_graph(self) -> None:
+        rows = await self.execute_query("""
+            SELECT rec.result_id, ri.resource_id, ri.quantity
+            FROM recipes rec JOIN recipe_ingredients ri ON ri.recipe_id=rec.id
+            WHERE rec.result_type='resource'
+        """)
+        graph: dict[int, set[int]] = {}
+        for row in rows:
+            positive_integer(row['quantity'], 'Количество материала')
+            graph.setdefault(int(row['result_id']), set()).add(int(row['resource_id']))
+        # Iterative DFS also handles long chains without Python recursion limits.
+        finished: set[int] = set()
+        active: set[int] = set()
+        for start in graph:
+            stack = [(start, False)]
+            while stack:
+                node, leaving = stack.pop()
+                if leaving:
+                    active.discard(node)
+                    finished.add(node)
+                elif node in active:
+                    raise DomainError('Рецепт содержит собственный результат или циклическую цепочку материалов.')
+                elif node not in finished:
+                    active.add(node)
+                    stack.append((node, True))
+                    stack.extend((child, False) for child in graph.get(node, set()))
+
+    async def set_recipe_learning_scroll(self, recipe_id: int, scroll_resource_id: int | None) -> None:
+        async with self.transaction():
+            if not await self.execute_query(
+                "SELECT 1 FROM recipes r JOIN gear g ON r.result_type='gear' AND g.id=r.result_id WHERE r.id=?",
+                (recipe_id,),
+            ):
+                raise DomainError('Изучение доступно только для существующего рецепта снаряжения.')
+            old = await self.get_recipe_learning_scroll(recipe_id)
+            old_id = old['id'] if old is not None else None
+            if old_id == scroll_resource_id:
+                return
+            if old_id is not None and await self.get_recipe_owner_entries(recipe_id):
+                raise DomainError('У рецепта есть изучившие его игроки. Сначала явно проверьте и удалите эти записи перед сменой изучения.')
+            if scroll_resource_id is not None:
+                scroll = await self.get_resource_by_id(scroll_resource_id)
+                if scroll is None or scroll['type'] != 'scroll_recipe':
+                    raise DomainError('Выберите существующий ресурс типа «рецепт» для изучения.')
+                dependencies = await self.get_resource_dependencies(scroll_resource_id)
+                if (dependencies['ingredient_recipe_ids'] or dependencies['result_recipe_ids']
+                        or any(item != recipe_id for item in dependencies['learning_recipe_ids'])):
+                    raise DomainError('Свиток уже связан с другим рецептом или расходуемыми материалами.')
+            await self.execute_query('DELETE FROM recipe_learning_requirements WHERE recipe_id=?', (recipe_id,))
+            if scroll_resource_id is not None:
+                await self.execute_query(
+                    'INSERT INTO recipe_learning_requirements(recipe_id,scroll_resource_id) VALUES (?,?)',
+                    (recipe_id, scroll_resource_id),
+                )
+
+    async def delete_recipe_bundle(self, recipe_id: int, *, delete_scroll: bool = False) -> None:
+        """Explicit formula deletion; optional scroll deletion includes its drop links."""
+        async with self.transaction():
+            scroll = await self.get_recipe_learning_scroll(recipe_id)
+            await self.delete_recipe(recipe_id)
+            if delete_scroll and scroll is not None:
+                dependencies = await self.get_resource_dependencies(scroll['id'])
+                if (dependencies['ingredient_recipe_ids'] or dependencies['learning_recipe_ids']
+                        or dependencies['result_recipe_ids']):
+                    raise DomainError('Свиток используется в других рецептах; удаление отменено.')
+                await self.execute_query("DELETE FROM drops WHERE item_type='resource' AND item_id=?", (scroll['id'],))
+                await self.delete_resource(scroll['id'])
+
+    async def resolve_gear_id(self, gear_id: int) -> int:
+        rows = await self.execute_query('SELECT canonical_gear_id FROM gear_aliases WHERE alias_id=?', (gear_id,))
+        return int(rows[0]['canonical_gear_id']) if rows else gear_id
+
+    async def merge_gear(self, source_gear_id: int, target_gear_id: int) -> int:
+        """Merge verified duplicate profiles, preserving old public IDs as aliases."""
+        async with self.transaction():
+            source_id = await self.resolve_gear_id(source_gear_id)
+            target_id = await self.resolve_gear_id(target_gear_id)
+            if source_id == target_id:
+                return target_id
+            source = await self.get_gear_by_id(source_id)
+            target = await self.get_gear_by_id(target_id)
+            if source is None or target is None:
+                raise DomainError('Один из объединяемых предметов уже удалён.')
+            left = validate_draft_payload({key: value for key, value in source.items() if key != 'id'})
+            right = validate_draft_payload({key: value for key, value in target.items() if key != 'id'})
+            if (source['name'].strip().casefold() != target['name'].strip().casefold()
+                    or any(left.get(key) != right.get(key) for key in ('rarity', 'slot', 'level', 'classes', 'note'))):
+                raise DomainError('Предметы отличаются уровнем, редкостью, слотом, классами или описанием.')
+            source_recipes = await self.execute_query("SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (source_id,))
+            target_recipes = await self.execute_query("SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (target_id,))
+            if source_recipes and target_recipes:
+                raise DomainError('Оба предмета имеют рецепты. Требуется отдельное разрешение конфликта формул и изучения.')
+            await self.execute_query("UPDATE recipes SET result_id=? WHERE result_type='gear' AND result_id=?", (target_id, source_id))
+            await self.execute_query(
+                "INSERT OR IGNORE INTO drops(mob_id,item_type,item_id) SELECT mob_id,'gear',? FROM drops WHERE item_type='gear' AND item_id=?",
+                (target_id, source_id),
+            )
+            await self.execute_query("DELETE FROM drops WHERE item_type='gear' AND item_id=?", (source_id,))
+            await self.execute_query('UPDATE gear_aliases SET canonical_gear_id=? WHERE canonical_gear_id=?', (target_id, source_id))
+            await self.execute_query('INSERT INTO gear_aliases(alias_id,canonical_gear_id) VALUES (?,?)', (source_id, target_id))
+            await self.execute_query('DELETE FROM gear WHERE id=?', (source_id,))
+            return target_id
+
+    async def get_gear_draft_payload(self, gear_id: int) -> GearDraftPayload | None:
+        gear = await self.get_gear_by_id(gear_id)
+        if gear is None:
+            return None
+        payload = GearDraftPayload(
+            gear_id=gear['id'], name=gear['name'], rarity=gear['rarity'], slot=gear['slot'],
+            emoji=gear['emoji'], level=gear['level'], classes=gear['classes'], note=gear['note'],
+            craftable=False, quantity=1, materials=[], learning_scroll=None,
+            gear_mob_ids=[int(row['mob_id']) for row in await self.execute_query(
+                "SELECT mob_id FROM drops WHERE item_type='gear' AND item_id=? ORDER BY mob_id", (gear['id'],))],
+            scroll_mob_ids=[],
+        )
+        rows = await self.execute_query("SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear['id'],))
+        if rows:
+            recipe = await self.get_recipe_details(int(rows[0]['id']))
+            if recipe is not None:
+                payload['craftable'] = True
+                payload['quantity'] = recipe['quantity']
+                payload['materials'] = [MaterialInput(resource_id=item['resource_id'], quantity=item['quantity']) for item in recipe['ingredients']]
+                scroll = recipe['learning_scroll']
+                if scroll is not None:
+                    payload['learning_scroll'] = LearningScrollInput(resource_id=scroll['id'])
+                    payload['scroll_mob_ids'] = [int(row['mob_id']) for row in await self.execute_query(
+                        "SELECT mob_id FROM drops WHERE item_type='resource' AND item_id=? ORDER BY mob_id", (scroll['id'],))]
+        return payload
+
+    @staticmethod
+    def _payload_fingerprint(payload: GearDraftPayload) -> str:
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+    async def _gear_owner_fingerprint(self, gear_id: int) -> str:
+        rows = await self.execute_query(
+            "SELECT ro.owner_id,ro.user_id,ro.player_username FROM recipe_owners ro JOIN recipes r ON r.id=ro.recipe_id WHERE r.result_type='gear' AND r.result_id=? ORDER BY ro.owner_id",
+            (gear_id,),
+        )
+        return hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+
+    async def _scroll_reference(self, scroll_id: int) -> tuple[str, list[int]]:
+        resource = await self.get_resource_by_id(scroll_id)
+        if resource is None or resource['type'] != 'scroll_recipe':
+            raise DomainError('Выбранный свиток удалён или изменил тип.')
+        drops = [int(row['mob_id']) for row in await self.execute_query(
+            "SELECT mob_id FROM drops WHERE item_type='resource' AND item_id=? ORDER BY mob_id", (scroll_id,),
+        )]
+        fingerprint = hashlib.sha256(json.dumps(
+            {'resource': resource, 'drops': drops}, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        ).encode('utf-8')).hexdigest()
+        return fingerprint, drops
+
+    async def _prepare_draft_references(self, payload: GearDraftPayload, previous: DbRow | None = None) -> str:
+        scroll = payload.get('learning_scroll')
+        scroll_id = scroll.get('resource_id') if scroll is not None else None
+        if scroll_id is None:
+            return '{}'
+        if previous is not None:
+            previous_scroll = self._decode_draft(previous)['payload'].get('learning_scroll')
+            previous_id = previous_scroll.get('resource_id') if previous_scroll is not None else None
+            if previous_id == scroll_id:
+                return str(previous['reference_fingerprints_json'])
+        fingerprint, drop_ids = await self._scroll_reference(scroll_id)
+        # Selecting a physical scroll starts from its current sources. Further
+        # source edits preserve this fingerprint and are compared at final save.
+        payload['scroll_mob_ids'] = drop_ids
+        return json.dumps({str(scroll_id): fingerprint}, sort_keys=True)
+
+    async def _check_draft_references(self, row: DbRow, payload: GearDraftPayload) -> None:
+        scroll = payload.get('learning_scroll')
+        scroll_id = scroll.get('resource_id') if scroll is not None else None
+        if scroll_id is None:
+            return
+        expected: object = json.loads(str(row['reference_fingerprints_json']))
+        fingerprint, _ = await self._scroll_reference(scroll_id)
+        if not isinstance(expected, dict) or expected.get(str(scroll_id)) != fingerprint:
+            raise DraftConflictError('Выбранный свиток или его источники изменены другим редактором. Откройте новый черновик с актуальными данными.')
+
+    @staticmethod
+    def _decode_draft(row: DbRow) -> GearDraft:
+        payload = validate_draft_payload(json.loads(str(row['payload_json'])))
+        saved: GearSaveResult | None = None
+        if row['saved_result_json'] is not None:
+            value: object = json.loads(str(row['saved_result_json']))
+            if not isinstance(value, dict) or not isinstance(value.get('draft_id'), str):
+                raise DomainError('Повреждён результат сохранения черновика.')
+            saved = GearSaveResult(
+                draft_id=value['draft_id'], gear_id=positive_integer(value.get('gear_id'), 'Снаряжение'),
+                recipe_id=positive_integer(value['recipe_id'], 'Рецепт') if value.get('recipe_id') is not None else None,
+                scroll_resource_id=positive_integer(value['scroll_resource_id'], 'Свиток') if value.get('scroll_resource_id') is not None else None,
+            )
+        status = row['status']
+        if status not in ('editing', 'saved', 'cancelled'):
+            raise DomainError('Повреждён статус черновика.')
+        draft: GearDraft = dict(
+            draft_id=str(row['draft_id']), owner_user_id=int(row['owner_user_id']), chat_id=int(row['chat_id']),
+            message_id=int(row['message_id']), revision=int(row['revision']), status='editing',
+            payload=payload, saved_result=saved,
+        )
+        if status == 'saved':
+            draft['status'] = 'saved'
+        elif status == 'cancelled':
+            draft['status'] = 'cancelled'
+        return draft
+
+    async def _context_draft(self, draft_id: str, owner_user_id: int, chat_id: int, message_id: int | None = None) -> DbRow:
+        rows = await self.execute_query('SELECT * FROM gear_drafts WHERE draft_id=?', (draft_id,))
+        if (not rows or rows[0]['owner_user_id'] != owner_user_id or rows[0]['chat_id'] != chat_id
+                or (message_id is not None and rows[0]['message_id'] != message_id)):
+            raise DraftConflictError('Черновик недоступен или открыт из другого сообщения. Откройте его заново.')
+        return rows[0]
+
+    @staticmethod
+    def _check_draft_revision(row: DbRow, expected_revision: int) -> None:
+        if row['status'] != 'editing' or row['revision'] != expected_revision:
+            raise DraftConflictError('Черновик уже изменён или завершён. Откройте актуальный экран.')
+
+    async def create_gear_draft(
+        self, *, owner_user_id: int, chat_id: int, message_id: int,
+        payload: GearDraftPayload | None = None, gear_id: int | None = None,
+    ) -> GearDraft:
+        positive_integer(owner_user_id, 'Администратор')
+        positive_integer(message_id, 'Сообщение')
+        async with self.transaction():
+            original = await self.get_gear_draft_payload(gear_id) if gear_id is not None else None
+            if gear_id is not None and original is None:
+                raise DomainError('Снаряжение уже удалено.')
+            value = validate_draft_payload(payload if payload is not None else (original or {}))
+            target_id = original['gear_id'] if original is not None else None
+            if value.get('gear_id') != target_id:
+                raise DraftConflictError('Нельзя менять предмет, которому принадлежит черновик.')
+            references = await self._prepare_draft_references(value)
+            draft_id = secrets.token_hex(8)
+            await self.execute_query(
+                'INSERT INTO gear_drafts(draft_id,owner_user_id,chat_id,message_id,target_gear_id,base_fingerprint,base_owner_fingerprint,reference_fingerprints_json,payload_json) VALUES (?,?,?,?,?,?,?,?,?)',
+                (draft_id, owner_user_id, chat_id, message_id, target_id,
+                 self._payload_fingerprint(original) if original is not None else None,
+                 await self._gear_owner_fingerprint(target_id) if target_id is not None else None, references,
+                 json.dumps(value, ensure_ascii=False)),
+            )
+            return self._decode_draft(await self._context_draft(draft_id, owner_user_id, chat_id))
+
+    async def get_gear_draft(self, draft_id: str, *, owner_user_id: int, chat_id: int) -> GearDraft | None:
+        try:
+            row = await self._context_draft(draft_id, owner_user_id, chat_id)
+        except DraftConflictError:
+            return None
+        return self._decode_draft(row)
+
+    async def list_gear_drafts(self, *, owner_user_id: int, chat_id: int) -> list[GearDraft]:
+        rows = await self.execute_query(
+            "SELECT * FROM gear_drafts WHERE owner_user_id=? AND chat_id=? AND status='editing' ORDER BY updated_at DESC,draft_id",
+            (owner_user_id, chat_id),
+        )
+        return [self._decode_draft(row) for row in rows]
+
+    async def update_gear_draft(
+        self, draft_id: str, *, expected_revision: int, owner_user_id: int,
+        chat_id: int, message_id: int, payload: GearDraftPayload,
+    ) -> GearDraft:
+        value = validate_draft_payload(payload)
+        async with self.transaction():
+            row = await self._context_draft(draft_id, owner_user_id, chat_id, message_id)
+            self._check_draft_revision(row, expected_revision)
+            if value.get('gear_id') != row['target_gear_id']:
+                raise DraftConflictError('Нельзя менять предмет, которому принадлежит черновик.')
+            references = await self._prepare_draft_references(value, row)
+            await self.execute_query(
+                'UPDATE gear_drafts SET payload_json=?,reference_fingerprints_json=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE draft_id=?',
+                (json.dumps(value, ensure_ascii=False), references, draft_id),
+            )
+            return self._decode_draft(await self._context_draft(draft_id, owner_user_id, chat_id))
+
+    async def bind_gear_draft_message(
+        self, draft_id: str, *, old_message_id: int, new_message_id: int,
+        expected_revision: int, owner_user_id: int, chat_id: int,
+    ) -> GearDraft:
+        positive_integer(new_message_id, 'Сообщение')
+        async with self.transaction():
+            row = await self._context_draft(draft_id, owner_user_id, chat_id, old_message_id)
+            self._check_draft_revision(row, expected_revision)
+            await self.execute_query(
+                'UPDATE gear_drafts SET message_id=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE draft_id=?',
+                (new_message_id, draft_id),
+            )
+            return self._decode_draft(await self._context_draft(draft_id, owner_user_id, chat_id))
+
+    async def cancel_gear_draft(
+        self, draft_id: str, *, expected_revision: int, owner_user_id: int, chat_id: int, message_id: int,
+    ) -> GearDraft:
+        async with self.transaction():
+            row = await self._context_draft(draft_id, owner_user_id, chat_id, message_id)
+            self._check_draft_revision(row, expected_revision)
+            await self.execute_query(
+                "UPDATE gear_drafts SET status='cancelled',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE draft_id=?", (draft_id,),
+            )
+            return self._decode_draft(await self._context_draft(draft_id, owner_user_id, chat_id))
+
+    async def delete_gear_draft_target(
+        self, draft_id: str, *, expected_revision: int, owner_user_id: int,
+        chat_id: int, message_id: int, delete_gear: bool, delete_scroll: bool = False,
+    ) -> GearDraft:
+        """Delete a reviewed draft target only if its aggregate still matches."""
+        async with self.transaction():
+            row = await self._context_draft(draft_id, owner_user_id, chat_id, message_id)
+            if row['status'] == 'cancelled':
+                return self._decode_draft(row)
+            self._check_draft_revision(row, expected_revision)
+            if row['target_gear_id'] is None:
+                raise DomainError('У нового черновика пока нет опубликованного предмета.')
+            gear_id = int(row['target_gear_id'])
+            current = await self.get_gear_draft_payload(gear_id)
+            if current is None or self._payload_fingerprint(current) != row['base_fingerprint']:
+                raise DraftConflictError('Предмет изменён другим редактором. Откройте актуальную карточку перед удалением.')
+            if await self._gear_owner_fingerprint(gear_id) != row['base_owner_fingerprint']:
+                raise DraftConflictError('Список изучивших рецепт изменился. Откройте актуальную карточку перед удалением.')
+            recipes = await self.execute_query("SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear_id,))
+            if recipes:
+                await self.delete_recipe_bundle(int(recipes[0]['id']), delete_scroll=delete_scroll)
+            if delete_gear:
+                await self.delete_gear(gear_id)
+            await self.execute_query("UPDATE gear_drafts SET status='cancelled',revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE draft_id=?", (draft_id,))
+            return self._decode_draft(await self._context_draft(draft_id, owner_user_id, chat_id))
+
+    async def _create_named_draft_resource(self, name: str, emoji: str, resource_type: str, note: str = '') -> int:
+        if await self.execute_query('SELECT 1 FROM resources WHERE LOWER_UNICODE(TRIM(name))=LOWER_UNICODE(?)', (name,)):
+            raise DomainError(f'Ресурс «{name}» уже существует. Выберите его из списка, чтобы сохранить связи.')
+        return await self.add_resource(name, emoji, resource_type, note)
+
+    async def _replace_draft_drops(self, item_type: str, item_id: int, mob_ids: list[int]) -> None:
+        await self.execute_query('DELETE FROM drops WHERE item_type=? AND item_id=?', (item_type, item_id))
+        for mob_id in mob_ids:
+            await self.add_drop(mob_id, item_type, item_id)
+
+    async def save_gear_draft(
+        self, draft_id: str, *, expected_revision: int, owner_user_id: int, chat_id: int, message_id: int,
+    ) -> GearSaveResult:
+        async with self.transaction():
+            row = await self._context_draft(draft_id, owner_user_id, chat_id, message_id)
+            draft = self._decode_draft(row)
+            if draft['status'] == 'saved' and draft['saved_result'] is not None:
+                return draft['saved_result']
+            self._check_draft_revision(row, expected_revision)
+            value = validate_draft_payload(draft['payload'], complete=True)
+            await self._check_draft_references(row, value)
+            gear_id = value.get('gear_id')
+            current: GearDraftPayload | None = None
+            if gear_id != row['target_gear_id']:
+                raise DraftConflictError('Изменился предмет черновика.')
+            if gear_id is not None:
+                current = await self.get_gear_draft_payload(gear_id)
+                if current is None or self._payload_fingerprint(current) != row['base_fingerprint']:
+                    raise DraftConflictError('Предмет изменён другим редактором. Создайте новый черновик, чтобы не потерять изменения.')
+            for mob_id in set(value['gear_mob_ids'] + value['scroll_mob_ids']):
+                if not await self.execute_query('SELECT 1 FROM mobs WHERE id=?', (mob_id,)):
+                    raise DomainError(f'Источник {mob_id} уже удалён. Обновите список источников.')
+            identity_changed = current is None or (
+                value['name'].casefold(), value['rarity'], value['slot'], value['level']
+            ) != (current['name'].strip().casefold(), current['rarity'], current['slot'], current['level'])
+            if identity_changed and await self.execute_query(
+                'SELECT 1 FROM gear WHERE LOWER_UNICODE(TRIM(name))=LOWER_UNICODE(?) AND rarity=? AND slot=? AND level=? AND id IS NOT ?',
+                (value['name'], value['rarity'], value['slot'], value['level'], gear_id),
+            ):
+                raise DomainError('Такое снаряжение этого уровня уже существует. Откройте его редактирование.')
+            if gear_id is None:
+                gear_id = await self.add_gear(value['name'], value['rarity'], value['slot'], value['emoji'], value['level'], value['classes'], value['note'])
+            else:
+                await self.update_gear(gear_id, value['name'], value['rarity'], value['slot'], value['emoji'], value['level'], value['classes'], value['note'])
+            rows = await self.execute_query("SELECT id FROM recipes WHERE result_type='gear' AND result_id=?", (gear_id,))
+            recipe_id = int(rows[0]['id']) if rows else None
+            scroll_id: int | None = None
+            if value['craftable']:
+                if recipe_id is None:
+                    recipe_id = await self.create_recipe('gear', gear_id, value['quantity'])
+                else:
+                    await self.execute_query('UPDATE recipes SET quantity=? WHERE id=?', (value['quantity'], recipe_id))
+                materials: list[tuple[int, int]] = []
+                for material in value['materials']:
+                    resource_id = material.get('resource_id')
+                    if resource_id is None:
+                        resource_id = await self._create_named_draft_resource(material['name'], material.get('emoji', ''), 'craft')
+                    resource = await self.get_resource_by_id(resource_id)
+                    if resource is None or resource['type'] == 'scroll_recipe':
+                        raise DomainError('Материал удалён или является изучаемым свитком.')
+                    materials.append((resource_id, material['quantity']))
+                if len({item[0] for item in materials}) != len(materials):
+                    raise DomainError('В рецепте повторяется материал.')
+                await self.execute_query('DELETE FROM recipe_ingredients WHERE recipe_id=?', (recipe_id,))
+                for resource_id, quantity in materials:
+                    await self.add_ingredient(recipe_id, resource_id, quantity)
+                scroll = value['learning_scroll']
+                if scroll is not None:
+                    scroll_id = scroll.get('resource_id')
+                    if scroll_id is None:
+                        scroll_name = scroll.get('name', f"Рецепт ({value['name']})")
+                        # The automatic label must obey the same limits as explicitly entered text.
+                        validate_draft_payload({'learning_scroll': {'name': scroll_name}})
+                        scroll_id = await self._create_named_draft_resource(scroll_name, scroll.get('emoji', '📜'), 'scroll_recipe', scroll.get('note', ''))
+                await self.set_recipe_learning_scroll(recipe_id, scroll_id)
+                if scroll_id is not None:
+                    await self._replace_draft_drops('resource', scroll_id, value['scroll_mob_ids'])
+            elif recipe_id is not None:
+                raise DomainError('Рецепт уже существует. Для его удаления используйте явное удаление рецепта.')
+            await self._replace_draft_drops('gear', gear_id, value['gear_mob_ids'])
+            result = GearSaveResult(draft_id=draft_id, gear_id=gear_id, recipe_id=recipe_id, scroll_resource_id=scroll_id)
+            await self.execute_query(
+                "UPDATE gear_drafts SET status='saved',saved_result_json=?,revision=revision+1,updated_at=CURRENT_TIMESTAMP WHERE draft_id=?",
+                (json.dumps(result, ensure_ascii=False), draft_id),
+            )
+            return result
 
     # ========== КАРТЫ ==========
     async def get_cards_page(self, offset: int, limit: int) -> list[DbRow]:
@@ -1326,16 +1951,20 @@ class Database:
             await self._delete_recipes_by_result('card', card_id)
             await self.execute_query("DELETE FROM cards WHERE id=?", (card_id,))
 
-    async def get_card_drop_mobs(self, card_id: int) -> list[DbRow]:
-        return await self.execute_query(
-            """SELECT m.id, m.name, m.emoji, l.name as location_name, l.emoji as location_emoji
+    async def get_card_drop_mobs(self, card_id: int) -> list[ResourceDropMobRow]:
+        rows = await self.execute_query(
+            """SELECT m.id, m.name, m.emoji, l.id as location_id, l.name as location_name, l.emoji as location_emoji
                FROM drops d
                JOIN mobs m ON d.mob_id = m.id
                JOIN locations l ON m.location_id = l.id
                WHERE d.item_type='card' AND d.item_id=?
                ORDER BY m.id""",
-            (card_id,)
+            (card_id,),
         )
+        return [ResourceDropMobRow(
+            **_item_row(row), location_id=int(row['location_id']),
+            location_name=str(row['location_name']), location_emoji=str(row['location_emoji']),
+        ) for row in rows]
 
     async def get_prev_next_card_by_slot(self, card_id: int) -> NavigationIds:
         case_expression = self._slot_order_case()
@@ -1446,6 +2075,7 @@ class Database:
                 if item_type == 'resource':
                     check = await self.execute_query("SELECT 1 FROM resources WHERE id = ?", (item_id,))
                 elif item_type == 'gear':
+                    item_id = await self.resolve_gear_id(item_id)
                     check = await self.execute_query("SELECT 1 FROM gear WHERE id = ?", (item_id,))
                 elif item_type == 'card':
                     check = await self.execute_query("SELECT 1 FROM cards WHERE id = ?", (item_id,))

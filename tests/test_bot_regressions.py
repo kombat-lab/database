@@ -15,6 +15,7 @@ from database import Database
 from messaging import replace_rich_card
 from search_rendering import build_search_content
 from telegram_text import split_formatted_text, utf16_length
+from ui.rich import CardView
 
 
 class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
@@ -72,31 +73,28 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.state.get_data(), {})
 
     async def test_successful_deep_links_record_view_for_each_catalog_type(self):
-        rich = types.InputRichMessage(html="<b>Found</b>")
+        card = CardView("<b>Found</b>", "Found")
         names = {
-            "mob": ("format_mob_card", "format_mob_card_plain", "log_view_mob"),
-            "resource": ("format_resource_card_rich", "format_resource_card", "log_view_resource"),
-            "gear": ("format_gear_card_rich", "format_gear_card_plain", "log_view_gear"),
-            "card": ("format_card_card_rich", "format_card_card", "log_view_card"),
+            "mob": ("build_mob_card", "log_view_mob"),
+            "resource": ("build_resource_card", "log_view_resource"),
+            "gear": ("build_gear_card", "log_view_gear"),
+            "card": ("build_card_card", "log_view_card"),
         }
         fetch_names = {
             "mob": "get_mob_full_card", "resource": "get_resource_card",
             "gear": "get_gear_card", "card": "get_card_by_id",
         }
         target = {"id": 7, "type": "craft", "location_id": 1, "rarity": "epic", "slot": "шлем"}
-        for kind, (rich_name, plain_name, log_name) in names.items():
-            with self.subTest(kind=kind), patch.object(app.db, "get_prev_next_gear", new=AsyncMock(return_value={"prev_id": None, "next_id": None})), patch.object(app.db, fetch_names[kind], new=AsyncMock(return_value=target)), patch.object(app, rich_name, new=AsyncMock(return_value=rich)), patch.object(
-                app, plain_name, new=AsyncMock(return_value="Found"),
-            ), patch.object(app, log_name, new=AsyncMock()) as log, patch.object(
+        for kind, (builder_name, log_name) in names.items():
+            with self.subTest(kind=kind), patch.object(app.db, "get_prev_next_gear", new=AsyncMock(return_value={"prev_id": None, "next_id": None})), patch.object(app.db, fetch_names[kind], new=AsyncMock(return_value=target)), patch.object(app, builder_name, new=AsyncMock(return_value=card)) as builder, patch.object(app, log_name, new=AsyncMock()) as log, patch.object(
                 app, "upsert_rich_card", new=AsyncMock(return_value=self.message),
             ):
                 await self.route_message(f"/start {kind}_7")
             log.assert_awaited_once_with(101, 7)
+            builder.assert_awaited_once()
 
     async def test_resource_deep_link_keeps_return_gear_slot_and_page(self):
-        with patch.object(app.db, "get_resource_card", new=AsyncMock(return_value={"id": 7, "type": "craft"})), patch.object(app, "format_resource_card_rich", new=AsyncMock(return_value=types.InputRichMessage(html="Found"))), patch.object(
-            app, "format_resource_card", new=AsyncMock(return_value="Found"),
-        ), patch.object(app, "log_view_resource", new=AsyncMock()), patch.object(
+        with patch.object(app.db, "get_resource_card", new=AsyncMock(return_value={"id": 7, "type": "craft"})), patch.object(app, "build_resource_card", new=AsyncMock(return_value=CardView("Found", "Found"))), patch.object(app, "log_view_resource", new=AsyncMock()), patch.object(
             app, "upsert_rich_card", new=AsyncMock(return_value=self.message),
         ) as render:
             await self.route_message("/start resource_7-r-gear_21_epic_4_3")
@@ -116,7 +114,7 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             await app.render_gear_card(self.callback("view_gear_21_epic_0_3"), 21, "epic", 3, 0)
         kwargs = render.await_args.kwargs
         self.assertIn("resource_7-r-gear_21_epic_1_3", kwargs["plain_text"])
-        self.assertIn("resource_7-r-gear_21_epic_1_3", kwargs["rich_message"].html)
+        self.assertIn('data="entity:resource:7:gear:21"', kwargs["rich_message"].html)
         self.assertEqual(kwargs["reply_markup"].inline_keyboard[-1][0].callback_data, "page_gear_epic_1_3")
 
     async def test_owner_actions_use_user_id_after_rename_or_without_username(self):
@@ -125,6 +123,8 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         try:
             gear_id = await isolated.add_gear("Gear", "epic", "шлем", "🛡")
             recipe_id = await isolated.create_recipe("gear", gear_id)
+            scroll_id = await isolated.add_resource("Learning scroll", "📜", "scroll_recipe")
+            await isolated.set_recipe_learning_scroll(recipe_id, scroll_id)
             claim = f"recipe_claim_{recipe_id}_{gear_id}_epic_0_1"
             relinquish = f"recipe_relinquish_{recipe_id}_{gear_id}_epic_0_1"
             with patch.object(app, "db", isolated), patch.object(app, "render_gear_card", new=AsyncMock(return_value=True)):

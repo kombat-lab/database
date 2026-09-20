@@ -43,3 +43,5 @@ class EntityConfig(TypedDict):
     field_formatters: NotRequired[Mapping[str, Callable[[object], str]]]
     extra_edit_buttons: NotRequired[ExtraEditButtons]
     back_to_list_func: NotRequired[ReturnToEntityList]
+    # A nonempty explanation blocks deletion before asking for confirmation.
+    delete_impact_func: NotRequired[Callable[[int], Awaitable[str]]]

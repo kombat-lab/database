@@ -370,7 +370,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         misleading_id = await self.db.add_resource("Свиток ткани", "🧵", "craft")
         recipe_id = await self.db.create_recipe("gear", gear_id)
-        await self.db.add_ingredient(recipe_id, scroll_id, 1)
+        await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
         await self.db.add_ingredient(recipe_id, misleading_id, 2)
         await self.db.add_drop(scroll_mob_id, "resource", scroll_id)
         await self.db.add_drop(gear_mob_id, "gear", gear_id)
@@ -382,7 +382,6 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {item["name"]: item["type"] for item in gear["ingredients"]},
             {
-                "Рецепт (Тлеющий шлем)": "scroll_recipe",
                 "Свиток ткани": "craft",
             },
         )
@@ -406,7 +405,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gear["ingredients"], [])
         self.assertEqual(gear["scroll_mobs"], [])
 
-    async def test_resource_delete_cleans_related_rows_atomically(self):
+    async def test_resource_delete_requires_explicit_dependency_cleanup(self):
         await self.db.execute_query(
             "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("location", "📍")
         )
@@ -422,6 +421,12 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.db.add_recipe_owner(recipe_id, "tester")
         await self.db.add_drop(1, "resource", result_id)
 
+        with self.assertRaises(ValueError):
+            await self.db.delete_resource(result_id)
+        self.assertIsNotNone(await self.db.get_recipe_details(recipe_id))
+        self.assertIsNotNone(await self.db.get_resource_by_id(result_id))
+        await self.db.delete_recipe(recipe_id)
+        await self.db.remove_drop(1, "resource", result_id)
         await self.db.delete_resource(result_id)
 
         self.assertEqual(await self.db.execute_query(
