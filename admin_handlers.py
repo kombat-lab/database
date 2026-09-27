@@ -30,6 +30,7 @@ from database import db
 from admin_mobs import mob_router
 from admin_recipes import recipe_router
 from admin_gear import gear_router, start_gear_editor
+from admin_item_sources import register_item_sources_handlers, start_item_sources
 from admin_sessions import (
     AdminScreenMiddleware, present_admin_text, register_protected_callbacks, validate_admin_input,
 )
@@ -45,6 +46,7 @@ from game_constants import (
 )
 from stats_handlers import stats_router
 from utils import is_valid_emoji
+from recipe_domain import DomainError
 
 logger = logging.getLogger(__name__)
 
@@ -391,19 +393,65 @@ async def resource_add_note(callback: types.CallbackQuery, state: FSMContext) ->
     await callback.answer()
 
 
-async def save_new_resource(target: types.Message, state: FSMContext, note: str) -> None:
+async def save_new_resource(target: types.Message | types.CallbackQuery, state: FSMContext, note: str) -> None:
+    await prepare_catalog_sources(target, state, 'resource', note)
+
+
+async def prepare_catalog_sources(target: types.Message | types.CallbackQuery, state: FSMContext, kind: str, note: str) -> None:
     if len(note) > MAX_NOTE_LENGTH:
-        await target.answer(f'Примечание слишком длинное. Максимум {MAX_NOTE_LENGTH} символов.')
+        text = f'Примечание слишком длинное. Максимум {MAX_NOTE_LENGTH} символов.'
+        if isinstance(target, types.CallbackQuery):
+            await target.answer(text, show_alert=True)
+        else:
+            await target.answer(text)
         return
+    if kind not in ('resource', 'card'):
+        raise DomainError('Неизвестный вид предмета.')
+    await state.update_data(catalog_creation_note=note)
+    await start_item_sources(target, state, 'resource' if kind == 'resource' else 'card')
+
+
+async def return_to_catalog_note(target: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+    kind = (await state.get_data()).get('catalog_creation_kind')
+    if kind not in ('resource', 'card'):
+        raise DomainError('Создание предмета устарело.')
+    await show_catalog_creation_step(target, state, str(kind), 'note')
+    if isinstance(target, types.CallbackQuery):
+        await target.answer()
+
+
+async def complete_catalog_creation(target: types.Message | types.CallbackQuery, state: FSMContext, mob_ids: list[int]) -> None:
     data = await state.get_data()
+    kind = data.get('catalog_creation_kind')
+    note = data.get('catalog_creation_note')
+    if kind not in ('resource', 'card') or not isinstance(note, str):
+        raise DomainError('Создание предмета устарело. Откройте админку заново.')
     try:
-        await db.add_resource(data['res_name'], data['res_emoji'], data['res_type'], note)
-    except Exception as error:
-        logger.exception("Не удалось добавить ресурс")
-        await target.answer(f"❌ Ошибка: {error}")
+        if kind == 'resource':
+            entity_id = await db.create_resource_with_sources(data['res_name'], data['res_emoji'], data['res_type'], note, mob_ids=mob_ids)
+        else:
+            entity_id = await db.create_card_with_sources(
+                name=data['card_name'], emoji=data['card_emoji'], slot=data['card_slot'],
+                bonus1=data.get('card_bonus1', ''), bonus2=data.get('card_bonus2', ''),
+                bonus3=data.get('card_bonus3', ''), bonus4=data.get('card_bonus4', ''),
+                note=note, mob_ids=mob_ids,
+            )
+    except DomainError:
+        raise
+    except Exception:
+        logger.exception('Не удалось добавить предмет с источниками')
+        if isinstance(target, types.CallbackQuery):
+            await target.answer('Не удалось сохранить. Выбор сохранён, повторите попытку.', show_alert=True)
+        else:
+            await target.answer('Не удалось сохранить. Выбор сохранён, повторите попытку.')
         return
+    # Commit succeeds before any Telegram delivery. Retrying an old button must
+    # never insert a second item, even when showing the resulting card fails.
     await state.clear()
-    await target.answer("✅ Ресурс добавлен.\n🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+    entity = await db.get_resource_by_id(entity_id) if kind == 'resource' else await db.get_card_by_id(entity_id)
+    if entity is None:
+        raise DomainError('Предмет сохранён, но уже удалён другим администратором.')
+    await show_edit_menu(target, state, entity_id, ENTITY_CONFIGS[kind], entity)
 
 
 @admin_router.message(ResourceAddStates.note, F.text, ~F.text.startswith('/'))
@@ -564,28 +612,8 @@ async def card_add_note(message: types.Message, state: FSMContext) -> None:
     await store_card_bonus(message, state, 'bonus4', 'note')
 
 
-async def save_new_card(target: types.Message, state: FSMContext, note: str) -> None:
-    if len(note) > MAX_NOTE_LENGTH:
-        await target.answer(f'Примечание слишком длинное. Максимум {MAX_NOTE_LENGTH} символов.')
-        return
-    data = await state.get_data()
-    try:
-        await db.add_card(
-            name=data['card_name'],
-            emoji=data['card_emoji'],
-            slot=data['card_slot'],
-            bonus1=data.get('card_bonus1', ''),
-            bonus2=data.get('card_bonus2', ''),
-            bonus3=data.get('card_bonus3', ''),
-            bonus4=data.get('card_bonus4', ''),
-            note=note,
-        )
-    except Exception as error:
-        logger.exception("Не удалось добавить карту")
-        await target.answer(f"❌ Ошибка: {error}")
-        return
-    await state.clear()
-    await target.answer("✅ Карта добавлена.\n🔧 Админ-панель", reply_markup=get_admin_main_keyboard())
+async def save_new_card(target: types.Message | types.CallbackQuery, state: FSMContext, note: str) -> None:
+    await prepare_catalog_sources(target, state, 'card', note)
 
 
 @admin_router.message(CardAddStates.note, F.text, ~F.text.startswith('/'))
@@ -603,9 +631,9 @@ async def skip_new_entity_note(callback: types.CallbackQuery, state: FSMContext)
     current_state = await state.get_state()
     await callback.answer()
     if current_state == ResourceAddStates.note.state:
-        await save_new_resource(get_callback_message(callback), state, "")
+        await save_new_resource(callback, state, "")
     elif current_state == CardAddStates.note.state:
-        await save_new_card(get_callback_message(callback), state, "")
+        await save_new_card(callback, state, "")
 
 # ============================================================
 
@@ -619,6 +647,15 @@ async def skip_new_entity_note(callback: types.CallbackQuery, state: FSMContext)
 # ============================================================
 
 register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
+register_item_sources_handlers(admin_router, lambda: ENTITY_CONFIGS, complete_catalog_creation, return_to_catalog_note)
+
+
+def item_source_buttons(entity_id: int) -> list[list[InlineKeyboardButton]]:
+    return [[InlineKeyboardButton(text='👾 С кого падает', callback_data='item_sources_open')]]
+
+
+ENTITY_CONFIGS['resource']['extra_edit_buttons'] = item_source_buttons
+ENTITY_CONFIGS['card']['extra_edit_buttons'] = item_source_buttons
 
 
 async def resource_delete_impact(resource_id: int) -> str:
@@ -629,7 +666,7 @@ async def resource_delete_impact(resource_id: int) -> str:
     for ids, label in labels:
         if ids:
             lines.append(f"{label}: {', '.join(map(str, ids))}.")
-    if lines and dependencies['drop_mob_ids']:
+    if dependencies['drop_mob_ids']:
         lines.append(f"Источники дропа: {len(dependencies['drop_mob_ids'])} мобов.")
     return '\n'.join(lines)
 

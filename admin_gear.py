@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from admin_drop_picker import build_drop_picker
 from admin_utils import get_admin_main_keyboard
 from database import db
 from game_constants import (
@@ -28,6 +29,7 @@ from telegram_text import split_html
 gear_router = Router()
 PAGE_SIZE = 8
 Section = Literal['home', 'profile', 'materials', 'learning', 'sources', 'preview']
+DropSourceKind = Literal['gear_mob', 'scroll_mob']
 
 
 class GearEditorStates(StatesGroup):
@@ -177,7 +179,7 @@ async def show_section(target: types.Message, state: FSMContext, draft: GearDraf
             'Черновик сохранён. Каталог изменится после «Сохранить».'
         )
         for key, label in [('profile', '⚔️ Профиль предмета'), ('materials', '🧱 Материалы крафта'),
-                           ('learning', '📜 Изучение'), ('sources', '👾 Источники')]:
+                           ('learning', '📜 Изучение'), ('sources', '👾 С кого падает')]:
             rows += button(draft, label, f'section:{key}')
         if section == 'preview':
             try:
@@ -218,26 +220,57 @@ async def start_gear_editor(
         await target.answer()
 
 
+def source_callback(draft: GearDraft, kind: DropSourceKind, action: str) -> str:
+    command, _, value = action.partition(':')
+    if command == 'toggle':
+        mapped = f'choose:{kind}:{value}'
+    elif command == 'page':
+        mapped = f'pick:{kind}:{value}'
+    elif command == 'search':
+        mapped = f'search:{kind}'
+    elif command == 'clear':
+        mapped = f'clearsearch:{kind}'
+    elif command == 'selected':
+        mapped = f'selected_sources:{kind}'
+    else:
+        raise ValueError('Неизвестное действие выбора источников.')
+    return draft_callback(draft, mapped)
+
+
+async def source_picker(
+    target: types.Message, state: FSMContext, draft: GearDraft, kind: DropSourceKind, page: int,
+) -> None:
+    data = await state.get_data()
+    selected = draft['payload'].get('gear_mob_ids', []) if kind == 'gear_mob' else draft['payload'].get('scroll_mob_ids', [])
+    extra_rows = button(draft, 'Снять все отметки', f'clear_sources:{kind}') if selected else []
+    extra_rows += button(draft, '🔙 Вернуться', 'section:sources')
+    view = await build_drop_picker(
+        db, selected, query=str(data.get(f'gear_draft_{kind}_query') or ''), page=page,
+        selected_only=bool(data.get(f'gear_draft_{kind}_selected_only', False)),
+        callback=lambda action: source_callback(draft, kind, action),
+        extra_rows=extra_rows,
+    )
+    await state.update_data({'gear_draft_picker': kind, f'gear_draft_{kind}_page': view.page})
+    label = 'Готовый предмет' if kind == 'gear_mob' else 'Изучаемый свиток'
+    await render(target, state, draft, f'<b>{label}</b>\n\n{view.text}',
+                 view.keyboard.inline_keyboard, section='sources')
+
+
 async def picker(target: types.Message, state: FSMContext, draft: GearDraft, kind: str, page: int) -> None:
+    if kind in ('gear_mob', 'scroll_mob'):
+        await source_picker(target, state, draft, 'gear_mob' if kind == 'gear_mob' else 'scroll_mob', page)
+        return
+    if kind not in ('material', 'scroll'):
+        raise DomainError('Неизвестный список.')
     data = await state.get_data()
     query = str(data.get('gear_draft_query') or '').casefold()
-    if kind in ('material', 'scroll'):
-        candidates = await db.execute_query('SELECT id, name, emoji, type FROM resources ORDER BY LOWER_UNICODE(name), id')
-        candidates = [item for item in candidates if (item['type'] == 'scroll_recipe') == (kind == 'scroll')]
-    else:
-        candidates = await db.execute_query(
-            'SELECT m.id, m.name, m.emoji, l.name AS location_name FROM mobs m '
-            'LEFT JOIN locations l ON l.id=m.location_id ORDER BY LOWER_UNICODE(m.name), m.id'
-        )
+    candidates = await db.execute_query('SELECT id, name, emoji, type FROM resources ORDER BY LOWER_UNICODE(name), id')
+    candidates = [item for item in candidates if (item['type'] == 'scroll_recipe') == (kind == 'scroll')]
     candidates = [item for item in candidates if query in str(item['name']).casefold()]
     page = min(max(page, 0), max(0, (len(candidates) - 1) // PAGE_SIZE))
     rows: list[list[InlineKeyboardButton]] = []
-    p = draft['payload']
-    selected = p.get('gear_mob_ids', []) if kind == 'gear_mob' else p.get('scroll_mob_ids', [])
     for item in candidates[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
-        mark = ('☑️ ' if item['id'] in selected else '⬜ ') if kind.endswith('mob') else ''
-        location = f" · {item['location_name']}" if item.get('location_name') else ''
-        rows += button(draft, f"{mark}{item['emoji']} {item['name']}{location}", f'choose:{kind}:{item["id"]}')
+        rows += button(draft, f"{item['emoji']} {item['name']}", f'choose:{kind}:{item["id"]}')
     if page > 0:
         rows += button(draft, '◀️ Назад', f'pick:{kind}:{page - 1}')
     if (page + 1) * PAGE_SIZE < len(candidates):
@@ -266,11 +299,15 @@ async def prompt(target: types.Message, state: FSMContext, draft: GearDraft, fie
     }
     text = labels.get(field, 'Введите количество материала (целое число от 1).')
     if field.startswith('search:'):
-        text = 'Введите часть названия для поиска. «-» покажет все записи.'
+        text = ('Введите часть названия моба или локации. «-» очистит поиск.'
+                if field.split(':')[1] in ('gear_mob', 'scroll_mob')
+                else 'Введите часть названия для поиска. «-» покажет все записи.')
     section = 'materials' if field.startswith(('new_material', 'material:')) or field == 'quantity' else 'profile'
     if field.startswith('search:'):
         kind = field.split(':')[1]
-        back = f'pick:{kind}:0'
+        data = await state.get_data()
+        page = int(data.get(f'gear_draft_{kind}_page', 0)) if kind in ('gear_mob', 'scroll_mob') else 0
+        back = f'pick:{kind}:{page}'
     else:
         back = f'section:{section}'
     await render(target, state, draft, text, button(draft, '🔙 Назад', back), section=section, input_action=field)
@@ -412,6 +449,11 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
             raise DomainError('Материал уже удалён.')
         del materials[index]
         payload['materials'] = materials
+    elif key == 'clear_sources' and len(parts) == 2:
+        kind = parts[1]
+        if kind not in ('gear_mob', 'scroll_mob'):
+            raise DomainError('Неизвестный список источников.')
+        payload['gear_mob_ids' if kind == 'gear_mob' else 'scroll_mob_ids'] = []
     elif key == 'choose' and len(parts) == 3:
         kind, item_id = parts[1], int(parts[2])
         if kind == 'scroll':
@@ -433,11 +475,15 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
             await callback.answer()
             return
         elif kind in ('gear_mob', 'scroll_mob'):
+            if kind == 'scroll_mob' and draft['payload'].get('learning_scroll') is None:
+                raise DomainError('Сначала выберите изучаемый свиток.')
             field_name = 'gear_mob_ids' if kind == 'gear_mob' else 'scroll_mob_ids'
             selected_ids = list(draft['payload'].get('gear_mob_ids', []) if kind == 'gear_mob' else draft['payload'].get('scroll_mob_ids', []))
             if item_id in selected_ids:
                 selected_ids.remove(item_id)
             else:
+                if not await db.get_drop_source_mobs(mob_ids=[item_id], limit=1):
+                    raise DomainError('Моб удалён. Обновите список источников.')
                 selected_ids.append(item_id)
             payload[field_name] = selected_ids
         else:
@@ -459,12 +505,22 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
     elif key == 'search':
         await prompt(target, state, draft, action)
     elif key in ('pick', 'clearsearch'):
+        kind = parts[1]
         if key == 'clearsearch':
-            await state.update_data(gear_draft_query='')
-        await picker(target, state, draft, parts[1], int(parts[2]) if len(parts) == 3 else 0)
-    elif key == 'choose' and parts[1].endswith('mob'):
+            query_key = f'gear_draft_{kind}_query' if kind in ('gear_mob', 'scroll_mob') else 'gear_draft_query'
+            await state.update_data({query_key: ''})
+        await picker(target, state, draft, kind, int(parts[2]) if len(parts) == 3 else 0)
+    elif key == 'selected_sources' and len(parts) == 2:
+        kind = parts[1]
+        if kind not in ('gear_mob', 'scroll_mob'):
+            raise DomainError('Неизвестный список источников.')
         data = await state.get_data()
-        await picker(target, state, draft, parts[1], int(data.get('gear_draft_page', 0)))
+        selected_key = f'gear_draft_{kind}_selected_only'
+        await state.update_data({selected_key: not bool(data.get(selected_key, False))})
+        await picker(target, state, draft, kind, 0)
+    elif key in ('choose', 'clear_sources') and parts[1] in ('gear_mob', 'scroll_mob'):
+        data = await state.get_data()
+        await picker(target, state, draft, parts[1], int(data.get(f'gear_draft_{parts[1]}_page', 0)))
     elif key == 'material_list':
         await material_list(target, state, draft, int(parts[1]))
     elif key == 'cancel_prompt':
@@ -509,9 +565,11 @@ async def gear_editor_input(message: types.Message, state: FSMContext) -> None:
         if field.startswith('search:'):
             if len(value) > 256:
                 raise DomainError('Поисковый запрос должен быть не длиннее 256 символов.')
-            await state.update_data(gear_draft_query='' if value == '-' else value)
+            kind = field.split(':')[1]
+            query_key = f'gear_draft_{kind}_query' if kind in ('gear_mob', 'scroll_mob') else 'gear_draft_query'
+            await state.update_data({query_key: '' if value == '-' else value})
             draft = await revision(draft)
-            await picker(message, state, draft, field.split(':')[1], 0)
+            await picker(message, state, draft, kind, 0)
             return
         if field == 'new_material_name':
             if not value or len(value) > MAX_RESOURCE_NAME_LENGTH:

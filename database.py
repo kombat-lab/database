@@ -30,13 +30,15 @@ from catalog_types import (
     ResourceRecipeRow as ResourceRecipeRow,
     LearningRecipeRow as LearningRecipeRow,
     RecipeDetailsRow as RecipeDetailsRow,
+    DropItemType as DropItemType,
+    MobSourceRow as MobSourceRow,
 )
 from game_constants import (
     GEAR_SLOTS, RARITY_KEYS, RESOURCE_TYPE_KEYS,
     LEGACY_ALCHEMY_CRAFT_LOCATIONS, LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION,
 )
 from recipe_domain import (
-    DomainError, DraftConflictError, GearDraft, GearDraftPayload, GearSaveResult,
+    DomainError, DraftConflictError, GearDraft, GearDraftPayload, GearSaveResult, MAX_SQLITE_ID,
     LearningScrollInput, MaterialInput, ResourceDependencies, positive_integer, validate_draft_payload, validate_craft_location,
 )
 
@@ -908,6 +910,15 @@ class Database:
             "INSERT INTO resources (name, emoji, type, note) VALUES (?, ?, ?, ?)",
             (name, emoji, resource_type, note)
         )
+
+    async def create_resource_with_sources(
+        self, name: str, emoji: str, resource_type: str = 'craft', note: str = '', *, mob_ids: list[int],
+    ) -> int:
+        """Publish a resource and its reviewed drop sources as one operation."""
+        async with self.transaction():
+            resource_id = await self.add_resource(name, emoji, resource_type, note)
+            await self.set_item_drop_sources('resource', resource_id, mob_ids)
+            return resource_id
 
     async def update_resource(self, resource_id: int, name: str | None = None, emoji: str | None = None, resource_type: str | None = None, note: str | None = None) -> None:
         async with self.transaction():
@@ -1816,10 +1827,8 @@ class Database:
             raise DomainError(f'Ресурс «{name}» уже существует. Выберите его из списка, чтобы сохранить связи.')
         return await self.add_resource(name, emoji, resource_type, note)
 
-    async def _replace_draft_drops(self, item_type: str, item_id: int, mob_ids: list[int]) -> None:
-        await self.execute_query('DELETE FROM drops WHERE item_type=? AND item_id=?', (item_type, item_id))
-        for mob_id in mob_ids:
-            await self.add_drop(mob_id, item_type, item_id)
+    async def _replace_draft_drops(self, item_type: DropItemType, item_id: int, mob_ids: list[int]) -> None:
+        await self.set_item_drop_sources(item_type, item_id, mob_ids)
 
     async def save_gear_draft(
         self, draft_id: str, *, expected_revision: int, owner_user_id: int, chat_id: int, message_id: int,
@@ -1936,6 +1945,17 @@ class Database:
             (name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
         )
 
+    async def create_card_with_sources(
+        self, name: str, emoji: str, slot: str,
+        bonus1: str = '', bonus2: str = '', bonus3: str = '', bonus4: str = '', note: str = '',
+        *, mob_ids: list[int],
+    ) -> int:
+        """Publish a card and its reviewed drop sources as one operation."""
+        async with self.transaction():
+            card_id = await self.add_card(name, emoji, slot, bonus1, bonus2, bonus3, bonus4, note)
+            await self.set_item_drop_sources('card', card_id, mob_ids)
+            return card_id
+
     async def update_card(self, card_id: int, **kwargs: str) -> None:
         allowed = {'name', 'emoji', 'slot', 'bonus1', 'bonus2', 'bonus3', 'bonus4', 'note'}
         updates = [(field, value) for field, value in kwargs.items() if field in allowed]
@@ -1987,6 +2007,91 @@ class Database:
         )
 
     # ========== ДРОПЫ ==========
+    @staticmethod
+    def _validated_drop_mob_ids(mob_ids: object) -> list[int]:
+        if not isinstance(mob_ids, list) or len(mob_ids) > 1000:
+            raise DomainError('Источники дропа: требуется список не более 1000 мобов.')
+        result = [positive_integer(mob_id, 'Источник дропа') for mob_id in mob_ids]
+        if len(result) != len(set(result)):
+            raise DomainError('Источники дропа: один моб указан несколько раз.')
+        return sorted(result)
+
+    async def get_drop_source_mobs(
+        self, query: str = '', offset: int = 0, limit: int = 9, *, mob_ids: list[int] | None = None,
+    ) -> list[MobSourceRow]:
+        """Search mob and location names literally, with deterministic bounded pages."""
+        if not isinstance(query, str):
+            raise DomainError('Поисковый запрос должен быть текстом.')
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= MAX_SQLITE_ID:
+            raise DomainError('Некорректная страница источников дропа.')
+        limit = min(positive_integer(limit, 'Размер страницы'), 100)
+        source_ids = None if mob_ids is None else self._validated_drop_mob_ids(mob_ids)
+        if source_ids == []:
+            return []
+        conditions = ['(INSTR(LOWER_UNICODE(m.name), LOWER_UNICODE(?)) > 0 '
+                      'OR INSTR(LOWER_UNICODE(l.name), LOWER_UNICODE(?)) > 0)']
+        params: SqlParams = (query, query)
+        if source_ids is not None:
+            placeholders = ','.join('?' for _ in source_ids)
+            conditions.append(f'm.id IN ({placeholders})')
+            params += tuple(source_ids)
+        rows = await self.execute_query(
+            'SELECT m.id,m.name,m.emoji,m.location_id,l.name AS location_name,l.emoji AS location_emoji '
+            'FROM mobs m JOIN locations l ON l.id=m.location_id '
+            f'WHERE {" AND ".join(conditions)} '
+            'ORDER BY LOWER_UNICODE(l.name),LOWER_UNICODE(m.name),m.id LIMIT ? OFFSET ?',
+            params + (limit, offset),
+        )
+        return [MobSourceRow(
+            **_item_row(row), location_id=int(row['location_id']),
+            location_name=str(row['location_name']), location_emoji=str(row['location_emoji']),
+        ) for row in rows]
+
+    async def _resolve_drop_item(self, item_type: DropItemType, item_id: int) -> int:
+        tables = {'resource': 'resources', 'gear': 'gear', 'card': 'cards'}
+        if item_type not in tables:
+            raise DomainError('Неизвестный тип предмета для дропа.')
+        item_id = positive_integer(item_id, 'Предмет')
+        if item_type == 'gear':
+            item_id = await self.resolve_gear_id(item_id)
+        if not await self.execute_query(f'SELECT 1 FROM {tables[item_type]} WHERE id=?', (item_id,)):
+            raise DomainError('Предмет уже удалён. Откройте актуальный список.')
+        return item_id
+
+    async def get_item_drop_mob_ids(self, item_type: DropItemType, item_id: int) -> list[int]:
+        async with self._connection_guard():
+            item_id = await self._resolve_drop_item(item_type, item_id)
+            rows = await self.execute_query(
+                'SELECT mob_id FROM drops WHERE item_type=? AND item_id=? ORDER BY mob_id', (item_type, item_id),
+            )
+            return [int(row['mob_id']) for row in rows]
+
+    async def set_item_drop_sources(
+        self, item_type: DropItemType, item_id: int, mob_ids: list[int], *,
+        expected_mob_ids: list[int] | None = None,
+    ) -> None:
+        """Atomically replace sources, rejecting a changed baseline before any write."""
+        selected = self._validated_drop_mob_ids(mob_ids)
+        expected = None if expected_mob_ids is None else self._validated_drop_mob_ids(expected_mob_ids)
+        async with self.transaction():
+            item_id = await self._resolve_drop_item(item_type, item_id)
+            current = await self.get_item_drop_mob_ids(item_type, item_id)
+            if expected is not None and current != expected:
+                raise DomainError('Источники дропа изменены другим редактором. Откройте их заново перед сохранением.')
+            if selected:
+                placeholders = ','.join('?' for _ in selected)
+                existing = await self.execute_query(f'SELECT id FROM mobs WHERE id IN ({placeholders})', tuple(selected))
+                if {int(row['id']) for row in existing} != set(selected):
+                    raise DomainError('Один из выбранных мобов уже удалён. Обновите список источников.')
+            for mob_id in set(current) - set(selected):
+                await self.execute_query(
+                    'DELETE FROM drops WHERE mob_id=? AND item_type=? AND item_id=?', (mob_id, item_type, item_id),
+                )
+            for mob_id in set(selected) - set(current):
+                await self.execute_query(
+                    'INSERT INTO drops(mob_id,item_type,item_id) VALUES (?,?,?)', (mob_id, item_type, item_id),
+                )
+
     async def search_drop_items(self, mob_id: int, query: str, limit: int = 20) -> list[DbRow]:
         limit = max(1, min(limit, 50))
         sql = """

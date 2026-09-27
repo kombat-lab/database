@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypedDict
+
+
+DropItemType: TypeAlias = Literal['resource', 'gear', 'card']
 
 
 class ItemRow(TypedDict):
@@ -79,10 +82,14 @@ class MobCardRow(ItemRow):
     card_drops: list[CardDropRow]
 
 
-class ResourceDropMobRow(ItemRow):
+class MobSourceRow(ItemRow):
     location_id: int
     location_name: str
     location_emoji: str
+
+
+class ResourceDropMobRow(MobSourceRow):
+    pass
 
 
 class ResourceUsageRow(TypedDict):

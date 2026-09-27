@@ -270,3 +270,146 @@ class GearEditorTests(unittest.IsolatedAsyncioTestCase):
         await self.route(self.callback(editor.draft_callback(draft,'input:name'),user=stranger))
         self.assertEqual((await self.draft())['revision'],draft['revision'])
         self.assertEqual(await self.state.get_state(),editor.GearEditorStates.editing.state)
+
+    async def add_mob(self, name, location_name):
+        location = await self.db.execute_query('SELECT id FROM locations WHERE name=?', (location_name,))
+        location_id = location[0]['id'] if location else await self.db.execute_insert(
+            'INSERT INTO locations(name,emoji) VALUES (?,?)', (location_name, '🌲'))
+        return await self.db.execute_insert(
+            'INSERT INTO mobs(name,emoji,hp,dust_min,dust_max,exp,location_id) VALUES (?,?,?,?,?,?,?)',
+            (name, '🐺', 10, 1, 2, 3, location_id))
+
+    def source_buttons(self, kind):
+        return [button for row in self.deliver.await_args.kwargs['reply_markup'].inline_keyboard
+                for button in row if f':choose:{kind}:' in (button.callback_data or '')]
+
+    async def click_source(self, kind, mob_id):
+        item = next(button for button in self.source_buttons(kind)
+                    if button.callback_data.endswith(f':{mob_id}'))
+        await self.route(self.callback(item.callback_data))
+
+    async def test_drop_picker_searches_locations_and_keeps_gear_and_scroll_choices_independent(self):
+        resource_id = await self.db.add_resource('Сталь', '🧱', 'craft')
+        forest_ids = [await self.add_mob(f'Волк {index:02}', 'Тёмный лес') for index in range(10)]
+        swamp_ids = [await self.add_mob(f'Жаба {index:02}', 'Болото') for index in range(2)]
+        await self.start({'name': 'Клинок', 'rarity': 'epic', 'slot': 'основная рука', 'emoji': '⚔️',
+                          'craftable': True, 'materials': [{'resource_id': resource_id, 'quantity': 2}],
+                          'learning_scroll': {}})
+        await self.action('section:sources')
+        await self.action('pick:gear_mob:0')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 8)
+        await self.action('search:gear_mob')
+        self.assertIn('локации', self.deliver.await_args.kwargs['text'])
+        await self.text('тЁмный ЛЕС')
+        self.assertTrue(all('Тёмный лес' in button.text for button in self.source_buttons('gear_mob')))
+        await self.click_source('gear_mob', forest_ids[0])
+        self.assertTrue(self.source_buttons('gear_mob')[0].text.startswith('☑️'))
+        await self.action('pick:gear_mob:1')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 2)
+        old_button = self.source_buttons('gear_mob')[-1].callback_data
+        await self.route(self.callback(old_button))
+        await self.route(self.callback(old_button))
+        self.assertEqual((await self.draft())['payload']['gear_mob_ids'], [forest_ids[0], forest_ids[-1]])
+        self.assertEqual((await self.state.get_data())['gear_draft_gear_mob_page'], 1)
+        await self.action('selected_sources:gear_mob')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 2)
+        await self.click_source('gear_mob', forest_ids[0])
+        self.assertEqual(len(self.source_buttons('gear_mob')), 1)
+        await self.action('section:sources')
+        await self.action('pick:scroll_mob:0')
+        self.assertEqual(len(self.source_buttons('scroll_mob')), 8)
+        self.assertTrue(all(button.text.startswith('⬜') for button in self.source_buttons('scroll_mob')))
+        await self.action('search:scroll_mob')
+        await self.text('болото')
+        self.assertEqual(len(self.source_buttons('scroll_mob')), 2)
+        for mob_id in swamp_ids:
+            await self.click_source('scroll_mob', mob_id)
+        await self.action('selected_sources:scroll_mob')
+        self.assertEqual(len(self.source_buttons('scroll_mob')), 2)
+        await self.action('section:sources')
+        await self.action('pick:gear_mob:0')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 1)
+        self.assertIn('Тёмный лес', self.source_buttons('gear_mob')[0].text)
+        self.assertTrue((await self.state.get_data())['gear_draft_gear_mob_selected_only'])
+        await self.action('clearsearch:gear_mob')
+        self.assertEqual((await self.state.get_data())['gear_draft_gear_mob_query'], '')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 1)
+        self.assertEqual(await self.db.execute_query('SELECT * FROM drops'), [])
+        before = await self.draft()
+        await self.action('save')
+        saved = await self.db.get_gear_draft(before['draft_id'], owner_user_id=1, chat_id=1)
+        result = saved['saved_result']
+        drops = await self.db.execute_query('SELECT mob_id,item_type,item_id FROM drops')
+        self.assertEqual({(item['mob_id'], item['item_type'], item['item_id']) for item in drops},
+                         {(forest_ids[-1], 'gear', result['gear_id']),
+                          *( (mob_id, 'resource', result['scroll_resource_id']) for mob_id in swamp_ids )})
+
+    async def test_selected_sources_page_clamps_after_last_item_is_unselected(self):
+        mob_ids = [await self.add_mob(f'Волк {index:02}', 'Лес') for index in range(9)]
+        await self.start({'gear_mob_ids': mob_ids})
+        await self.action('pick:gear_mob:0')
+        await self.action('selected_sources:gear_mob')
+        await self.action('pick:gear_mob:1')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 1)
+        await self.click_source('gear_mob', mob_ids[-1])
+        self.assertEqual((await self.state.get_data())['gear_draft_gear_mob_page'], 0)
+        self.assertEqual(len(self.source_buttons('gear_mob')), 8)
+        self.assertEqual((await self.draft())['payload']['gear_mob_ids'], mob_ids[:-1])
+
+    async def test_material_search_does_not_filter_drop_sources_and_back_keeps_selection(self):
+        resource_id = await self.db.add_resource('Сталь', '🧱', 'craft')
+        mob_id = await self.add_mob('Волк', 'Лес')
+        await self.start({'craftable': True})
+        await self.action('search:material')
+        await self.text('Сталь')
+        await self.action('pick:gear_mob:0')
+        self.assertEqual(len(self.source_buttons('gear_mob')), 1)
+        await self.click_source('gear_mob', mob_id)
+        await self.action('search:gear_mob')
+        back = self.deliver.await_args.kwargs['reply_markup'].inline_keyboard[0][0]
+        await self.route(self.callback(back.callback_data))
+        self.assertTrue(self.source_buttons('gear_mob')[0].text.startswith('☑️'))
+        self.assertEqual((await self.draft())['payload']['gear_mob_ids'], [mob_id])
+        await self.action('pick:material:0')
+        selects = [button.callback_data for row in self.deliver.await_args.kwargs['reply_markup'].inline_keyboard
+                   for button in row if ':choose:material:' in (button.callback_data or '')]
+        self.assertEqual(len(selects), 1)
+        self.assertTrue(selects[0].endswith(f':{resource_id}'))
+
+    async def test_removed_mob_is_rejected_without_changing_draft_or_selection(self):
+        mob_id = await self.add_mob('Волк', 'Лес')
+        await self.start()
+        await self.action('pick:gear_mob:0')
+        button = self.source_buttons('gear_mob')[0]
+        before = await self.draft()
+        await self.db.execute_query('DELETE FROM mobs WHERE id=?', (mob_id,))
+        await self.route(self.callback(button.callback_data))
+        self.assertEqual((await self.draft())['revision'], before['revision'])
+        self.assertEqual((await self.draft())['payload'].get('gear_mob_ids', []), [])
+        self.assertIn('Моб удалён', self.callback_answer.await_args.args[0])
+
+    async def test_deleted_selected_sources_can_be_removed_and_cleared_before_save(self):
+        first_id = await self.add_mob('Первый волк', 'Лес')
+        second_id = await self.add_mob('Второй волк', 'Лес')
+        await self.start({'name': 'Клинок', 'rarity': 'epic', 'slot': 'основная рука', 'emoji': '⚔️'})
+        await self.action('pick:gear_mob:0')
+        await self.click_source('gear_mob', first_id)
+        await self.click_source('gear_mob', second_id)
+        selected_button = next(button for button in self.source_buttons('gear_mob')
+                               if button.callback_data.endswith(f':{first_id}'))
+        await self.db.execute_query('DELETE FROM mobs WHERE id IN (?,?)', (first_id, second_id))
+        await self.route(self.callback(selected_button.callback_data))
+        self.assertEqual((await self.draft())['payload']['gear_mob_ids'], [second_id])
+        self.assertEqual(self.source_buttons('gear_mob'), [])
+        clear_button = next(button for row in self.deliver.await_args.kwargs['reply_markup'].inline_keyboard
+                            for button in row if button.text == 'Снять все отметки')
+        await self.route(self.callback(clear_button.callback_data))
+        cleared = await self.draft()
+        self.assertEqual(cleared['payload']['gear_mob_ids'], [])
+        await self.route(self.callback(clear_button.callback_data))
+        self.assertEqual((await self.draft())['revision'], cleared['revision'])
+        await self.action('save')
+        saved = await self.db.get_gear_draft(cleared['draft_id'], owner_user_id=1, chat_id=1)
+        self.assertEqual(saved['status'], 'saved')
+        self.assertIsNotNone(await self.db.get_gear_by_id(saved['saved_result']['gear_id']))
+        self.assertEqual(await self.db.execute_query('SELECT * FROM drops'), [])

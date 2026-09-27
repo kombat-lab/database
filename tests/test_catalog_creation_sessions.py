@@ -10,10 +10,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import SendMessage
 
 import admin_handlers as admin
+import admin_item_sources as sources
+import admin_utils
+import ui.rich
 from database import Database
 
 
-class CatalogCreationSessionTests(unittest.IsolatedAsyncioTestCase):
+class CatalogCreationFixture:
     async def asyncSetUp(self):
         self.bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
         self.db = Database(":memory:")
@@ -27,8 +30,14 @@ class CatalogCreationSessionTests(unittest.IsolatedAsyncioTestCase):
         self.edit = AsyncMock(side_effect=self.edit_message)
         for mocked in (
             patch.object(admin, "db", self.db), patch.object(admin, "ADMIN_IDS", [101]),
+            patch.object(sources, "db", self.db),
+            patch.dict(admin.ENTITY_CONFIGS, {
+                kind: dict(admin.ENTITY_CONFIGS[kind], get_by_id_func=getattr(self.db, f"get_{kind}_by_id"))
+                for kind in ("resource", "card")
+            }),
             patch.object(types.Message, "answer", self.answer), patch.object(types.Message, "edit_text", self.edit),
             patch.object(types.CallbackQuery, "answer", AsyncMock()),
+            patch.object(ui.rich, "present_rich_card", AsyncMock(side_effect=self.render_rich)),
         ):
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -49,6 +58,9 @@ class CatalogCreationSessionTests(unittest.IsolatedAsyncioTestCase):
     async def edit_message(self, text, **kwargs):
         self.latest = self.latest.model_copy(update={"text": text, "reply_markup": kwargs.get("reply_markup")}).as_(self.bot)
         return self.latest
+
+    async def render_rich(self, *, card, reply_markup=None, **kwargs):
+        return await self.edit_message(card.fallback_html, reply_markup=reply_markup)
 
     def callback(self, data, message=None):
         return types.CallbackQuery(id="test", data=data, message=message or self.latest, from_user=self.user, chat_instance="test").as_(self.bot)
@@ -82,6 +94,8 @@ class CatalogCreationSessionTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(4):
             await self.text("-")
 
+
+class CatalogCreationSessionTests(CatalogCreationFixture, unittest.IsolatedAsyncioTestCase):
     async def test_old_type_slot_and_skip_buttons_cannot_change_new_creation(self):
         for kind, prefix in (("resource", "res_type_"), ("card", "card_slot_")):
             with self.subTest(kind=kind):
@@ -138,22 +152,29 @@ class CatalogCreationSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_database_failure_keeps_draft_and_successful_retry_inserts_once(self):
         await self.resource_note()
-        before = await self.state.get_data()
-        with patch.object(self.db, "add_resource", AsyncMock(side_effect=sqlite3.OperationalError("synthetic write failure"))):
-            await self.text("Note")
-        self.assertEqual(await self.state.get_data(), before)
-        self.assertEqual(await self.state.get_state(), admin.ResourceAddStates.note.state)
         await self.text("Note")
-        self.assertIsNone(await self.state.get_state())
+        self.assertEqual((await self.db.execute_query("SELECT COUNT(*) AS n FROM resources"))[0]["n"], 0)
+        before = await self.state.get_data()
+        save_button = self.action("isd:done")
+        with patch.object(self.db, "create_resource_with_sources", AsyncMock(side_effect=sqlite3.OperationalError("synthetic write failure"))):
+            await self.route(self.callback(save_button))
+        self.assertEqual(await self.state.get_data(), before)
+        self.assertEqual(await self.state.get_state(), sources.ItemSourcesStates.select.state)
+        await self.route(self.callback(save_button))
+        self.assertEqual(await self.state.get_state(), admin_utils.GenericEditStates.select_field.state)
         self.assertEqual((await self.db.execute_query("SELECT COUNT(*) AS n FROM resources"))[0]["n"], 1)
 
     async def test_delivery_failure_after_card_commit_cannot_repeat_insert(self):
         await self.card_note()
+        await self.text("Note")
+        self.assertEqual((await self.db.execute_query("SELECT COUNT(*) AS n FROM cards"))[0]["n"], 0)
+        save = self.callback(self.action("isd:done"))
         failure = TelegramNetworkError(method=SendMessage(chat_id=101, text="saved"), message="offline")
-        with patch.object(types.Message, "answer", AsyncMock(side_effect=failure)):
+        with patch.object(ui.rich, "present_rich_card", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
-                await self.text("Note")
-        self.assertIsNone(await self.state.get_state())
+                await self.route(save)
+        self.assertNotEqual(await self.state.get_state(), sources.ItemSourcesStates.select.state)
+        await self.route(save)
         await self.text("Retry note")
         self.assertEqual((await self.db.execute_query("SELECT COUNT(*) AS n FROM cards"))[0]["n"], 1)
 
