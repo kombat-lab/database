@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 from aiogram.types import InlineQuery, User
 
-import bot as app
+from tests.public_fixture import app
+from inline_search import InlinePage
 
 
 class InlineDebounceTests(unittest.IsolatedAsyncioTestCase):
@@ -35,7 +36,7 @@ class InlineDebounceTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             with patch.object(InlineQuery, "answer", new=AsyncMock()), \
-                 patch.object(app.db, "search", new=AsyncMock(return_value={})):
+                 patch.object(app.inline_search, "page", new=AsyncMock(return_value=InlinePage((), ""))):
                 await app.inline_search_handler(query)
             self.assertIs(app.inline_log_tasks[9877], previous)
             self.assertFalse(previous.done())

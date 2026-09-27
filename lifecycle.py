@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 from aiogram import BaseMiddleware, Dispatcher
+from aiogram.fsm.storage.base import BaseEventIsolation, BaseStorage
 from aiogram.types import TelegramObject
 
 logger = logging.getLogger(__name__)
@@ -100,9 +101,7 @@ def install_update_tracker(dispatcher: Dispatcher, tracker: UpdateTaskTracker) -
 
 
 class BackgroundTaskRegistry(_TaskRegistry):
-    def create_task(
-        self, coroutine: Coroutine[Any, Any, T], *, name: str | None = None
-    ) -> asyncio.Task[T]:
+    def create_task(self, coroutine: Coroutine[Any, Any, T], *, name: str | None = None) -> asyncio.Task[T]:
         if not self._accepting:
             coroutine.close()
             raise RuntimeError("Background task registry is closed")
@@ -118,3 +117,20 @@ class BackgroundTaskRegistry(_TaskRegistry):
                 "Background task failed",
                 exc_info=(type(error), error, error.__traceback__),
             )
+
+
+class DrainingDispatcher(Dispatcher):
+    """Drain accepted updates before aiogram's automatic FSM shutdown callback."""
+
+    def __init__(
+        self, tracker: UpdateTaskTracker, *, storage: BaseStorage, events_isolation: BaseEventIsolation
+    ) -> None:
+        super().__init__(storage=storage, events_isolation=events_isolation)
+        self.update_tracker = tracker
+
+    async def emit_shutdown(self, *args: Any, **kwargs: Any) -> None:
+        # start_polling invokes shutdown before returning to the composition
+        # root. Closing FSM first would reject accepted tasks still entering
+        # isolation; the public lifecycle hook keeps the ordering explicit.
+        await self.update_tracker.close(timeout=30.0)
+        await super().emit_shutdown(*args, **kwargs)

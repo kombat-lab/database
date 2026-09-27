@@ -103,7 +103,7 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
         await self.bind()
-        with patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[{"name": "Mob A"}])):
+        with patch.object(admin.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         old_data = "confirm_mob_delete_" + confirmation["token"]
@@ -119,7 +119,7 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
         await self.bind()
-        with patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[{"name": "Mob A"}])):
+        with patch.object(admin.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         callback = self.callback("confirm_mob_delete_" + confirmation["token"])
@@ -197,7 +197,7 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_data({"recipe_id": 7})
         await self.bind()
         owners = [{"owner_id": 42, "user_id": 99, "player_username": "tester"}]
-        with patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=owners)), patch.object(
+        with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value={"can_learn": True})), patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=owners)), patch.object(
             admin.db, "remove_recipe_owner_entry", new=AsyncMock(),
         ) as remove:
             await self.route(self.callback("recipe_owner_select_42"))
@@ -219,7 +219,7 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(recipes.admin_recipe_owner_labels(recipe), ['Игрок 99'])
         await self.state.update_data(recipe_id=7)
-        with patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=recipe["owner_entries"])):
+        with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value={**recipe, "can_learn": True})), patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=recipe["owner_entries"])):
             await recipes.show_recipe_owners(self.callback("recipe_manage_owners"), self.state)
         keyboard = types.Message.edit_text.await_args.kwargs["reply_markup"]
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "❌ Игрок 99")
@@ -240,7 +240,7 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.bind()
         with patch.object(admin.db, "add_ingredient", new=AsyncMock(side_effect=ValueError("Already exists"))), patch.object(
             admin.db, "get_recipe_details", new=AsyncMock(return_value={"ingredients": [{"resource_id": 1}], "result_type": "gear", "result_id": 12}),
-        ), patch.object(admin.db, "execute_query", new=AsyncMock(return_value=[
+        ), patch.object(admin.db, "get_recipe_resource_choices", new=AsyncMock(return_value=[
             {"id": 1, "name": "First", "emoji": ""}, {"id": 2, "name": "Second", "emoji": ""},
         ])):
             await self.route(self.message.model_copy(update={"text": "2"}))

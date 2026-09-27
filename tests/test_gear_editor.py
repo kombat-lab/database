@@ -133,6 +133,43 @@ class GearEditorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.state.get_state(), editor.GearEditorStates.input.state)
         self.assertEqual(await self.db.execute_query('SELECT * FROM recipes'), [])
 
+    async def test_owner_action_is_unavailable_until_learning_requirement_is_saved(self):
+        resource_id = await self.db.add_resource('Сталь', '🧱', 'craft')
+        await self.start()
+        await self.complete_profile()
+        await self.action('craft')
+        await self.action(f'choose:material:{resource_id}')
+        await self.text('2')
+        await self.action('section:preview')
+        await self.action('save')
+        await self.action('section:learning')
+        buttons = self.deliver.await_args.kwargs['reply_markup'].inline_keyboard
+        self.assertFalse(any(button.callback_data.endswith(':owners') for row in buttons for button in row))
+        await self.action('owners')
+        self.assertEqual(await self.state.get_state(), editor.GearEditorStates.editing.state)
+        self.assertFalse((await self.db.get_gear_card((await self.draft())['payload']['gear_id']))['can_learn'])
+
+    async def test_existing_material_match_offers_selection_or_explicit_variant(self):
+        resource_id = await self.db.add_resource('Сталь', '🧱', 'craft')
+        await self.start()
+        await self.complete_profile()
+        await self.action('craft')
+        await self.action('input:new_material_name')
+        await self.text('Сталь')
+        self.assertEqual(await self.state.get_state(), editor.GearEditorStates.editing.state)
+        buttons = self.deliver.await_args.kwargs['reply_markup'].inline_keyboard
+        callbacks = [button.callback_data for row in buttons for button in row]
+        self.assertTrue(any(f'choose:material:{resource_id}' in callback for callback in callbacks))
+        self.assertTrue(any('material_variant' in callback for callback in callbacks))
+        await self.action('material_variant')
+        await self.text('🪨')
+        await self.text('2')
+        self.assertTrue((await self.draft())['payload']['materials'][0]['allow_duplicate'])
+        self.assertEqual(len(await self.db.get_resource_name_matches('Сталь', 'craft')), 1)
+        await self.action('section:preview')
+        await self.action('save')
+        self.assertEqual(len(await self.db.get_resource_name_matches('Сталь', 'craft')), 2)
+
     async def test_new_material_is_not_published_until_complete_save(self):
         await self.start()
         await self.complete_profile()

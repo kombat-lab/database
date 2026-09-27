@@ -2,6 +2,7 @@ import logging
 from collections.abc import Callable, Sequence
 
 from admin_contracts import EntityConfig, EntityRow
+from admin_commands import admin_transition
 from telegram_helpers import get_bound_bot, get_callback_data, get_callback_message, get_message_text
 import secrets
 
@@ -105,7 +106,8 @@ async def consume_delete_confirmation(
     prefix: str, expected_state: State, context: int | None = None,
 ) -> bool:
     data = await state.get_data()
-    confirmation = data.get('admin_delete_confirmation') or {}
+    raw_confirmation = data.get('admin_delete_confirmation')
+    confirmation = raw_confirmation if isinstance(raw_confirmation, dict) else {}
     message = callback.message
     valid = (
         message is not None
@@ -165,7 +167,7 @@ async def render_entity_list(callback: types.CallbackQuery, state: FSMContext, e
     for item in items:
         for field, mapping in display_mapping.items():
             if field in item:
-                item[field] = mapping.get(item[field], item[field])
+                item[field] = mapping.get(str(item[field]), str(item[field]))
     
     extra = []
     if entity_config.get('add_button'):
@@ -197,7 +199,7 @@ def build_edit_menu(
         if formatter:
             current_value = formatter(current_value)
         elif field_name in display_mapping:
-            current_value = display_mapping[field_name].get(current_value, current_value)
+            current_value = display_mapping[field_name].get(str(current_value), str(current_value))
         rich_rows.append(
             f"<tr><td>{escape_html(field_label)}</td><td>{escape_html(current_value)}</td></tr>"
         )
@@ -240,9 +242,10 @@ async def show_edit_menu(callback: types.CallbackQuery | types.Message, state: F
 def register_generic_handlers(router: Router, get_entity_configs_func: Callable[[], dict[str, EntityConfig]]) -> None:
     """Register field editors; the outer admin middleware validates screen identity."""
 
-    async def update_entity_field(config: EntityConfig, entity_id: int, field: str, value: str | int) -> None:
-        database_field = config.get('field_aliases', {}).get(field, field)
-        await config['update_func'](entity_id, **{database_field: value})
+    async def update_entity_field(state: FSMContext, config: EntityConfig, entity_id: int, field: str, value: str | int) -> None:
+        async with admin_transition(state):
+            await config['update_func'](entity_id, field, value)
+            await state.set_state(GenericEditStates.select_field)
 
     async def return_to_item(event: types.CallbackQuery | types.Message, state: FSMContext, config: EntityConfig, entity_id: int) -> None:
         # Persist the completed transition independently of Telegram delivery.
@@ -273,7 +276,6 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             return
         title = f"<b>{escape_html(entity['name'])}</b> · {escape_html(fields[field])}"
         context = {'entity_id': data['entity_id'], 'editing_entity': config['name'], 'edit_field': field}
-        await state.update_data(edit_field=field)
         select_options = config.get('select_options', {}).get(field)
         keyboard: list[list[InlineKeyboardButton]] = []
         if select_options:
@@ -281,17 +283,22 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             for option in select_options:
                 keyboard.append([InlineKeyboardButton(text=display.get(option, option), callback_data=f"select_opt_{field}_{option}")])
             prompt = "Выберите новое значение:"
-            await state.set_state(GenericEditStates.select_option)
+            next_state = GenericEditStates.select_option
         else:
             prompt = OPTIONAL_NOTE_PROMPT if field == 'note' else "Введите новое значение:"
             if field == 'note':
                 keyboard = build_optional_note_keyboard().inline_keyboard
-            await state.set_state(GenericEditStates.new_value)
+            next_state = GenericEditStates.new_value
         keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_edit_menu")])
+
+        async def commit_prompt() -> None:
+            await state.update_data(edit_field=field)
+            await state.set_state(next_state)
+
         await present_admin_text(
             callback, state, f"{title}\n{prompt}",
             InlineKeyboardMarkup(inline_keyboard=keyboard, force_reply=not bool(select_options)),
-            parse_mode="HTML", context=context,
+            parse_mode="HTML", context=context, commit=commit_prompt,
         )
         await callback.answer()
 
@@ -308,7 +315,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             return
         config = get_entity_configs_func()[data['editing_entity']]
         try:
-            await update_entity_field(config, data['entity_id'], 'note', '')
+            await update_entity_field(state, config, data['entity_id'], 'note', '')
         except Exception:
             logger.exception("Не удалось очистить примечание")
             await callback.answer("Не удалось сохранить примечание. Повторите попытку.", show_alert=True)
@@ -338,7 +345,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             await callback.answer("Недопустимое значение.", show_alert=True)
             return
         try:
-            await update_entity_field(config, data['entity_id'], field, value)
+            await update_entity_field(state, config, data['entity_id'], field, value)
         except ValueError as error:
             await callback.answer(str(error)[:180], show_alert=True)
             return
@@ -386,7 +393,7 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             await message.answer(f"Допустимо не больше {maximum} символов.")
             return
         try:
-            await update_entity_field(config, entity_id, field, value)
+            await update_entity_field(state, config, entity_id, field, value)
         except ValueError as error:
             await message.answer(str(error))
             return
@@ -447,7 +454,9 @@ def register_generic_handlers(router: Router, get_entity_configs_func: Callable[
             return
         config = get_entity_configs_func()[entity_type]
         try:
-            await config['delete_func'](entity_id)
+            async with admin_transition(state):
+                await config['delete_func'](entity_id)
+                await state.set_state(config['list_state'])
         except ValueError as error:
             await callback.answer(str(error)[:180], show_alert=True)
             await return_to_item(callback, state, config, entity_id)

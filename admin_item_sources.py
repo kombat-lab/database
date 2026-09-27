@@ -13,9 +13,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from admin_contracts import EntityConfig
+from admin_commands import admin_transition
 from admin_drop_picker import MAX_SOURCE_QUERY_LENGTH, build_drop_picker
-from admin_sessions import present_admin_text, register_protected_callbacks, validate_admin_input
+from admin_sessions import PENDING_SCREEN_KEY, present_admin_text, register_protected_callbacks, validate_admin_input
 from admin_utils import GenericEditStates, show_edit_menu
+from runtime_scope import database_for
 from database import db
 from recipe_domain import DomainError, positive_integer
 from telegram_helpers import get_callback_data, get_message_text
@@ -93,20 +95,21 @@ async def present_selection(target: Target, state: FSMContext, selection: Source
     )])
     if selection.item_id is None:
         rows.append([InlineKeyboardButton(text='Отмена', callback_data='admin_cancel_edit')])
-    view = await build_drop_picker(db, selection.selected, query=selection.query, page=selection.page,
+    view = await build_drop_picker(database_for(db), selection.selected, query=selection.query, page=selection.page,
                                    selected_only=selection.selected_only, callback=lambda action: f'isd:{action}', extra_rows=rows)
     selection = replace(selection, page=view.page)
     data = await state.get_data()
+
+    async def commit_selection() -> None:
+        await store_selection(state, selection)
+        await state.set_state(ItemSourcesStates.select)
+
     await present_admin_text(
         target, state, f"<b>{escape_html(selection.name)}</b>\n\n{view.text}", view.keyboard,
         context={'item_source_session': str(data['item_source_session']),
                  'item_source_kind': selection.kind, 'item_source_entity_id': selection.item_id or 0},
-        parse_mode='HTML',
+        parse_mode='HTML', commit=commit_selection,
     )
-    # Keep the visible selection authoritative when Telegram rejects an edit.
-    # Retrying the previous button must not toggle an unseen change twice.
-    await store_selection(state, selection)
-    await state.set_state(ItemSourcesStates.select)
 
 
 async def start_item_sources(target: Target, state: FSMContext, kind: CatalogKind, item_id: int | None = None) -> None:
@@ -120,11 +123,11 @@ async def start_item_sources(target: Target, state: FSMContext, kind: CatalogKin
         selected = decode_ids(data.get('catalog_source_mob_ids', []))
         baseline: list[int] = []
     else:
-        item = await db.get_resource_by_id(item_id) if kind == 'resource' else await db.get_card_by_id(item_id)
+        item = await database_for(db).get_resource_by_id(item_id) if kind == 'resource' else await database_for(db).get_card_by_id(item_id)
         if item is None:
             raise DomainError('Предмет уже удалён.')
         name = item['name']
-        selected = await db.get_item_drop_mob_ids(kind, item_id)
+        selected = await database_for(db).get_item_drop_mob_ids(kind, item_id)
         baseline = list(selected)
     await state.update_data(item_source_session=secrets.token_hex(8), item_source_kind=kind, item_source_entity_id=item_id or 0)
     await present_selection(target, state, SourceSelection(kind, item_id, name, selected, baseline))
@@ -138,8 +141,8 @@ def register_item_sources_handlers(
         if selection.item_id is None:
             await return_to_creation(target, state)
             return
-        entity = (await db.get_resource_by_id(selection.item_id) if selection.kind == 'resource'
-                  else await db.get_card_by_id(selection.item_id))
+        entity = (await database_for(db).get_resource_by_id(selection.item_id) if selection.kind == 'resource'
+                  else await database_for(db).get_card_by_id(selection.item_id))
         if entity is None:
             await state.clear()
             if isinstance(target, types.CallbackQuery):
@@ -174,7 +177,9 @@ def register_item_sources_handlers(
                     await finish_creation(callback, state, selected.selected)
                     return
                 try:
-                    await db.set_item_drop_sources(selected.kind, selected.item_id, selected.selected, expected_mob_ids=selected.baseline)
+                    async with admin_transition(state):
+                        await database_for(db).set_item_drop_sources(selected.kind, selected.item_id, selected.selected, expected_mob_ids=selected.baseline)
+                        await state.set_state(GenericEditStates.select_field)
                 except DomainError:
                     raise
                 except Exception:
@@ -195,6 +200,8 @@ def register_item_sources_handlers(
                     # The generic editor enters its state before delivery. Keep
                     # this picker usable if that delivery never bound a new screen.
                     if current_data.get('admin_screen') == previous_data.get('admin_screen'):
+                        if PENDING_SCREEN_KEY in current_data:
+                            previous_data[PENDING_SCREEN_KEY] = current_data[PENDING_SCREEN_KEY]
                         await state.set_data(previous_data)
                         await state.set_state(previous_state)
                     raise
@@ -216,7 +223,7 @@ def register_item_sources_handlers(
                 if mob_id in ids:
                     ids.remove(mob_id)
                 else:
-                    if not await db.get_drop_source_mobs(mob_ids=[mob_id]):
+                    if not await database_for(db).get_drop_source_mobs(mob_ids=[mob_id]):
                         raise DomainError('Моб уже удалён. Обновите список.')
                     if len(ids) >= 1000:
                         raise DomainError('Допустимо не больше 1000 источников.')

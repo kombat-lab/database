@@ -11,6 +11,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from admin_drop_picker import build_drop_picker
 from admin_utils import get_admin_main_keyboard
+from runtime_scope import database_for
 from database import db
 from game_constants import (
     GEAR_CLASS_ORDER, GEAR_SLOT_LABELS, GEAR_SLOTS, RARITY_KEYS, RARITY_LABELS,
@@ -26,7 +27,6 @@ from telegram_helpers import (
 from utils import escape_html, is_valid_emoji
 from telegram_text import split_html
 
-gear_router = Router()
 PAGE_SIZE = 8
 Section = Literal['home', 'profile', 'materials', 'learning', 'sources', 'preview']
 DropSourceKind = Literal['gear_mob', 'scroll_mob']
@@ -86,7 +86,7 @@ async def render(
 
 
 async def revision(draft: GearDraft, payload: Mapping[str, object] | None = None) -> GearDraft:
-    return await db.update_gear_draft(
+    return await database_for(db).update_gear_draft(
         draft['draft_id'], expected_revision=draft['revision'],
         owner_user_id=draft['owner_user_id'], chat_id=draft['chat_id'], message_id=draft['message_id'],
         payload=validate_draft_payload(dict(payload) if payload is not None else draft['payload']),
@@ -99,7 +99,7 @@ async def active_draft(callback: types.CallbackQuery, state: FSMContext) -> tupl
         raise DraftConflictError('Некорректная кнопка редактора.')
     message = get_callback_message(callback)
     data = await state.get_data()
-    draft = await db.get_gear_draft(parts[1], owner_user_id=callback.from_user.id, chat_id=message.chat.id)
+    draft = await database_for(db).get_gear_draft(parts[1], owner_user_id=callback.from_user.id, chat_id=message.chat.id)
     if (
         draft is None or draft['status'] != 'editing' or draft['revision'] != int(parts[2])
         or draft['message_id'] != message.message_id or data.get('gear_draft_id') != draft['draft_id']
@@ -130,7 +130,7 @@ async def show_section(target: types.Message, state: FSMContext, draft: GearDraf
             name = material.get('name', '')
             resource_id = material.get('resource_id')
             if resource_id is not None:
-                resource = await db.get_resource_by_id(resource_id)
+                resource = await database_for(db).get_resource_by_id(resource_id)
                 name = resource['name'] if resource else f'Удалённый ресурс {resource_id}'
             if index < PAGE_SIZE:
                 text += f"• {escape_html(name[:160])} × {material['quantity']}\n"
@@ -147,7 +147,7 @@ async def show_section(target: types.Message, state: FSMContext, draft: GearDraf
         if scroll is None:
             text += 'Изучение свитка не требуется.'
         elif 'resource_id' in scroll:
-            resource = await db.get_resource_by_id(scroll['resource_id'])
+            resource = await database_for(db).get_resource_by_id(scroll['resource_id'])
             text += f"Свиток: {escape_html(resource['name'][:256] if resource else 'ресурс удалён')}"
         else:
             text += f"Будет создан свиток: {escape_html(scroll.get('name', 'Рецепт (' + p.get('name', 'предмет') + ')'))}"
@@ -158,7 +158,8 @@ async def show_section(target: types.Message, state: FSMContext, draft: GearDraf
                 rows += button(draft, '✨ Создать свиток автоматически', 'learning_auto')
         else:
             text += '\nСначала включите изготовление в разделе материалов.'
-        if 'gear_id' in p:
+        published = await database_for(db).get_gear_card(p['gear_id']) if 'gear_id' in p else None
+        if scroll is not None and published is not None and published['can_learn']:
             rows += button(draft, '👥 Кто изучил рецепт', 'owners')
         else:
             text += '\nСписок изучивших игроков доступен после первого сохранения.'
@@ -210,7 +211,7 @@ async def start_gear_editor(
     else:
         user_id = get_message_user(target).id
         message = await target.answer('Открываю черновик снаряжения…')
-    draft = await db.create_gear_draft(
+    draft = await database_for(db).create_gear_draft(
         owner_user_id=user_id, chat_id=message.chat.id, message_id=message.message_id,
         gear_id=gear_id, payload=payload,
     )
@@ -245,7 +246,7 @@ async def source_picker(
     extra_rows = button(draft, 'Снять все отметки', f'clear_sources:{kind}') if selected else []
     extra_rows += button(draft, '🔙 Вернуться', 'section:sources')
     view = await build_drop_picker(
-        db, selected, query=str(data.get(f'gear_draft_{kind}_query') or ''), page=page,
+        database_for(db), selected, query=str(data.get(f'gear_draft_{kind}_query') or ''), page=page,
         selected_only=bool(data.get(f'gear_draft_{kind}_selected_only', False)),
         callback=lambda action: source_callback(draft, kind, action),
         extra_rows=extra_rows,
@@ -256,6 +257,25 @@ async def source_picker(
                  view.keyboard.inline_keyboard, section='sources')
 
 
+async def show_material_duplicates(target: types.Message, state: FSMContext, draft: GearDraft, page: int = 0) -> None:
+    data = await state.get_data()
+    name = str(data.get('gear_draft_pending_name') or '')
+    matches = await database_for(db).get_resource_name_matches(name, 'craft')
+    page = min(max(page, 0), max(0, (len(matches) - 1) // PAGE_SIZE))
+    rows: list[list[InlineKeyboardButton]] = []
+    for resource in matches[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
+        rows += button(draft, f"Выбрать #{resource['id']} · {resource['name']}", f"choose:material:{resource['id']}")
+    if page:
+        rows += button(draft, '◀️ Назад', f'material_duplicates:{page - 1}')
+    if (page + 1) * PAGE_SIZE < len(matches):
+        rows += button(draft, 'Вперёд ▶️', f'material_duplicates:{page + 1}')
+    rows += button(draft, 'Создать отдельный вариант', 'material_variant')
+    rows += button(draft, '🔙 К материалам', 'section:materials')
+    await render(target, state, draft,
+                 'Материал с этим названием уже существует. Выберите существующий ресурс или явно создайте отдельный вариант.',
+                 rows, section='materials')
+
+
 async def picker(target: types.Message, state: FSMContext, draft: GearDraft, kind: str, page: int) -> None:
     if kind in ('gear_mob', 'scroll_mob'):
         await source_picker(target, state, draft, 'gear_mob' if kind == 'gear_mob' else 'scroll_mob', page)
@@ -264,8 +284,7 @@ async def picker(target: types.Message, state: FSMContext, draft: GearDraft, kin
         raise DomainError('Неизвестный список.')
     data = await state.get_data()
     query = str(data.get('gear_draft_query') or '').casefold()
-    candidates = await db.execute_query('SELECT id, name, emoji, type FROM resources ORDER BY LOWER_UNICODE(name), id')
-    candidates = [item for item in candidates if (item['type'] == 'scroll_recipe') == (kind == 'scroll')]
+    candidates = await database_for(db).get_recipe_resource_choices('scroll' if kind == 'scroll' else 'material')
     candidates = [item for item in candidates if query in str(item['name']).casefold()]
     page = min(max(page, 0), max(0, (len(candidates) - 1) // PAGE_SIZE))
     rows: list[list[InlineKeyboardButton]] = []
@@ -339,7 +358,7 @@ async def material_list(target: types.Message, state: FSMContext, draft: GearDra
     for index in range(page * PAGE_SIZE, min(len(materials), (page + 1) * PAGE_SIZE)):
         material = materials[index]
         resource_id = material.get('resource_id')
-        resource = await db.get_resource_by_id(resource_id) if resource_id is not None else None
+        resource = await database_for(db).get_resource_by_id(resource_id) if resource_id is not None else None
         name = resource['name'] if resource else material.get('name', 'Удалённый ресурс')
         rows += button(draft, f"✏️ {name} × {material['quantity']}", f'input:material:{index}')
         rows += button(draft, f"Удалить {name}", f'remove_material:{index}')
@@ -351,7 +370,6 @@ async def material_list(target: types.Message, state: FSMContext, draft: GearDra
     await render(target, state, draft, 'Материалы: измените количество или удалите строку.', rows, section='materials')
 
 
-@gear_router.callback_query(F.data.startswith('gw:'))
 async def gear_editor_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
     try:
         draft, action = await active_draft(callback, state)
@@ -369,7 +387,7 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
         gear_id = draft['payload'].get('gear_id')
         if gear_id is None:
             raise DomainError('Предмет ещё не опубликован.')
-        await db.delete_gear_draft_target(draft['draft_id'], expected_revision=draft['revision'],
+        await database_for(db).delete_gear_draft_target(draft['draft_id'], expected_revision=draft['revision'],
             owner_user_id=callback.from_user.id, chat_id=target.chat.id, message_id=target.message_id,
             delete_gear=parts[1] == 'gear', delete_scroll=parts[2] == 'scroll')
         await state.clear()
@@ -380,7 +398,7 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
             await start_gear_editor(callback, state, gear_id=gear_id)
         return
     if key == 'save':
-        result = await db.save_gear_draft(
+        result = await database_for(db).save_gear_draft(
             draft['draft_id'], expected_revision=draft['revision'], owner_user_id=callback.from_user.id,
             chat_id=target.chat.id, message_id=target.message_id,
         )
@@ -395,7 +413,7 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
         await callback.answer()
         return
     if key == 'cancel':
-        await db.cancel_gear_draft(
+        await database_for(db).cancel_gear_draft(
             draft['draft_id'], expected_revision=draft['revision'], owner_user_id=callback.from_user.id,
             chat_id=target.chat.id, message_id=target.message_id,
         )
@@ -403,10 +421,21 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
         await target.edit_text('Черновик отменён.', reply_markup=get_admin_main_keyboard())
         await callback.answer()
         return
+    if key == 'material_variant':
+        await state.update_data(gear_draft_material_variant=True)
+        draft = await revision(draft)
+        await prompt(target, state, draft, 'new_material_emoji')
+        await callback.answer()
+        return
+    if key == 'material_duplicates':
+        draft = await revision(draft)
+        await show_material_duplicates(target, state, draft, int(parts[1]))
+        await callback.answer()
+        return
     if key == 'craft':
         gear_id = draft['payload'].get('gear_id')
         if gear_id is not None and draft['payload'].get('craftable', False):
-            gear = await db.get_gear_card(gear_id)
+            gear = await database_for(db).get_gear_card(gear_id)
             if gear is not None and gear.get('recipe_id') is not None:
                 draft = await revision(draft)
                 await show_delete_confirmation(target, state, draft, 'recipe')
@@ -457,14 +486,13 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
     elif key == 'choose' and len(parts) == 3:
         kind, item_id = parts[1], int(parts[2])
         if kind == 'scroll':
-            resource = await db.get_resource_by_id(item_id)
+            resource = await database_for(db).get_resource_by_id(item_id)
             if resource is None or resource['type'] != 'scroll_recipe':
                 raise DomainError('Выберите существующий свиток.')
             payload['learning_scroll'] = {'resource_id': item_id}
-            payload['scroll_mob_ids'] = [int(row['mob_id']) for row in await db.execute_query(
-                "SELECT mob_id FROM drops WHERE item_type='resource' AND item_id=? ORDER BY mob_id", (item_id,))]
+            payload['scroll_mob_ids'] = await database_for(db).get_item_drop_mob_ids('resource', item_id)
         elif kind == 'material':
-            resource = await db.get_resource_by_id(item_id)
+            resource = await database_for(db).get_resource_by_id(item_id)
             if resource is None or resource['type'] == 'scroll_recipe':
                 raise DomainError('Свиток изучения не является материалом.')
             materials = list(draft['payload'].get('materials', []))
@@ -482,7 +510,7 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
             if item_id in selected_ids:
                 selected_ids.remove(item_id)
             else:
-                if not await db.get_drop_source_mobs(mob_ids=[item_id], limit=1):
+                if not await database_for(db).get_drop_source_mobs(mob_ids=[item_id], limit=1):
                     raise DomainError('Моб удалён. Обновите список источников.')
                 selected_ids.append(item_id)
             payload[field_name] = selected_ids
@@ -528,8 +556,8 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
                      button(draft, 'Да, отменить черновик', 'cancel') + button(draft, '🔙 Продолжить', 'section:home'))
     elif key == 'owners':
         gear_id = draft['payload'].get('gear_id')
-        gear = await db.get_gear_card(gear_id) if gear_id is not None else None
-        if gear is None or gear.get('recipe_id') is None:
+        gear = await database_for(db).get_gear_card(gear_id) if gear_id is not None else None
+        if gear is None or gear.get('recipe_id') is None or not gear['can_learn']:
             await show_section(target, state, draft, 'learning')
             await callback.answer('Сначала сохраните рецепт.', show_alert=True)
             return
@@ -544,13 +572,12 @@ async def handle_action(callback: types.CallbackQuery, state: FSMContext, draft:
     await callback.answer()
 
 
-@gear_router.message(GearEditorStates.input, F.text, ~F.text.startswith('/'))
 async def gear_editor_input(message: types.Message, state: FSMContext) -> None:
     data = await state.get_data()
     draft_id = data.get('gear_draft_id')
     if not isinstance(draft_id, str):
         return
-    draft = await db.get_gear_draft(draft_id, owner_user_id=get_message_user(message).id, chat_id=message.chat.id)
+    draft = await database_for(db).get_gear_draft(draft_id, owner_user_id=get_message_user(message).id, chat_id=message.chat.id)
     if draft is None or draft['status'] != 'editing' or draft['revision'] != data.get('gear_draft_revision'):
         await state.clear()
         await message.answer('Черновик изменился. Откройте его заново из админки.')
@@ -574,8 +601,12 @@ async def gear_editor_input(message: types.Message, state: FSMContext) -> None:
         if field == 'new_material_name':
             if not value or len(value) > MAX_RESOURCE_NAME_LENGTH:
                 raise DomainError(f'Название должно содержать от 1 до {MAX_RESOURCE_NAME_LENGTH} символов.')
-            await state.update_data(gear_draft_pending_name=value)
+            await state.update_data(gear_draft_pending_name=value, gear_draft_material_variant=False)
             draft = await revision(draft)
+            matches = await database_for(db).get_resource_name_matches(value, 'craft')
+            if matches:
+                await show_material_duplicates(message, state, draft)
+                return
             await prompt(message, state, draft, 'new_material_emoji')
             return
         if field == 'new_material_emoji':
@@ -596,7 +627,8 @@ async def gear_editor_input(message: types.Message, state: FSMContext) -> None:
             materials = list(draft['payload'].get('materials', []))
             if field == 'new_material_quantity':
                 material: MaterialInput = {'name': str(data['gear_draft_pending_name']),
-                                           'emoji': str(data['gear_draft_pending_emoji']), 'quantity': quantity}
+                                           'emoji': str(data['gear_draft_pending_emoji']), 'quantity': quantity,
+                                           'allow_duplicate': data.get('gear_draft_material_variant') is True}
                 materials.append(material)
             elif field == 'material:new':
                 materials.append({'resource_id': int(data['gear_draft_pending_resource']), 'quantity': quantity})
@@ -615,8 +647,6 @@ async def gear_editor_input(message: types.Message, state: FSMContext) -> None:
     await show_section(message, state, draft, 'materials' if field.startswith(('material:', 'new_material')) or field == 'quantity' else 'profile')
 
 
-@gear_router.callback_query(F.data == 'gear_drafts')
-@gear_router.callback_query(GearEditorStates.drafts, F.data.startswith('gd:'))
 async def list_drafts(callback: types.CallbackQuery, state: FSMContext) -> None:
     message = get_callback_message(callback)
     raw = get_callback_data(callback)
@@ -627,7 +657,7 @@ async def list_drafts(callback: types.CallbackQuery, state: FSMContext) -> None:
             await callback.answer('Этот список устарел.', show_alert=True)
             return
         page = max(0, int(raw.split(':')[1]))
-    drafts = await db.list_gear_drafts(owner_user_id=callback.from_user.id, chat_id=message.chat.id)
+    drafts = await database_for(db).list_gear_drafts(owner_user_id=callback.from_user.id, chat_id=message.chat.id)
     page = min(page, max(0, (len(drafts) - 1) // PAGE_SIZE))
     rows = [[InlineKeyboardButton(
         text=f"📝 {draft['payload'].get('name', 'Новый предмет')}"[:100],
@@ -646,17 +676,16 @@ async def list_drafts(callback: types.CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@gear_router.callback_query(GearEditorStates.drafts, F.data.startswith('gr:'))
 async def resume_draft(callback: types.CallbackQuery, state: FSMContext) -> None:
     message = get_callback_message(callback)
     data = await state.get_data()
     try:
         _, draft_id, revision_text = get_callback_data(callback).split(':')
-        draft = await db.get_gear_draft(draft_id, owner_user_id=callback.from_user.id, chat_id=message.chat.id)
+        draft = await database_for(db).get_gear_draft(draft_id, owner_user_id=callback.from_user.id, chat_id=message.chat.id)
         if (draft is None or draft['status'] != 'editing' or draft['revision'] != int(revision_text)
                 or data.get('gear_resume_message_id') != message.message_id):
             raise DraftConflictError('Этот список устарел. Откройте черновики заново.')
-        draft = await db.bind_gear_draft_message(
+        draft = await database_for(db).bind_gear_draft_message(
             draft_id, expected_revision=draft['revision'], owner_user_id=callback.from_user.id,
             chat_id=message.chat.id, old_message_id=draft['message_id'], new_message_id=message.message_id,
         )
@@ -675,7 +704,7 @@ async def show_full_preview(target: types.Message, state: FSMContext, draft: Gea
     text += f"<b>Изготовление: {'да' if p.get('craftable', False) else 'нет'}</b>\nРезультат: {p.get('quantity', 1)} шт.\n"
     for material in p.get('materials', []):
         resource_id = material.get('resource_id')
-        resource = await db.get_resource_by_id(resource_id) if resource_id is not None else None
+        resource = await database_for(db).get_resource_by_id(resource_id) if resource_id is not None else None
         name = resource['name'] if resource else material.get('name', 'ресурс удалён')
         text += f"• {escape_html(name)} × {material['quantity']}\n"
     scroll = p.get('learning_scroll')
@@ -683,11 +712,14 @@ async def show_full_preview(target: types.Message, state: FSMContext, draft: Gea
         text += '\n<b>Изучение свитка не требуется.</b>\n'
     else:
         scroll_id = scroll.get('resource_id')
-        resource = await db.get_resource_by_id(scroll_id) if scroll_id is not None else None
+        resource = await database_for(db).get_resource_by_id(scroll_id) if scroll_id is not None else None
         name = resource['name'] if resource else scroll.get('name', f"Рецепт ({p.get('name', 'предмет')})")
         text += f"\n<b>Изучается один раз:</b> {escape_html(name)}"
         text += f" · ресурс ID {scroll_id}\n" if scroll_id is not None else ' · новый свиток\n'
-    mobs = {int(item['id']): str(item['name']) for item in await db.execute_query('SELECT id,name FROM mobs')}
+    source_ids = list(set(p.get('gear_mob_ids', []) + p.get('scroll_mob_ids', [])))
+    mobs = {}
+    for offset in range(0, len(source_ids), 100):
+        mobs.update({item['id']: item['name'] for item in await database_for(db).get_drop_source_mobs(mob_ids=source_ids[offset:offset + 100], limit=100)})
     for label, ids in [('Выпадение готового предмета', p.get('gear_mob_ids', [])), ('Выпадение свитка', p.get('scroll_mob_ids', []))]:
         text += f"\n<b>{label}:</b>\n"
         text += '\n'.join(f"• {escape_html(mobs.get(mob_id, 'моб удалён'))} · ID {mob_id}" for mob_id in ids) or 'Нет источников.'
@@ -715,10 +747,10 @@ async def return_to_gear_editor(target: types.Message | types.CallbackQuery, sta
     else:
         user_id = get_message_user(target).id
         message = await target.answer('Возвращаюсь к черновику…')
-    draft = await db.get_gear_draft(draft_id, owner_user_id=user_id, chat_id=message.chat.id)
+    draft = await database_for(db).get_gear_draft(draft_id, owner_user_id=user_id, chat_id=message.chat.id)
     if draft is None or draft['status'] != 'editing':
         return False
-    draft = await db.bind_gear_draft_message(draft_id, expected_revision=draft['revision'], owner_user_id=user_id,
+    draft = await database_for(db).bind_gear_draft_message(draft_id, expected_revision=draft['revision'], owner_user_id=user_id,
                                             chat_id=message.chat.id, old_message_id=draft['message_id'], new_message_id=message.message_id)
     await state.update_data(return_gear_draft_id=None)
     await show_section(message, state, draft, 'learning')
@@ -729,14 +761,14 @@ async def show_delete_confirmation(target: types.Message, state: FSMContext, dra
     gear_id = draft['payload'].get('gear_id')
     if gear_id is None or kind not in ('gear', 'recipe'):
         raise DomainError('Нет опубликованного предмета для удаления.')
-    gear = await db.get_gear_card(gear_id)
+    gear = await database_for(db).get_gear_card(gear_id)
     if gear is None:
         raise DomainError('Предмет уже удалён.')
     recipe_id = gear.get('recipe_id')
-    recipe = await db.get_recipe_details(recipe_id) if recipe_id is not None else None
+    recipe = await database_for(db).get_recipe_details(recipe_id) if recipe_id is not None else None
     if kind == 'recipe' and recipe is None:
         raise DomainError('У предмета нет опубликованного рецепта.')
-    owners = await db.get_recipe_owner_entries(recipe_id) if recipe_id is not None else []
+    owners = await database_for(db).get_recipe_owner_entries(recipe_id) if recipe_id is not None else []
     text = f"<b>Удалить {'предмет и его рецепт' if kind == 'gear' else 'рецепт, сохранив предмет'}?</b>\n"
     text += f"Предмет: {escape_html(gear['name'])} · ID {gear_id}\n"
     if recipe is not None:
@@ -747,3 +779,16 @@ async def show_delete_confirmation(target: types.Message, state: FSMContext, dra
         rows += button(draft, 'Удалить также свиток и его дроп', f'target_delete_confirm:{kind}:scroll')
     rows += button(draft, '🔙 Отмена', 'section:home')
     await render(target, state, draft, text, rows)
+
+
+def create_gear_router() -> Router:
+    gear_router = Router()
+    gear_router.callback_query(F.data.startswith('gw:'))(gear_editor_callback)
+    gear_router.message(GearEditorStates.input, F.text, ~F.text.startswith('/'))(gear_editor_input)
+    gear_router.callback_query(GearEditorStates.drafts, F.data.startswith('gd:'))(list_drafts)
+    gear_router.callback_query(F.data == 'gear_drafts')(list_drafts)
+    gear_router.callback_query(GearEditorStates.drafts, F.data.startswith('gr:'))(resume_draft)
+    return gear_router
+
+
+gear_router = create_gear_router()

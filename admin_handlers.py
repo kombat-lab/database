@@ -3,6 +3,9 @@ import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from admin_commands import EntityCommands
+from admin_forms import CatalogCreation
+from storage.types import sql_int, sql_text
 from admin_contracts import EntityConfig, StateData
 from telegram_helpers import get_callback_data, get_callback_message, get_message_text
 import os
@@ -26,10 +29,12 @@ from admin_utils import (
     render_entity_list,
     show_edit_menu,
 )
+from runtime_scope import database_for
 from database import db
-from admin_mobs import mob_router
-from admin_recipes import recipe_router
-from admin_gear import gear_router, start_gear_editor
+from runtime_scope import RuntimeScope, RuntimeScopeMiddleware, admin_ids_for
+from admin_mobs import create_mob_router
+from admin_recipes import create_recipe_router
+from admin_gear import create_gear_router, start_gear_editor
 from admin_item_sources import register_item_sources_handlers, start_item_sources
 from admin_sessions import (
     AdminScreenMiddleware, present_admin_text, register_protected_callbacks, validate_admin_input,
@@ -44,20 +49,19 @@ from game_constants import (
     RESOURCE_TYPE_KEYS,
     format_gear_classes,
 )
-from stats_handlers import stats_router
-from utils import is_valid_emoji
-from recipe_domain import DomainError
+from stats_handlers import create_stats_router
+from utils import is_valid_emoji, escape_html
+from recipe_domain import DomainError, DuplicateIdentityError
 
 logger = logging.getLogger(__name__)
 
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_ID", "").split(",") if x.strip().isdigit()]
 
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return user_id in admin_ids_for(ADMIN_IDS)
 
-admin_router = Router()
 register_protected_callbacks((
-    'res_type_', 'card_slot_', OPTIONAL_NOTE_SKIP_CALLBACK, 'catalog_create_back',
+    'res_type_', 'card_slot_', OPTIONAL_NOTE_SKIP_CALLBACK, 'catalog_create_back', 'catalog_duplicate_',
 ))
 
 class AdminOnlyMiddleware(BaseMiddleware):
@@ -76,27 +80,15 @@ class AdminOnlyMiddleware(BaseMiddleware):
 
 
 admin_access = AdminOnlyMiddleware()
-admin_router.message.outer_middleware(admin_access)
-admin_router.callback_query.outer_middleware(admin_access)
-admin_router.callback_query.outer_middleware(AdminScreenMiddleware())
 
 # Подключаем роутер статистики
-admin_router.include_router(stats_router)
-admin_router.include_router(gear_router)
-admin_router.include_router(mob_router)
-admin_router.include_router(recipe_router)
-stats_router.message.outer_middleware(admin_access)
-stats_router.callback_query.outer_middleware(admin_access)
 
-@admin_router.message(Command("kombat"))
 async def admin_panel(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("🔧 <b>Админ-панель</b>\nВыберите действие:", parse_mode="HTML",
                          reply_markup=get_admin_main_keyboard())
 
 
-admin_router.callback_query(F.data == "admin_close")(admin_close)
-admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
 
 # ============================================================
 # КОНФИГУРАЦИИ СУЩНОСТЕЙ
@@ -122,15 +114,17 @@ class CardAddStates(StatesGroup):
     note = State()
 
 ENTITY_CONFIGS: dict[str, EntityConfig] = {}
+RESOURCE_COMMANDS = EntityCommands(lambda: database_for(db), 'resource')
+GEAR_COMMANDS = EntityCommands(lambda: database_for(db), 'gear')
+CARD_COMMANDS = EntityCommands(lambda: database_for(db), 'card')
 
 ENTITY_CONFIGS['resource'] = {
     'name': 'resource',
     'name_ru': 'ресурс',
-    'get_page_func': db.get_resources_page,
-    'get_by_id_func': db.get_resource_by_id,
-    'update_func': db.update_resource,
-    'field_aliases': {'type': 'resource_type'},
-    'delete_func': db.delete_resource,
+    'get_page_func': RESOURCE_COMMANDS.page,
+    'get_by_id_func': RESOURCE_COMMANDS.get,
+    'update_func': RESOURCE_COMMANDS.update,
+    'delete_func': RESOURCE_COMMANDS.delete,
     'item_callback_prefix': 'resource_edit',
     'list_state': ResourceListStates.list_page,
     'list_title': "📦 Ресурсы:\nВыберите ресурс для редактирования или добавьте новый:",
@@ -161,10 +155,10 @@ ENTITY_CONFIGS['resource'] = {
 ENTITY_CONFIGS['gear'] = {
     'name': 'gear',
     'name_ru': 'снаряжение',
-    'get_page_func': db.get_all_gear,
-    'get_by_id_func': db.get_gear_by_id,
-    'update_func': db.update_gear,
-    'delete_func': db.delete_gear,
+    'get_page_func': GEAR_COMMANDS.page,
+    'get_by_id_func': GEAR_COMMANDS.get,
+    'update_func': GEAR_COMMANDS.update,
+    'delete_func': GEAR_COMMANDS.delete,
     'item_callback_prefix': 'gear_edit',
     'list_state': GearListStates.list_page,
     'list_title': "⚔️ Управление снаряжением:\nВыберите предмет для редактирования или добавьте новый:",
@@ -196,10 +190,10 @@ ENTITY_CONFIGS['gear'] = {
 ENTITY_CONFIGS['card'] = {
     'name': 'card',
     'name_ru': 'карту',
-    'get_page_func': db.get_cards_page,
-    'get_by_id_func': db.get_card_by_id,
-    'update_func': db.update_card,
-    'delete_func': db.delete_card,
+    'get_page_func': CARD_COMMANDS.page,
+    'get_by_id_func': CARD_COMMANDS.get,
+    'update_func': CARD_COMMANDS.update,
+    'delete_func': CARD_COMMANDS.delete,
     'item_callback_prefix': 'card_edit',
     'list_state': CardListStates.list_page,
     'list_title': "🃏 Управление картами:\nВыберите карту для редактирования или добавьте новую:",
@@ -230,17 +224,12 @@ ENTITY_CONFIGS['card'] = {
 
 # ============================================================
 
-@admin_router.callback_query(F.data == "admin_manage_resources")
-@admin_router.callback_query(F.data == "admin_manage_cards")
 async def manage_catalog_entity(callback: types.CallbackQuery, state: FSMContext) -> None:
     entity_type = get_callback_data(callback).removeprefix("admin_manage_")
     entity_type = "card" if entity_type == "cards" else "resource"
     await state.clear()
     await render_entity_list(callback, state, ENTITY_CONFIGS[entity_type], 1)
 
-@admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("resource_edit_"))
-@admin_router.callback_query(GearListStates.list_page, F.data.startswith("gear_edit_"))
-@admin_router.callback_query(CardListStates.list_page, F.data.startswith("card_edit_"))
 async def edit_catalog_entity(callback: types.CallbackQuery, state: FSMContext) -> None:
     entity_type, raw_id = get_callback_data(callback).split("_edit_", 1)
     entity_id = int(raw_id)
@@ -255,8 +244,6 @@ async def edit_catalog_entity(callback: types.CallbackQuery, state: FSMContext) 
         return
     await show_edit_menu(callback, state, entity_id, config, entity)
 
-@admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("page_"))
-@admin_router.callback_query(CardListStates.list_page, F.data.startswith("page_"))
 async def catalog_page_nav(callback: types.CallbackQuery, state: FSMContext) -> None:
     entity_type = (
         "resource"
@@ -266,7 +253,6 @@ async def catalog_page_nav(callback: types.CallbackQuery, state: FSMContext) -> 
     page = int(get_callback_data(callback).split("_")[1])
     await render_entity_list(callback, state, ENTITY_CONFIGS[entity_type], page)
 
-@admin_router.callback_query(ResourceListStates.list_page, F.data == "resource_add_start")
 async def resource_add_name(callback: types.CallbackQuery, state: FSMContext) -> None:
     await begin_catalog_creation(callback, state, 'resource')
 
@@ -312,14 +298,6 @@ async def show_catalog_creation_step(
     if CATALOG_CREATION_STEPS[kind].index(step) > 0:
         rows.append([InlineKeyboardButton(text='🔙 Назад', callback_data='catalog_create_back')])
     rows.append([InlineKeyboardButton(text='Отмена', callback_data='admin_cancel_edit')])
-    # Keep the previous step usable when delivery fails. Bind and advance only
-    # after Telegram has accepted the next prompt.
-    await present_admin_text(
-        target, state, prompts[step], InlineKeyboardMarkup(inline_keyboard=rows),
-        context={'catalog_creation_session': session, 'catalog_creation_kind': kind,
-                 'catalog_creation_step': step},
-    )
-    await state.update_data(catalog_creation_kind=kind, catalog_creation_step=step)
     steps = {
         'resource': {'name': ResourceAddStates.name, 'emoji': ResourceAddStates.emoji,
                      'type': ResourceAddStates.type, 'note': ResourceAddStates.note},
@@ -327,7 +305,17 @@ async def show_catalog_creation_step(
                  'bonus1': CardAddStates.bonus1, 'bonus2': CardAddStates.bonus2,
                  'bonus3': CardAddStates.bonus3, 'bonus4': CardAddStates.bonus4, 'note': CardAddStates.note},
     }
-    await state.set_state(steps[kind][step])
+
+    async def commit_step() -> None:
+        await state.update_data(catalog_creation_kind=kind, catalog_creation_step=step)
+        await state.set_state(steps[kind][step])
+
+    # Bind the new screen, payload and active input state only after delivery.
+    await present_admin_text(
+        target, state, prompts[step], InlineKeyboardMarkup(inline_keyboard=rows),
+        context={'catalog_creation_session': session, 'catalog_creation_kind': kind,
+                 'catalog_creation_step': step}, commit=commit_step,
+    )
 
 
 async def begin_catalog_creation(callback: types.CallbackQuery, state: FSMContext, kind: str) -> None:
@@ -337,7 +325,6 @@ async def begin_catalog_creation(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 
-@admin_router.callback_query(F.data == 'catalog_create_back')
 async def catalog_creation_back(callback: types.CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     kind, step = data.get('catalog_creation_kind'), data.get('catalog_creation_step')
@@ -360,7 +347,6 @@ async def store_card_bonus(message: types.Message, state: FSMContext, field: str
     await state.update_data({f'card_{field}': '' if value == '-' else value})
     await show_catalog_creation_step(message, state, 'card', next_step)
 
-@admin_router.message(ResourceAddStates.name, F.text, ~F.text.startswith('/'))
 async def resource_add_emoji(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -368,10 +354,9 @@ async def resource_add_emoji(message: types.Message, state: FSMContext) -> None:
     if not name or len(name) > MAX_RESOURCE_NAME_LENGTH:
         await message.answer(f'Название должно содержать от 1 до {MAX_RESOURCE_NAME_LENGTH} символов.')
         return
-    await state.update_data(res_name=name)
+    await state.update_data(res_name=name, catalog_duplicate_confirmed=False)
     await show_catalog_creation_step(message, state, 'resource', 'emoji')
 
-@admin_router.message(ResourceAddStates.emoji, F.text, ~F.text.startswith('/'))
 async def resource_add_emoji_input(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -382,13 +367,12 @@ async def resource_add_emoji_input(message: types.Message, state: FSMContext) ->
     await state.update_data(res_emoji=emoji)
     await show_catalog_creation_step(message, state, 'resource', 'type')
 
-@admin_router.callback_query(ResourceAddStates.type, F.data.startswith("res_type_"))
 async def resource_add_note(callback: types.CallbackQuery, state: FSMContext) -> None:
     resource_type = get_callback_data(callback).removeprefix('res_type_')
     if resource_type not in RESOURCE_TYPE_KEYS or resource_type == 'scroll_recipe':
         await callback.answer('Неизвестный тип ресурса.', show_alert=True)
         return
-    await state.update_data(res_type=resource_type)
+    await state.update_data(res_type=resource_type, catalog_duplicate_confirmed=False)
     await show_catalog_creation_step(callback, state, 'resource', 'note')
     await callback.answer()
 
@@ -420,22 +404,87 @@ async def return_to_catalog_note(target: types.Message | types.CallbackQuery, st
         await target.answer()
 
 
+class CatalogDuplicateStates(StatesGroup):
+    choose = State()
+
+
+async def show_catalog_duplicates(target: types.Message | types.CallbackQuery, state: FSMContext, page: int = 0) -> None:
+    data = await state.get_data()
+    creation = CatalogCreation.decode(data)
+    matches = (await database_for(db).get_resource_name_matches(creation.name, creation.category) if creation.kind == 'resource'
+               else await database_for(db).get_card_name_matches(creation.name, creation.category))
+    page = min(max(page, 0), max(0, (len(matches) - 1) // 8))
+    rows = [[InlineKeyboardButton(text=f"Открыть #{item['id']} · {item['name']}"[:100],
+                                  callback_data=f"catalog_duplicate_open_{item['id']}")]
+            for item in matches[page * 8:(page + 1) * 8]]
+    if page:
+        rows.append([InlineKeyboardButton(text='◀️ Назад', callback_data=f'catalog_duplicate_page_{page - 1}')])
+    if (page + 1) * 8 < len(matches):
+        rows.append([InlineKeyboardButton(text='Вперёд ▶️', callback_data=f'catalog_duplicate_page_{page + 1}')])
+    rows += [[InlineKeyboardButton(text='Создать отдельный вариант', callback_data='catalog_duplicate_confirm')],
+             [InlineKeyboardButton(text='🔙 К источникам', callback_data='catalog_duplicate_back')],
+             [InlineKeyboardButton(text='Отмена', callback_data='admin_cancel_edit')]]
+    async def commit_duplicates() -> None:
+        await state.update_data(catalog_duplicate_ids=[item['id'] for item in matches])
+        await state.set_state(CatalogDuplicateStates.choose)
+
+    await present_admin_text(target, state,
+        f'Уже есть предметы с названием <b>{escape_html(creation.name)}</b> в этой категории. '
+        'Откройте существующий предмет или явно создайте отдельный вариант. '
+        'Открытие существующего предмета отменит ввод нового.',
+        InlineKeyboardMarkup(inline_keyboard=rows), parse_mode='HTML',
+        context={'catalog_creation_session': creation.session, 'catalog_creation_kind': creation.kind},
+        commit=commit_duplicates,
+    )
+
+
+async def catalog_duplicate_action(callback: types.CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    creation = CatalogCreation.decode(data)
+    action = get_callback_data(callback).removeprefix('catalog_duplicate_')
+    if action == 'confirm':
+        from admin_item_sources import decode_ids
+        await state.update_data(catalog_duplicate_confirmed=True)
+        await complete_catalog_creation(callback, state, decode_ids(data.get('catalog_duplicate_mob_ids')))
+    elif action == 'back':
+        await start_item_sources(callback, state, creation.kind)
+    elif action.startswith('page_'):
+        await show_catalog_duplicates(callback, state, int(action.removeprefix('page_')))
+    elif action.startswith('open_'):
+        entity_id = int(action.removeprefix('open_'))
+        if entity_id not in data.get('catalog_duplicate_ids', []):
+            raise DomainError('Предмет не относится к совпадениям этой формы.')
+        entity = await ENTITY_CONFIGS[creation.kind]['get_by_id_func'](entity_id)
+        if entity is None:
+            await callback.answer('Предмет уже удалён.', show_alert=True)
+            return
+        await state.clear()
+        await show_edit_menu(callback, state, entity_id, ENTITY_CONFIGS[creation.kind], entity)
+    await callback.answer()
+
+
 async def complete_catalog_creation(target: types.Message | types.CallbackQuery, state: FSMContext, mob_ids: list[int]) -> None:
     data = await state.get_data()
-    kind = data.get('catalog_creation_kind')
-    note = data.get('catalog_creation_note')
-    if kind not in ('resource', 'card') or not isinstance(note, str):
-        raise DomainError('Создание предмета устарело. Откройте админку заново.')
+    creation = CatalogCreation.decode(data)
+    kind = creation.kind
+    allow_duplicate = data.get('catalog_duplicate_confirmed') is True
     try:
         if kind == 'resource':
-            entity_id = await db.create_resource_with_sources(data['res_name'], data['res_emoji'], data['res_type'], note, mob_ids=mob_ids)
-        else:
-            entity_id = await db.create_card_with_sources(
-                name=data['card_name'], emoji=data['card_emoji'], slot=data['card_slot'],
-                bonus1=data.get('card_bonus1', ''), bonus2=data.get('card_bonus2', ''),
-                bonus3=data.get('card_bonus3', ''), bonus4=data.get('card_bonus4', ''),
-                note=note, mob_ids=mob_ids,
+            entity_id = await database_for(db).create_resource_with_sources(
+                creation.name, creation.emoji, creation.category, creation.note, mob_ids=mob_ids,
+                allow_duplicate=allow_duplicate, operation_id=creation.session,
             )
+        else:
+            entity_id = await database_for(db).create_card_with_sources(
+                name=creation.name, emoji=creation.emoji, slot=creation.category,
+                bonus1=creation.bonuses[0], bonus2=creation.bonuses[1],
+                bonus3=creation.bonuses[2], bonus4=creation.bonuses[3],
+                note=creation.note, mob_ids=mob_ids, allow_duplicate=allow_duplicate, operation_id=creation.session,
+            )
+    except DuplicateIdentityError:
+        await state.update_data(catalog_duplicate_mob_ids=mob_ids)
+        await show_catalog_duplicates(target, state)
+        return
     except DomainError:
         raise
     except Exception:
@@ -448,13 +497,12 @@ async def complete_catalog_creation(target: types.Message | types.CallbackQuery,
     # Commit succeeds before any Telegram delivery. Retrying an old button must
     # never insert a second item, even when showing the resulting card fails.
     await state.clear()
-    entity = await db.get_resource_by_id(entity_id) if kind == 'resource' else await db.get_card_by_id(entity_id)
+    entity = await database_for(db).get_resource_by_id(entity_id) if kind == 'resource' else await database_for(db).get_card_by_id(entity_id)
     if entity is None:
         raise DomainError('Предмет сохранён, но уже удалён другим администратором.')
     await show_edit_menu(target, state, entity_id, ENTITY_CONFIGS[kind], entity)
 
 
-@admin_router.message(ResourceAddStates.note, F.text, ~F.text.startswith('/'))
 async def resource_save(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -476,14 +524,18 @@ async def render_admin_gear_slot(callback: types.CallbackQuery, state: FSMContex
         return
     slot = GEAR_SLOTS[slot_index]
     offset = (page - 1) * ADMIN_ITEMS_PER_PAGE
-    items = await db.get_gear_by_slot(
+    items = await database_for(db).get_gear_by_slot(
         slot,
         offset,
         ADMIN_ITEMS_PER_PAGE + 1,
     )
     has_next = len(items) > ADMIN_ITEMS_PER_PAGE
     items = items[:ADMIN_ITEMS_PER_PAGE]
-    rows = [[InlineKeyboardButton(text=f"{RARITY_EMOJIS.get(x.get('rarity') or 'common','⚪')} {x.get('emoji','')} {x['name']} · ур. {x.get('level',1)}", callback_data=f"gear_edit_{x['id']}")] for x in items]
+    rows = [[InlineKeyboardButton(
+        text=f"{RARITY_EMOJIS.get(sql_text(item['rarity']), '⚪')} {sql_text(item['emoji'])} "
+             f"{sql_text(item['name'])} · ур. {sql_int(item['level'])}",
+        callback_data=f"gear_edit_{sql_int(item['id'])}",
+    )] for item in items]
     nav=[]
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"admin_gear_page_{slot_index}_{page-1}"))
@@ -503,7 +555,7 @@ async def back_to_admin_gear_slot(callback: types.CallbackQuery, state: FSMConte
     slot_index = data.get("gear_slot_index")
     page = data.get("current_page", 1)
 
-    if slot_index is None:
+    if not isinstance(slot_index, int):
         await get_callback_message(callback).edit_text(
             "⚔️ Управление снаряжением\nВыберите слот:",
             reply_markup=build_admin_gear_slots_keyboard(),
@@ -511,29 +563,25 @@ async def back_to_admin_gear_slot(callback: types.CallbackQuery, state: FSMConte
         await state.set_state(GearListStates.list_page)
         return
 
-    await render_admin_gear_slot(callback, state, int(slot_index), int(page or 1))
+    await render_admin_gear_slot(callback, state, slot_index, page if isinstance(page, int) and page > 0 else 1)
 
 
 ENTITY_CONFIGS['gear']['back_to_list_func'] = back_to_admin_gear_slot
 
 
-@admin_router.callback_query(F.data == "admin_manage_gear")
 async def manage_gear(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await get_callback_message(callback).edit_text("⚔️ Управление снаряжением\nВыберите слот:", reply_markup=build_admin_gear_slots_keyboard())
     await state.set_state(GearListStates.list_page)
     await callback.answer()
 
-@admin_router.callback_query(GearListStates.list_page, F.data.startswith("admin_gear_slot_"))
 async def admin_gear_slot(callback: types.CallbackQuery, state: FSMContext) -> None:
     await render_admin_gear_slot(callback, state, int(get_callback_data(callback).rsplit('_',1)[1]), 1)
 
-@admin_router.callback_query(GearListStates.list_page, F.data.startswith("admin_gear_page_"))
 async def admin_gear_page(callback: types.CallbackQuery, state: FSMContext) -> None:
     parts=get_callback_data(callback).split('_')
     await render_admin_gear_slot(callback, state, int(parts[3]), int(parts[4]))
 
-@admin_router.callback_query(GearListStates.list_page, F.data == "gear_add_start")
 async def gear_add_name(callback: types.CallbackQuery, state: FSMContext) -> None:
     from recipe_domain import GearDraftPayload
     data = await state.get_data()
@@ -559,11 +607,9 @@ async def gear_add_name(callback: types.CallbackQuery, state: FSMContext) -> Non
 # ОБРАБОТЧИКИ ДЛЯ КАРТ
 # ============================================================
 
-@admin_router.callback_query(CardListStates.list_page, F.data == "card_add_start")
 async def card_add_name(callback: types.CallbackQuery, state: FSMContext) -> None:
     await begin_catalog_creation(callback, state, 'card')
 
-@admin_router.message(CardAddStates.name, F.text, ~F.text.startswith('/'))
 async def card_add_emoji(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -571,10 +617,9 @@ async def card_add_emoji(message: types.Message, state: FSMContext) -> None:
     if not name or len(name) > MAX_NAME_LENGTH:
         await message.answer(f'Название должно содержать от 1 до {MAX_NAME_LENGTH} символов.')
         return
-    await state.update_data(card_name=name)
+    await state.update_data(card_name=name, catalog_duplicate_confirmed=False)
     await show_catalog_creation_step(message, state, 'card', 'emoji')
 
-@admin_router.message(CardAddStates.emoji, F.text, ~F.text.startswith('/'))
 async def card_add_emoji_input(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -585,29 +630,24 @@ async def card_add_emoji_input(message: types.Message, state: FSMContext) -> Non
     await state.update_data(card_emoji=emoji)
     await show_catalog_creation_step(message, state, 'card', 'slot')
 
-@admin_router.callback_query(CardAddStates.slot, F.data.startswith("card_slot_"))
 async def card_add_bonus1(callback: types.CallbackQuery, state: FSMContext) -> None:
     slot = get_callback_data(callback).removeprefix('card_slot_')
     if slot not in GEAR_SLOTS:
         await callback.answer('Неизвестный слот.', show_alert=True)
         return
-    await state.update_data(card_slot=slot)
+    await state.update_data(card_slot=slot, catalog_duplicate_confirmed=False)
     await show_catalog_creation_step(callback, state, 'card', 'bonus1')
     await callback.answer()
 
-@admin_router.message(CardAddStates.bonus1, F.text, ~F.text.startswith('/'))
 async def card_add_bonus2(message: types.Message, state: FSMContext) -> None:
     await store_card_bonus(message, state, 'bonus1', 'bonus2')
 
-@admin_router.message(CardAddStates.bonus2, F.text, ~F.text.startswith('/'))
 async def card_add_bonus3(message: types.Message, state: FSMContext) -> None:
     await store_card_bonus(message, state, 'bonus2', 'bonus3')
 
-@admin_router.message(CardAddStates.bonus3, F.text, ~F.text.startswith('/'))
 async def card_add_bonus4(message: types.Message, state: FSMContext) -> None:
     await store_card_bonus(message, state, 'bonus3', 'bonus4')
 
-@admin_router.message(CardAddStates.bonus4, F.text, ~F.text.startswith('/'))
 async def card_add_note(message: types.Message, state: FSMContext) -> None:
     await store_card_bonus(message, state, 'bonus4', 'note')
 
@@ -616,17 +656,12 @@ async def save_new_card(target: types.Message | types.CallbackQuery, state: FSMC
     await prepare_catalog_sources(target, state, 'card', note)
 
 
-@admin_router.message(CardAddStates.note, F.text, ~F.text.startswith('/'))
 async def card_save(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
     await save_new_card(message, state, normalize_optional_note(get_message_text(message)))
 
 
-@admin_router.callback_query(
-    StateFilter(ResourceAddStates.note, CardAddStates.note),
-    F.data == OPTIONAL_NOTE_SKIP_CALLBACK,
-)
 async def skip_new_entity_note(callback: types.CallbackQuery, state: FSMContext) -> None:
     current_state = await state.get_state()
     await callback.answer()
@@ -646,8 +681,6 @@ async def skip_new_entity_note(callback: types.CallbackQuery, state: FSMContext)
 # Регистрация универсальных обработчиков (CRUD)
 # ============================================================
 
-register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
-register_item_sources_handlers(admin_router, lambda: ENTITY_CONFIGS, complete_catalog_creation, return_to_catalog_note)
 
 
 def item_source_buttons(entity_id: int) -> list[list[InlineKeyboardButton]]:
@@ -659,7 +692,7 @@ ENTITY_CONFIGS['card']['extra_edit_buttons'] = item_source_buttons
 
 
 async def resource_delete_impact(resource_id: int) -> str:
-    dependencies = await db.get_resource_dependencies(resource_id)
+    dependencies = await database_for(db).get_resource_dependencies(resource_id)
     labels = [(dependencies['ingredient_recipe_ids'], 'Материал в рецептах'), (dependencies['learning_recipe_ids'], 'Свиток изучения рецептов'),
               (dependencies['result_recipe_ids'], 'Результат рецептов')]
     lines = []
@@ -672,3 +705,57 @@ async def resource_delete_impact(resource_id: int) -> str:
 
 
 ENTITY_CONFIGS['resource']['delete_impact_func'] = resource_delete_impact
+
+
+def create_admin_router(scope: RuntimeScope | None = None) -> Router:
+    admin_router = Router()
+    if scope is not None:
+        admin_router.message.outer_middleware(RuntimeScopeMiddleware(scope))
+        admin_router.callback_query.outer_middleware(RuntimeScopeMiddleware(scope))
+    admin_router.message.outer_middleware(admin_access)
+    admin_router.callback_query.outer_middleware(admin_access)
+    admin_router.callback_query.outer_middleware(AdminScreenMiddleware())
+    admin_router.include_router(create_stats_router())
+    admin_router.include_router(create_gear_router())
+    admin_router.include_router(create_mob_router())
+    admin_router.include_router(create_recipe_router())
+    admin_router.message(Command("kombat"))(admin_panel)
+    admin_router.callback_query(F.data == "admin_close")(admin_close)
+    admin_router.callback_query(F.data == "admin_cancel_edit")(admin_cancel_edit)
+    admin_router.callback_query(F.data == "admin_manage_cards")(manage_catalog_entity)
+    admin_router.callback_query(F.data == "admin_manage_resources")(manage_catalog_entity)
+    admin_router.callback_query(CardListStates.list_page, F.data.startswith("card_edit_"))(edit_catalog_entity)
+    admin_router.callback_query(GearListStates.list_page, F.data.startswith("gear_edit_"))(edit_catalog_entity)
+    admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("resource_edit_"))(edit_catalog_entity)
+    admin_router.callback_query(CardListStates.list_page, F.data.startswith("page_"))(catalog_page_nav)
+    admin_router.callback_query(ResourceListStates.list_page, F.data.startswith("page_"))(catalog_page_nav)
+    admin_router.callback_query(ResourceListStates.list_page, F.data == "resource_add_start")(resource_add_name)
+    admin_router.callback_query(F.data == 'catalog_create_back')(catalog_creation_back)
+    admin_router.message(ResourceAddStates.name, F.text, ~F.text.startswith('/'))(resource_add_emoji)
+    admin_router.message(ResourceAddStates.emoji, F.text, ~F.text.startswith('/'))(resource_add_emoji_input)
+    admin_router.callback_query(ResourceAddStates.type, F.data.startswith("res_type_"))(resource_add_note)
+    admin_router.callback_query(CatalogDuplicateStates.choose, F.data.startswith('catalog_duplicate_'))(catalog_duplicate_action)
+    admin_router.message(ResourceAddStates.note, F.text, ~F.text.startswith('/'))(resource_save)
+    admin_router.callback_query(F.data == "admin_manage_gear")(manage_gear)
+    admin_router.callback_query(GearListStates.list_page, F.data.startswith("admin_gear_slot_"))(admin_gear_slot)
+    admin_router.callback_query(GearListStates.list_page, F.data.startswith("admin_gear_page_"))(admin_gear_page)
+    admin_router.callback_query(GearListStates.list_page, F.data == "gear_add_start")(gear_add_name)
+    admin_router.callback_query(CardListStates.list_page, F.data == "card_add_start")(card_add_name)
+    admin_router.message(CardAddStates.name, F.text, ~F.text.startswith('/'))(card_add_emoji)
+    admin_router.message(CardAddStates.emoji, F.text, ~F.text.startswith('/'))(card_add_emoji_input)
+    admin_router.callback_query(CardAddStates.slot, F.data.startswith("card_slot_"))(card_add_bonus1)
+    admin_router.message(CardAddStates.bonus1, F.text, ~F.text.startswith('/'))(card_add_bonus2)
+    admin_router.message(CardAddStates.bonus2, F.text, ~F.text.startswith('/'))(card_add_bonus3)
+    admin_router.message(CardAddStates.bonus3, F.text, ~F.text.startswith('/'))(card_add_bonus4)
+    admin_router.message(CardAddStates.bonus4, F.text, ~F.text.startswith('/'))(card_add_note)
+    admin_router.message(CardAddStates.note, F.text, ~F.text.startswith('/'))(card_save)
+    admin_router.callback_query(
+        StateFilter(ResourceAddStates.note, CardAddStates.note),
+        F.data == OPTIONAL_NOTE_SKIP_CALLBACK,
+    )(skip_new_entity_note)
+    register_generic_handlers(admin_router, lambda: ENTITY_CONFIGS)
+    register_item_sources_handlers(admin_router, lambda: ENTITY_CONFIGS, complete_catalog_creation, return_to_catalog_note)
+    return admin_router
+
+
+admin_router = create_admin_router()

@@ -3,6 +3,8 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 from aiogram import Bot, types
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.methods import EditMessageText, SendMessage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -12,6 +14,7 @@ import admin_recipe_create as creation
 import admin_recipes as recipes
 import ui.rich
 from database import Database
+from fsm_storage import SQLiteFSMStorage
 
 
 class RecipeCreationTests(unittest.IsolatedAsyncioTestCase):
@@ -133,3 +136,99 @@ class RecipeCreationTests(unittest.IsolatedAsyncioTestCase):
         await self.text('я' * 4096)
         self.assertEqual((await self.state.get_data())['recipe_create_query'], before['recipe_create_query'])
         self.assertEqual(await self.state.get_state(),creation.RecipeCreationStates.search.state)
+
+    async def use_durable_state(self):
+        await self.storage.close()
+        self.storage = SQLiteFSMStorage(self.db)
+        self.state = FSMContext(self.storage, self.state.key)
+
+    async def compose_preview(self):
+        result_id = await self.db.add_resource('Эликсир', '🧪', 'alchemy')
+        first = await self.db.add_resource('Трава', '🌿', 'craft')
+        second = await self.db.add_resource('Вода', '💧', 'craft')
+        await self.start()
+        await self.action(f'rc:select:{result_id}')
+        await self.text('1')
+        for material_id in (first, second):
+            await self.action('rc:page:0')
+            await self.action(f'rc:select:{material_id}')
+            await self.text('2')
+        return first, second
+
+    async def test_material_removal_retry_never_removes_a_different_resource(self):
+        await self.use_durable_state()
+        first, second = await self.compose_preview()
+        before = await self.state.get_data()
+        old_remove = self.callback(await self.signed(f'rc:remove_id:{first}'))
+
+        async def failed_delivery(*args, **kwargs):
+            self.assertEqual(self.db._transaction_depth, 0)
+            raise TelegramNetworkError(EditMessageText(chat_id=1, message_id=10, text='preview'), 'offline')
+
+        with patch.object(types.Message, 'edit_text', new=AsyncMock(side_effect=failed_delivery)):
+            with self.assertRaises(TelegramNetworkError):
+                await self.route(old_remove)
+        after_failure = await self.state.get_data()
+        self.assertEqual(after_failure['recipe_create_materials'], before['recipe_create_materials'])
+        self.assertEqual(after_failure['admin_screen'], before['admin_screen'])
+        self.assertIn('admin_pending_screen', after_failure)
+        await self.route(old_remove)
+        self.assertEqual((await self.state.get_data())['recipe_create_materials'], [{'resource_id': second, 'quantity': 2}])
+        await self.route(old_remove)
+        await self.action('rc:remove:0')
+        self.assertEqual((await self.state.get_data())['recipe_create_materials'], [{'resource_id': second, 'quantity': 2}])
+        self.assertEqual(await self.db.execute_query('SELECT * FROM recipes'), [])
+
+    async def test_material_prompt_commit_failure_preserves_payload_and_rejects_new_screen(self):
+        await self.use_durable_state()
+        first, _ = await self.compose_preview()
+        await self.action('rc:page:0')
+        before = await self.state.get_data()
+        previous_state = await self.state.get_state()
+        old_select = self.callback(await self.signed(f'rc:select:{first}'))
+        original_set_state = self.state.set_state
+        sent = []
+
+        async def delivered(*args, **kwargs):
+            self.assertEqual(self.db._transaction_depth, 0)
+            sent.append(kwargs['reply_markup'])
+            return self.message
+
+        async def partial_commit(next_state):
+            await original_set_state(next_state)
+            raise RuntimeError('state commit failed')
+
+        with patch.object(types.Message, 'edit_text', new=AsyncMock(side_effect=delivered)), patch.object(self.state, 'set_state', side_effect=partial_commit):
+            with self.assertRaisesRegex(RuntimeError, 'state commit failed'):
+                await self.route(old_select)
+        restored = FSMContext(SQLiteFSMStorage(self.db), self.state.key)
+        after = await restored.get_data()
+        self.assertEqual({key: value for key, value in after.items() if key != 'admin_pending_screen'}, before)
+        self.assertIn('admin_pending_screen', after)
+        self.assertEqual(await restored.get_state(), previous_state)
+        new_back = sent[-1].inline_keyboard[0][0].callback_data
+        await self.route(self.callback(new_back))
+        self.assertEqual(await self.state.get_data(), after)
+        await self.text('99')
+        self.assertEqual(await self.state.get_data(), after)
+        await self.route(old_select)
+        self.assertNotIn('admin_pending_screen', await self.state.get_data())
+        await self.text('3')
+        materials = (await self.state.get_data())['recipe_create_materials']
+        self.assertEqual(next(item['quantity'] for item in materials if item['resource_id'] == first), 3)
+
+    async def test_output_quantity_delivery_failure_does_not_publish_candidate(self):
+        await self.use_durable_state()
+        result_id = await self.db.add_resource('Эликсир', '🧪', 'alchemy')
+        await self.start()
+        await self.action(f'rc:select:{result_id}')
+        before = await self.state.get_data()
+        failure = TelegramNetworkError(SendMessage(chat_id=1, text='materials'), 'offline')
+        with patch.object(types.Message, 'answer', new=AsyncMock(side_effect=failure)):
+            with self.assertRaises(TelegramNetworkError):
+                await self.text('7')
+        after = await self.state.get_data()
+        self.assertEqual({key: value for key, value in after.items() if key != 'admin_pending_screen'}, before)
+        self.assertEqual(await self.state.get_state(), creation.RecipeCreationStates.output_quantity.state)
+        await self.text('99')
+        self.assertEqual((await self.state.get_data())['recipe_create_quantity'], 1)

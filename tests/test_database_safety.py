@@ -33,9 +33,7 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         resource_id = await self.db.add_resource("original", "")
         writer = sqlite3.connect(self.db_path)
         started = threading.Event()
-        await self.db._conn.set_trace_callback(
-            lambda sql: started.set() if sql == "BEGIN IMMEDIATE" else None
-        )
+        await self.db._conn.set_trace_callback(lambda sql: started.set() if sql == "BEGIN IMMEDIATE" else None)
         task = None
         try:
             writer.execute("BEGIN IMMEDIATE")
@@ -66,9 +64,9 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
             return value
 
         await self.db._conn.create_function("slow", 1, slow)
-        task = asyncio.create_task(self.db.execute_insert(
-            "INSERT INTO resources (name) VALUES (slow(?))", ("cancelled",)
-        ))
+        task = asyncio.create_task(
+            self.db.execute_insert("INSERT INTO resources (name) VALUES (slow(?))", ("cancelled",))
+        )
         try:
             await self.wait_worker(started)
             task.cancel()
@@ -93,9 +91,9 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
             return value
 
         await self.db._conn.create_function("slow", 1, slow)
-        task = asyncio.create_task(self.db.execute_query(
-            "INSERT INTO resources (name) VALUES (slow(?))", ("cancelled",)
-        ))
+        task = asyncio.create_task(
+            self.db.execute_query("INSERT INTO resources (name) VALUES (slow(?))", ("cancelled",))
+        )
         try:
             await self.wait_worker(started)
             task.cancel()
@@ -194,9 +192,7 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         await self.db.execute_query("PRAGMA journal_mode = DELETE")
         reader = sqlite3.connect(self.db_path)
         started = threading.Event()
-        await self.db._conn.set_trace_callback(
-            lambda sql: started.set() if sql == "COMMIT" else None
-        )
+        await self.db._conn.set_trace_callback(lambda sql: started.set() if sql == "COMMIT" else None)
 
         async def write():
             async with self.db.transaction():
@@ -235,14 +231,14 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         await self.db.add_resource("still works", "")
 
     async def test_recipe_creation_rejects_deleted_result_and_duplicate_race(self):
-        gear_id = await self.db.add_gear("item", "epic", "helmet", "")
+        gear_id = await self.db.add_gear("item", "epic", "шлем", "")
         await self.db.delete_gear(gear_id)
         with self.assertRaisesRegex(ValueError, "удалён"):
             await self.db.create_recipe("gear", gear_id)
         with self.assertRaises(ValueError):
             await self.db.create_recipe("invalid", gear_id)
         self.assertEqual(await self.db.execute_query("SELECT * FROM recipes"), [])
-        gear_id = await self.db.add_gear("valid", "epic", "helmet", "")
+        gear_id = await self.db.add_gear("valid", "epic", "шлем", "")
         results = await asyncio.gather(
             self.db.create_recipe("gear", gear_id),
             self.db.create_recipe("gear", gear_id),
@@ -252,7 +248,7 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(isinstance(result, ValueError) for result in results), 1)
 
     async def test_concurrent_ingredient_add_preserves_original_quantity(self):
-        gear_id = await self.db.add_gear("item", "epic", "helmet", "")
+        gear_id = await self.db.add_gear("item", "epic", "шлем", "")
         recipe_id = await self.db.create_recipe("gear", gear_id)
         resource_id = await self.db.add_resource("ore", "")
         results = await asyncio.gather(
@@ -293,18 +289,16 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         literal_name = r"Mixed_%\name"
         for name in (literal_name, "Mixed ordinary name"):
             await self.db.add_resource(name, "")
-            await self.db.add_gear(name, "epic", "helmet", "")
-            await self.db.add_card(name, "", "helmet")
-            await self.db.execute_insert(
-                "INSERT INTO mobs(name,location_id) VALUES (?, ?)", (name, location_id)
-            )
+            await self.db.add_gear(name, "epic", "шлем", "")
+            await self.db.add_card(name, "", "шлем")
+            await self.db.execute_insert("INSERT INTO mobs(name,location_id) VALUES (?, ?)", (name, location_id))
         for query in ("%", "_", "\\", "mixed_%"):
             result = await self.db.search(query)
             for table in ("resources", "gear", "cards", "mobs"):
                 self.assertEqual([row["name"] for row in result[table]], [literal_name], (query, table))
 
     async def test_linked_owners_survive_rename_and_do_not_absorb_manual_names(self):
-        gear_id = await self.db.add_gear("item", "epic", "helmet", "")
+        gear_id = await self.db.add_gear("item", "epic", "шлем", "")
         recipe_id = await self.db.create_recipe("gear", gear_id)
         scroll_id = await self.db.add_resource("scroll", "📜", "scroll_recipe")
         await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
@@ -330,14 +324,13 @@ class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.get_recipe_owner_entries(recipe_id), [])
 
     async def test_claim_is_idempotent_and_requires_learning_regardless_of_rarity(self):
-        gear_id = await self.db.add_gear("item", "epic", "helmet", "")
+        gear_id = await self.db.add_gear("item", "epic", "шлем", "")
         recipe_id = await self.db.create_recipe("gear", gear_id)
         scroll_id = await self.db.add_resource("scroll", "📜", "scroll_recipe")
         await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
-        await asyncio.gather(*(
-            self.db.claim_recipe_owner(recipe_id, 101, "Owner", expected_gear_id=gear_id)
-            for _ in range(3)
-        ))
+        await asyncio.gather(
+            *(self.db.claim_recipe_owner(recipe_id, 101, "Owner", expected_gear_id=gear_id) for _ in range(3))
+        )
         self.assertEqual(len(await self.db.get_recipe_owner_entries(recipe_id)), 1)
         with self.assertRaises(ValueError):
             await self.db.claim_recipe_owner(recipe_id, 202, "Other", expected_gear_id=gear_id + 1)
@@ -420,7 +413,9 @@ class OwnerMigrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(columns, {"recipe_id", "player_username"})
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM recipe_owners").fetchone()[0], 3)
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
-            self.assertIsNone(connection.execute("SELECT name FROM sqlite_master WHERE name='recipe_owners_v1'").fetchone())
+            self.assertIsNone(
+                connection.execute("SELECT name FROM sqlite_master WHERE name='recipe_owners_v1'").fetchone()
+            )
 
     async def test_newer_schema_is_rejected_before_any_schema_changes(self):
         self.create_legacy(version=SCHEMA_VERSION + 1)

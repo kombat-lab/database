@@ -19,13 +19,19 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_fresh_database_contains_complete_schema(self):
         expected = {
-            "locations", "mobs", "resources", "gear", "cards", "drops",
-            "recipes", "recipe_ingredients", "recipe_owners", "users",
+            "locations",
+            "mobs",
+            "resources",
+            "gear",
+            "cards",
+            "drops",
+            "recipes",
+            "recipe_ingredients",
+            "recipe_owners",
+            "users",
             "analytics_events",
         }
-        rows = await self.db.execute_query(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
+        rows = await self.db.execute_query("SELECT name FROM sqlite_master WHERE type = 'table'")
         actual = {row["name"] for row in rows}
         self.assertTrue(expected.issubset(actual))
         self.assertNotIn("schema_metadata", actual)
@@ -41,10 +47,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resource["name"], "Сохранённый ресурс")
 
     async def test_concurrent_inserts_return_their_own_ids(self):
-        ids = await asyncio.gather(*(
-            self.db.add_resource(f"resource-{index}", "📦")
-            for index in range(25)
-        ))
+        ids = await asyncio.gather(*(self.db.add_resource(f"resource-{index}", "📦") for index in range(25)))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(len(ids), 25)
 
@@ -81,9 +84,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         resource_id = await self.db.add_resource("Сияющий кристалл", "💎")
         other_resource_id = await self.db.add_resource("Древесина", "🪵")
-        gear_id = await self.db.add_gear(
-            "Кристальный меч", "rare", "основная рука", "⚔️"
-        )
+        gear_id = await self.db.add_gear("Кристальный меч", "rare", "основная рука", "⚔️")
         card_id = await self.db.add_card("Карта кристалла", "🃏", "основная рука")
         await self.db.add_drop(mob_id, "resource", resource_id)
 
@@ -109,26 +110,22 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nested_transaction_rollback_isolated_by_savepoint(self):
         async with self.db.transaction():
-            await self.db.execute_query(
-                "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("first", "1")
-            )
+            await self.db.execute_query("INSERT INTO locations (name, emoji) VALUES (?, ?)", ("first", "1"))
             with self.assertRaises(RuntimeError):
                 async with self.db.transaction():
                     await self.db.execute_query(
                         "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("rolled-back", "2")
                     )
                     raise RuntimeError("rollback nested transaction")
-            await self.db.execute_query(
-                "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("last", "3")
-            )
+            await self.db.execute_query("INSERT INTO locations (name, emoji) VALUES (?, ?)", ("last", "3"))
 
         rows = await self.db.execute_query("SELECT name FROM locations ORDER BY id")
         self.assertEqual([row["name"] for row in rows], ["first", "last"])
 
     async def test_window_navigation_returns_adjacent_items(self):
-        first = await self.db.add_resource("alpha", "1", "scroll_recipe")
-        middle = await self.db.add_resource("bravo", "2", "scroll_recipe")
-        last = await self.db.add_resource("charlie", "3", "scroll_recipe")
+        first = await self.db.add_resource("alpha", "1️⃣", "scroll_recipe")
+        middle = await self.db.add_resource("bravo", "2️⃣", "scroll_recipe")
+        last = await self.db.add_resource("charlie", "3️⃣", "scroll_recipe")
 
         self.assertEqual(
             await self.db.get_prev_next_resource_by_type(middle, "scroll_recipe"),
@@ -179,15 +176,13 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gear_lists_and_neighbours_share_the_same_order(self):
         await self.db.add_gear("Обычный", "common", "шлем", "⚪", 5)
-        last = await self.db.add_gear("Ястреб", "rare", "шлем", "3", 2)
-        first = await self.db.add_gear("Альфа", "rare", "шлем", "1", 1)
-        middle = await self.db.add_gear("Бета", "rare", "шлем", "2", 1)
+        last = await self.db.add_gear("Ястреб", "rare", "шлем", "3️⃣", 2)
+        first = await self.db.add_gear("Альфа", "rare", "шлем", "1️⃣", 1)
+        middle = await self.db.add_gear("Бета", "rare", "шлем", "2️⃣", 1)
         await self.db.add_gear("Броня", "rare", "тело", "🦺", 1)
 
         admin_rows = await self.db.get_gear_by_slot("шлем", 0, 10)
-        public_rows = await self.db.get_gear_by_rarity_slot(
-            "rare", "шлем", 0, 10
-        )
+        public_rows = await self.db.get_gear_by_rarity_slot("rare", "шлем", 0, 10)
 
         self.assertEqual(
             [row["name"] for row in admin_rows],
@@ -198,9 +193,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ["Альфа", "Бета", "Ястреб"],
         )
         self.assertEqual(
-            await self.db.get_prev_next_gear(
-                middle, "rare", "шлем"
-            ),
+            await self.db.get_prev_next_gear(middle, "rare", "шлем"),
             {"prev_id": first, "next_id": last},
         )
 
@@ -220,7 +213,10 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         gear_id = await self.db.add_gear("Меч", "rare", "основная рука", "🗡")
         recipe_id = await self.db.create_recipe("gear", gear_id)
         await self.db.add_ingredient(recipe_id, resource_id, 2)
-        await self.db.add_recipe_owner(recipe_id, "tester")
+        # Explicit legacy history also has to be removed with its recipe.
+        await self.db.execute_query(
+            "INSERT INTO recipe_owners(recipe_id,player_username) VALUES (?,?)", (recipe_id, "tester")
+        )
         await self.db.add_drop(mob_id, "gear", gear_id)
 
         await self.db.delete_gear(gear_id)
@@ -240,22 +236,22 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rows, [], table)
 
     async def test_card_aggregates_preserve_commas_and_pipes(self):
-        await self.db.execute_query(
-            "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("forest, cave | level", "📍")
-        )
+        await self.db.execute_query("INSERT INTO locations (name, emoji) VALUES (?, ?)", ("forest, cave | level", "📍"))
         await self.db.execute_query(
             """INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             ("mob, elite | boss", "🐾", 10, 1, 2, 3, 1),
         )
         resource_id = await self.db.add_resource("ore, shard | rare", "📦")
-        gear_id = await self.db.add_gear("blade, two | handed", "rare", "slot", "⚔️")
-        card_id = await self.db.add_card("card, special | foil", "🃏", "slot")
+        gear_id = await self.db.add_gear("blade, two | handed", "rare", "основная рука", "⚔️")
+        card_id = await self.db.add_card("card, special | foil", "🃏", "основная рука")
         await self.db.add_drop(1, "resource", resource_id)
         await self.db.add_drop(1, "gear", gear_id)
         await self.db.add_drop(1, "card", card_id)
         recipe_id = await self.db.create_recipe("gear", gear_id)
         await self.db.add_ingredient(recipe_id, resource_id, 2)
+        scroll_id = await self.db.add_resource("learning scroll", "📜", "scroll_recipe")
+        await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
         await self.db.add_recipe_owner(recipe_id, "owner, with | separators")
 
         mob = await self.db.get_mob_full_card(1)
@@ -324,13 +320,15 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ("барсук", "🦡", first_location_id),
         )
         for name, emoji, location_id in mob_specs:
-            mob_ids.append(await self.db.execute_insert(
-                """
+            mob_ids.append(
+                await self.db.execute_insert(
+                    """
                 INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, emoji, 10, 1, 2, 3, location_id),
-            ))
+                    (name, emoji, 10, 1, 2, 3, location_id),
+                )
+            )
         for mob_id in mob_ids:
             await self.db.add_drop(mob_id, "resource", resource_id)
 
@@ -365,9 +363,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             ("Хранитель предмета", "🐺", 10, 1, 2, 3, location_id),
         )
         gear_id = await self.db.add_gear("Тлеющий шлем", "epic", "шлем", "🪖")
-        scroll_id = await self.db.add_resource(
-            "Рецепт (Тлеющий шлем)", "📜", "scroll_recipe"
-        )
+        scroll_id = await self.db.add_resource("Рецепт (Тлеющий шлем)", "📜", "scroll_recipe")
         misleading_id = await self.db.add_resource("Свиток ткани", "🧵", "craft")
         recipe_id = await self.db.create_recipe("gear", gear_id)
         await self.db.set_recipe_learning_scroll(recipe_id, scroll_id)
@@ -406,9 +402,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gear["scroll_mobs"], [])
 
     async def test_resource_delete_requires_explicit_dependency_cleanup(self):
-        await self.db.execute_query(
-            "INSERT INTO locations (name, emoji) VALUES (?, ?)", ("location", "📍")
-        )
+        await self.db.execute_query("INSERT INTO locations (name, emoji) VALUES (?, ?)", ("location", "📍"))
         await self.db.execute_query(
             """INSERT INTO mobs (name, emoji, hp, dust_min, dust_max, exp, location_id)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -418,7 +412,10 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         ingredient_id = await self.db.add_resource("ingredient", "✨")
         recipe_id = await self.db.create_recipe("resource", result_id)
         await self.db.add_ingredient(recipe_id, ingredient_id, 2)
-        await self.db.add_recipe_owner(recipe_id, "tester")
+        # Explicit legacy history also has to be removed with its recipe.
+        await self.db.execute_query(
+            "INSERT INTO recipe_owners(recipe_id,player_username) VALUES (?,?)", (recipe_id, "tester")
+        )
         await self.db.add_drop(1, "resource", result_id)
 
         with self.assertRaises(ValueError):
@@ -429,16 +426,17 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.db.remove_drop(1, "resource", result_id)
         await self.db.delete_resource(result_id)
 
-        self.assertEqual(await self.db.execute_query(
-            "SELECT 1 FROM drops WHERE item_type = 'resource' AND item_id = ?", (result_id,)
-        ), [])
-        self.assertEqual(await self.db.execute_query(
-            "SELECT 1 FROM recipes WHERE id = ?", (recipe_id,)
-        ), [])
-        self.assertEqual(await self.db.execute_query(
-            "SELECT 1 FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,)
-        ), [])
-        self.assertEqual(await self.db.execute_query(
-            "SELECT 1 FROM recipe_owners WHERE recipe_id = ?", (recipe_id,)
-        ), [])
+        self.assertEqual(
+            await self.db.execute_query(
+                "SELECT 1 FROM drops WHERE item_type = 'resource' AND item_id = ?", (result_id,)
+            ),
+            [],
+        )
+        self.assertEqual(await self.db.execute_query("SELECT 1 FROM recipes WHERE id = ?", (recipe_id,)), [])
+        self.assertEqual(
+            await self.db.execute_query("SELECT 1 FROM recipe_ingredients WHERE recipe_id = ?", (recipe_id,)), []
+        )
+        self.assertEqual(
+            await self.db.execute_query("SELECT 1 FROM recipe_owners WHERE recipe_id = ?", (recipe_id,)), []
+        )
         self.assertIsNotNone(await self.db.get_resource_by_id(ingredient_id))

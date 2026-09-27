@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 
-DropItemType: TypeAlias = Literal['resource', 'gear', 'card']
+DropItemType: TypeAlias = Literal["resource", "gear", "card"]
 
 
 class ItemRow(TypedDict):
@@ -14,7 +14,22 @@ class ItemRow(TypedDict):
     emoji: str
 
 
+class LocationRow(ItemRow):
+    parent_id: int | None
+
+
+class MobRow(ItemRow):
+    hp: int
+    dust_min: int
+    dust_max: int
+    exp: int
+    location_id: int
+    location_name: str
+    location_emoji: str
+
+
 class ResourceRow(ItemRow):
+    code: NotRequired[str | None]
     type: str
     note: str
 
@@ -39,7 +54,6 @@ class CardRow(ItemRow):
 class NavigationIds(TypedDict):
     prev_id: int | None
     next_id: int | None
-
 
 
 class RecipeOwnerEntry(TypedDict):
@@ -129,6 +143,7 @@ class GearCardRow(GearRow):
 
 
 class RecipeIngredientRow(TypedDict):
+    code: NotRequired[str | None]
     resource_id: int
     name: str
     emoji: str

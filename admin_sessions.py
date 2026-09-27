@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import secrets
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, TypeAlias
 
 from aiogram import BaseMiddleware, types
@@ -12,11 +13,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from telegram_helpers import get_bound_bot, get_callback_message
+from admin_commands import admin_transition
 from telegram_text import split_html
 from utils import escape_html
 
 ScreenValue: TypeAlias = str | int
 _SCREEN_KEY = "admin_screen"
+PENDING_SCREEN_KEY = "admin_pending_screen"
 _PROTECTED_PREFIXES: set[str] = {
     "edit_field_", "select_opt_", "delete_entity",
 }
@@ -55,13 +58,16 @@ async def remember_admin_screen(
     user = event.from_user
     if user is None:
         raise ValueError("An administrative screen requires a user")
-    await state.update_data(**{_SCREEN_KEY: {
+    data = await state.get_data()
+    data[_SCREEN_KEY] = {
         "token": token,
         "user_id": user.id,
         "chat_id": sent_message.chat.id,
         "message_id": sent_message.message_id,
         "context": dict(context or {}),
-    }})
+    }
+    data.pop(PENDING_SCREEN_KEY, None)
+    await state.set_data(data)
 
 
 class AdminScreenMiddleware(BaseMiddleware):
@@ -113,6 +119,16 @@ async def validate_admin_input(message: Message, state: FSMContext) -> bool:
     if not isinstance(screen, dict) or message.from_user is None:
         await message.answer("Экран редактирования устарел. Откройте предмет заново.")
         return False
+    pending = state_data.get(PENDING_SCREEN_KEY)
+    if pending is not None:
+        previous_id = pending.get('previous_message_id') if isinstance(pending, dict) else None
+        if (type(previous_id) is not int or message.reply_to_message is None
+                or message.reply_to_message.message_id != previous_id):
+            await message.answer(
+                'Новый экран не подтверждён. Ответьте через Reply на предыдущее подтверждённое '
+                'приглашение, если оно сохранилось отдельным сообщением, или откройте /kombat заново.'
+            )
+            return False
     context = screen.get("context")
     valid = (
         screen.get("user_id") == message.from_user.id
@@ -129,6 +145,25 @@ async def validate_admin_input(message: Message, state: FSMContext) -> bool:
     return valid
 
 
+@asynccontextmanager
+async def pending_screen_delivery(state: FSMContext, target: Message | types.CallbackQuery, token: str) -> AsyncIterator[None]:
+    """Keep ambiguous/newly delivered prompts from authorizing stale free text.
+
+    The marker is durable before transport. Only a definite Telegram rejection
+    restores it; accepted delivery and storage failure leave inputs blocked
+    until the screen, payload and next state commit together.
+    """
+    previous = await state.get_data()
+    old_screen = previous.get(_SCREEN_KEY)
+    previous_id = old_screen.get('message_id') if isinstance(old_screen, dict) and isinstance(target, Message) else None
+    await state.update_data(**{PENDING_SCREEN_KEY: {'token': token, 'previous_message_id': previous_id}})
+    try:
+        yield
+    except TelegramBadRequest:
+        await state.set_data(previous)
+        raise
+
+
 async def present_admin_text(
     target: Message | types.CallbackQuery,
     state: FSMContext,
@@ -137,6 +172,7 @@ async def present_admin_text(
     *,
     context: Mapping[str, ScreenValue] | None = None,
     parse_mode: str | None = None,
+    commit: Callable[[], Awaitable[None]] | None = None,
 ) -> Message:
     """Present and bind a plain screen; render oversized HTML through safe delivery."""
     from messaging import cleanup_card_fragments, upsert_rich_card
@@ -145,28 +181,35 @@ async def present_admin_text(
     tagged = tag_admin_keyboard(keyboard, token)
     message = get_callback_message(target) if isinstance(target, types.CallbackQuery) else target
     safe_html = text if parse_mode == "HTML" else escape_html(text)
-    if len(split_html(safe_html)) > 1:
-        from aiogram.types import InputRichMessage
+    async with pending_screen_delivery(state, target, token):
+        if len(split_html(safe_html)) > 1:
+            from aiogram.types import InputRichMessage
 
-        sent = await upsert_rich_card(
-            bot=get_bound_bot(target), chat_id=message.chat.id,
-            rich_message=InputRichMessage(html=safe_html), plain_text=safe_html,
-            reply_markup=tagged,
-            current_message=message if isinstance(target, types.CallbackQuery) else None,
-            message_thread_id=message.message_thread_id,
-        )
-    elif isinstance(target, types.CallbackQuery):
-        try:
-            result = await message.edit_text(text, reply_markup=tagged, parse_mode=parse_mode)
-            sent = result if isinstance(result, Message) else message
-        except TelegramBadRequest as error:
-            if "message is not modified" not in error.message.lower():
-                raise
-            sent = message
-        await cleanup_card_fragments(get_bound_bot(target), message.chat.id, message.message_id)
-    else:
-        sent = await message.answer(text, reply_markup=tagged, parse_mode=parse_mode)
-    await remember_admin_screen(state, target, sent, token, context)
+            sent = await upsert_rich_card(
+                bot=get_bound_bot(target), chat_id=message.chat.id,
+                rich_message=InputRichMessage(html=safe_html), plain_text=safe_html,
+                reply_markup=tagged,
+                current_message=message if isinstance(target, types.CallbackQuery) else None,
+                message_thread_id=message.message_thread_id,
+            )
+        elif isinstance(target, types.CallbackQuery):
+            try:
+                result = await message.edit_text(text, reply_markup=tagged, parse_mode=parse_mode)
+                sent = result if isinstance(result, Message) else message
+            except TelegramBadRequest as error:
+                if "message is not modified" not in error.message.lower():
+                    raise
+                sent = message
+            await cleanup_card_fragments(get_bound_bot(target), message.chat.id, message.message_id)
+        else:
+            sent = await message.answer(text, reply_markup=tagged, parse_mode=parse_mode)
+    # Delivery can succeed before storage fails. Publish the new token only
+    # together with the payload and next state it represents. A partial commit
+    # must never authorize a visible button against the previous selection.
+    async with admin_transition(state):
+        if commit is not None:
+            await commit()
+        await remember_admin_screen(state, target, sent, token, context)
     return sent
 
 
@@ -178,16 +221,24 @@ async def present_admin_rich(
     keyboard: InlineKeyboardMarkup | None = None,
     *,
     context: Mapping[str, ScreenValue] | None = None,
+    commit: Callable[[], Awaitable[None]] | None = None,
 ) -> Message:
     from ui.rich import CardView, present_rich_card
 
     token = secrets.token_hex(4)
     message = get_callback_message(target) if isinstance(target, types.CallbackQuery) else target
-    sent = await present_rich_card(
-        bot=get_bound_bot(target), chat_id=message.chat.id,
-        current_message=message if isinstance(target, types.CallbackQuery) else None,
-        card=CardView(rich_html, fallback_html),
-        reply_markup=tag_admin_keyboard(keyboard, token),
-    )
-    await remember_admin_screen(state, target, sent, token, context)
+    async with pending_screen_delivery(state, target, token):
+        sent = await present_rich_card(
+            bot=get_bound_bot(target), chat_id=message.chat.id,
+            current_message=message if isinstance(target, types.CallbackQuery) else None,
+            card=CardView(rich_html, fallback_html),
+            reply_markup=tag_admin_keyboard(keyboard, token),
+        )
+    # Delivery can succeed before storage fails. Publish the new token only
+    # together with the payload and next state it represents. A partial commit
+    # must never authorize a visible button against the previous selection.
+    async with admin_transition(state):
+        if commit is not None:
+            await commit()
+        await remember_admin_screen(state, target, sent, token, context)
     return sent

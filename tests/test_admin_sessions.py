@@ -76,8 +76,25 @@ class AdminScreenTests(unittest.IsolatedAsyncioTestCase):
         await self.route(self.callback(await self.button('edit_field_name')))
         self.assertEqual(await self.state.get_state(), GenericEditStates.new_value.state)
         await self.route(self.message.model_copy(update={'text': 'Новое имя'}))
-        self.update.assert_awaited_once_with(1, name='Новое имя')
+        self.update.assert_awaited_once_with(1, 'name', 'Новое имя')
         self.assertEqual(await self.state.get_state(), GenericEditStates.select_field.state)
+
+    async def test_failed_field_prompt_does_not_activate_unseen_input(self):
+        from aiogram.exceptions import TelegramNetworkError
+        from aiogram.methods import EditMessageText
+        await self.open_item()
+        before = await self.state.get_data()
+        change = self.callback(await self.button('edit_field_name'))
+        failure = TelegramNetworkError(method=EditMessageText(chat_id=1, message_id=10, text='Name'), message='offline')
+        with patch.object(types.Message, 'edit_text', AsyncMock(side_effect=failure)):
+            with self.assertRaises(TelegramNetworkError):
+                await self.route(change)
+        self.assertEqual(await self.state.get_state(), GenericEditStates.select_field.state)
+        self.assertEqual({key: value for key, value in (await self.state.get_data()).items() if key != 'admin_pending_screen'}, before)
+        await self.route(self.message.model_copy(update={'text': 'Спасибо'}))
+        self.update.assert_not_awaited()
+        await self.route(change)
+        self.assertEqual(await self.state.get_state(), GenericEditStates.new_value.state)
 
     async def test_wrong_user_message_and_context_are_rejected(self):
         await self.open_item()
@@ -107,7 +124,7 @@ class AdminScreenTests(unittest.IsolatedAsyncioTestCase):
         await self.route(self.callback('optional_note_skip'))
         self.update.assert_not_awaited()
         await self.route(self.callback(await self.button('optional_note_skip')))
-        self.update.assert_awaited_once_with(1, note='')
+        self.update.assert_awaited_once_with(1, 'note', '')
 
     async def test_delivery_failure_does_not_leave_write_state(self):
         await self.open_item()

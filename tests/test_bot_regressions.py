@@ -10,7 +10,7 @@ from aiogram.methods import SendRichMessage
 
 import admin_handlers as admin
 import admin_utils
-import bot as app
+from tests.public_fixture import app
 from database import Database
 from messaging import replace_rich_card
 from search_rendering import build_search_content
@@ -62,7 +62,7 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         config = dict(admin.ENTITY_CONFIGS["resource"], update_func=AsyncMock())
         with patch.object(admin, "ADMIN_IDS", [101]), patch.dict(admin.ENTITY_CONFIGS, {"resource": config}), patch.object(
             app.dp, "sub_routers", [admin.admin_router],
-        ), patch.object(app, "log_start", new=AsyncMock()), patch.object(app, "log_search", new=AsyncMock()), patch.object(
+        ), patch.object(app.analytics, "log_start", new=AsyncMock()), patch.object(app.analytics, "log_search", new=AsyncMock()), patch.object(
             app.db, "search", new=AsyncMock(return_value={}),
         ) as search:
             await self.route_message("/menu")
@@ -86,7 +86,7 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
         }
         target = {"id": 7, "type": "craft", "location_id": 1, "rarity": "epic", "slot": "шлем"}
         for kind, (builder_name, log_name) in names.items():
-            with self.subTest(kind=kind), patch.object(app.db, "get_prev_next_gear", new=AsyncMock(return_value={"prev_id": None, "next_id": None})), patch.object(app.db, fetch_names[kind], new=AsyncMock(return_value=target)), patch.object(app, builder_name, new=AsyncMock(return_value=card)) as builder, patch.object(app, log_name, new=AsyncMock()) as log, patch.object(
+            with self.subTest(kind=kind), patch.object(app.db, "get_prev_next_gear", new=AsyncMock(return_value={"prev_id": None, "next_id": None})), patch.object(app.db, fetch_names[kind], new=AsyncMock(return_value=target)), patch.object(app, builder_name, new=AsyncMock(return_value=card)) as builder, patch.object(app.analytics, log_name, new=AsyncMock()) as log, patch.object(
                 app, "upsert_rich_card", new=AsyncMock(return_value=self.message),
             ):
                 await self.route_message(f"/start {kind}_7")
@@ -94,7 +94,7 @@ class BotFlowRegressionTests(unittest.IsolatedAsyncioTestCase):
             builder.assert_awaited_once()
 
     async def test_resource_deep_link_keeps_return_gear_slot_and_page(self):
-        with patch.object(app.db, "get_resource_card", new=AsyncMock(return_value={"id": 7, "type": "craft"})), patch.object(app, "build_resource_card", new=AsyncMock(return_value=CardView("Found", "Found"))), patch.object(app, "log_view_resource", new=AsyncMock()), patch.object(
+        with patch.object(app.db, "get_resource_card", new=AsyncMock(return_value={"id": 7, "type": "craft"})), patch.object(app, "build_resource_card", new=AsyncMock(return_value=CardView("Found", "Found"))), patch.object(app.analytics, "log_view_resource", new=AsyncMock()), patch.object(
             app, "upsert_rich_card", new=AsyncMock(return_value=self.message),
         ) as render:
             await self.route_message("/start resource_7-r-gear_21_epic_4_3")

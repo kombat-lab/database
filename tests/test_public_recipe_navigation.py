@@ -8,7 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
-import bot as app
+from tests.public_fixture import app
 from database import Database
 from navigation import MAX_SQLITE_ID
 from ui.callbacks import (
@@ -102,7 +102,7 @@ class PublicRecipeTests(unittest.IsolatedAsyncioTestCase):
         start = self.message.model_copy(update={"text": f"/start gear_{self.gear_id}", "from_user": self.user})
         try:
             with patch.object(app, "db", self.db), patch.object(app, "upsert_rich_card", AsyncMock(return_value=self.message)), patch.object(
-                app, "log_view_gear", AsyncMock(),
+                app.analytics, "log_view_gear", AsyncMock(),
             ), patch.object(types.Message, "delete", AsyncMock()), patch.object(types.Message, "answer", AsyncMock()) as answer, patch.object(
                 types.Message, "edit_text", AsyncMock(return_value=self.message),
             ) as edit, patch.object(types.CallbackQuery, "answer", AsyncMock()):

@@ -203,6 +203,7 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
     async def test_failed_picker_delivery_keeps_note_step_retryable(self):
         await self.resource_note()
         old_screen = (await self.state.get_data())["admin_screen"]
+        old_prompt = self.latest
         failure = TelegramNetworkError(method=EditMessageText(text="sources", chat_id=101, message_id=10), message="offline")
         with patch.object(types.Message, "answer", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
@@ -210,7 +211,7 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         self.assertEqual(await self.state.get_state(), admin.ResourceAddStates.note.state)
         self.assertEqual((await self.state.get_data())["admin_screen"], old_screen)
         self.assertEqual(await self.db.execute_query("SELECT id FROM resources"), [])
-        await self.text("Описание")
+        await self.text("Описание", reply_to=old_prompt)
         await self.route(self.callback(self.action("isd:done")))
         self.assertEqual(len(await self.db.execute_query("SELECT id FROM resources")), 1)
 
@@ -226,7 +227,8 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         with patch.object(types.Message, "edit_text", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.route(toggle)
-        self.assertEqual(await self.state.get_data(), before)
+        self.assertEqual({key: value for key, value in (await self.state.get_data()).items() if key != 'admin_pending_screen'}, before)
+        self.assertIn('admin_pending_screen', await self.state.get_data())
         self.assertEqual((await sources.current_selection(self.state)).selected, [])
         await self.route(toggle)
         self.assertEqual((await sources.current_selection(self.state)).selected, [mob])
@@ -249,7 +251,8 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         with patch.object(ui.rich, "present_rich_card", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.route(back)
-        self.assertEqual(await self.state.get_data(), before)
+        self.assertEqual({key: value for key, value in (await self.state.get_data()).items() if key != 'admin_pending_screen'}, before)
+        self.assertIn('admin_pending_screen', await self.state.get_data())
         self.assertEqual(await self.state.get_state(), sources.ItemSourcesStates.select.state)
         self.assertEqual(await self.drop_ids("resource", item_id), [])
         await self.route(save)

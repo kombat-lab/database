@@ -19,7 +19,7 @@ from database import Database
 class CatalogCreationFixture:
     async def asyncSetUp(self):
         self.bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
-        self.db = Database(":memory:")
+        self.db = Database(getattr(self, "database_path", ":memory:"))
         await self.db.connect()
         self.storage = MemoryStorage()
         self.state = FSMContext(self.storage, StorageKey(bot_id=self.bot.id, chat_id=101, user_id=101))
@@ -141,13 +141,16 @@ class CatalogCreationSessionTests(CatalogCreationFixture, unittest.IsolatedAsync
     async def test_failed_next_prompt_preserves_previous_input_step(self):
         await admin.begin_catalog_creation(self.callback("start"), self.state, "resource")
         old_screen = (await self.state.get_data())["admin_screen"]
+        old_prompt = self.latest
         failure = TelegramNetworkError(method=SendMessage(chat_id=101, text="next"), message="offline")
         with patch.object(types.Message, "answer", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.text("Accepted name")
         self.assertEqual(await self.state.get_state(), admin.ResourceAddStates.name.state)
         self.assertEqual((await self.state.get_data())["admin_screen"], old_screen)
-        await self.text("Accepted name")
+        await self.text("Unbound retry")
+        self.assertEqual(await self.state.get_state(), admin.ResourceAddStates.name.state)
+        await self.text("Accepted name", reply_to=old_prompt)
         self.assertEqual(await self.state.get_state(), admin.ResourceAddStates.emoji.state)
 
     async def test_database_failure_keeps_draft_and_successful_retry_inserts_once(self):

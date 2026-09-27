@@ -5,7 +5,7 @@ from aiogram import Bot, types
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.methods import EditMessageText
 
-import bot as app
+from tests.public_fixture import app
 
 
 class CardFragmentNavigationTests(unittest.IsolatedAsyncioTestCase):

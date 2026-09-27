@@ -24,13 +24,8 @@ from admin_mobs import (
     resolve_drop_filter,
 )
 from database import db
-from bot import (
-    back_to_main_menu,
-    build_gear_card_keyboard,
-    edit_callback_window,
-    get_location_list_title,
-    mobs_button,
-)
+from tests.public_fixture import app
+
 from ui.callbacks import (
     EntityBackCallback,
     EntityNavigateCallback,
@@ -52,6 +47,13 @@ from ui.links import EntityLinkMode
 from ui.navigation import EntityNavigationHistory, EntityRef
 from ui.rich import CardView, SECTION_DIVIDER, present_rich_card
 from utils import RICH_TABLE_OPEN
+
+back_to_main_menu = app.back_to_main_menu
+build_gear_card_keyboard = app.build_gear_card_keyboard
+edit_callback_window = app.edit_callback_window
+get_location_list_title = app.get_location_list_title
+mobs_button = app.mobs_button
+
 
 
 class BotApiCompatibilityTests(unittest.TestCase):
@@ -270,7 +272,7 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_menu_reuses_callback_window(self):
         await self.state.set_state('old_admin_input')
         with (
-            patch('bot.entity_navigation.clear', new=Mock()) as clear,
+            patch.object(app.entity_navigation, "clear", new=Mock()) as clear,
             patch.object(types.CallbackQuery, 'answer', new=AsyncMock()),
             patch.object(types.Message, 'edit_text', new=AsyncMock(return_value=self.message)) as edit,
             patch.object(types.Message, 'answer', new=AsyncMock()) as answer,
@@ -285,8 +287,8 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mob_tab_uses_rich_media_instead_of_photo_message(self):
         with (
-            patch('bot.os.path.isfile', return_value=True),
-            patch('bot.get_locations_keyboard', new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[]))),
+            patch('public_catalog.os.path.isfile', return_value=True),
+            patch.object(app, "get_locations_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[]))),
             patch.object(Bot, 'send_rich_message', new=AsyncMock(return_value=self.message)) as send,
             patch.object(types.Message, 'answer_photo', new=AsyncMock()) as photo,
             patch.object(types.Message, 'answer', new=AsyncMock()) as answer,
@@ -490,8 +492,8 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
             "owner_user_ids": [123],
             "can_learn": True,
         }
-        with patch(
-            "bot.db.get_prev_next_gear",
+        with patch.object(
+            app.db, "get_prev_next_gear",
             new=AsyncMock(return_value={"prev_id": 46, "next_id": 48}),
         ) as neighbours:
             keyboard = await build_gear_card_keyboard(

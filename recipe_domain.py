@@ -1,6 +1,7 @@
 """Validated contracts for durable gear editing and atomic catalog saves."""
 
 from typing import Literal, NotRequired, TypedDict
+import unicodedata
 
 from utils import is_valid_emoji
 
@@ -17,18 +18,24 @@ class DomainError(ValueError):
     """A catalog operation would violate game or editing invariants."""
 
 
+class DuplicateIdentityError(DomainError):
+    """A matching identity requires choosing an existing item or explicit variant."""
+
+
 class DraftConflictError(DomainError):
     """A stale button, context or concurrent edit cannot update this draft."""
 
 
 class MaterialInput(TypedDict):
     quantity: int
+    allow_duplicate: NotRequired[bool]
     resource_id: NotRequired[int]
     name: NotRequired[str]
     emoji: NotRequired[str]
 
 
 class LearningScrollInput(TypedDict, total=False):
+    allow_duplicate: bool
     resource_id: int
     name: str
     emoji: str
@@ -65,7 +72,7 @@ class GearDraft(TypedDict):
     chat_id: int
     message_id: int
     revision: int
-    status: Literal['editing', 'saved', 'cancelled']
+    status: Literal["editing", "saved", "cancelled"]
     payload: GearDraftPayload
     saved_result: GearSaveResult | None
 
@@ -77,142 +84,213 @@ class ResourceDependencies(TypedDict):
     drop_mob_ids: list[int]
 
 
+def normalize_identity(value: str) -> str:
+    """Canonical comparison only; keep administrators' display spelling."""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def validate_name(value: object, *, resource: bool = False) -> str:
+    return _text(value, "Название", MAX_RESOURCE_NAME_LENGTH if resource else MAX_NAME_LENGTH, required=True)
+
+
+def validate_emoji(value: object) -> str:
+    return _emoji(value, "Эмодзи")
+
+
+def validate_note(value: object) -> str:
+    return _text(value, "Примечание", MAX_NOTE_LENGTH)
+
+
+def validate_bonus(value: object) -> str:
+    return _text(value, "Бонус", 500)
+
+
+def nonnegative_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SQLITE_ID:
+        raise DomainError(f"{label}: нужно неотрицательное целое число.")
+    return value
+
+
+def validate_page(offset: int, limit: int, *, maximum: int = 100) -> None:
+    nonnegative_integer(offset, "Смещение")
+    positive_integer(limit, "Размер страницы")
+    if limit > maximum:
+        raise DomainError(f"Размер страницы не должен превышать {maximum}.")
+
+
 def positive_integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_SQLITE_ID:
-        raise DomainError(f'{label}: нужно положительное целое число.')
+        raise DomainError(f"{label}: нужно положительное целое число.")
     return value
 
 
 def _text(value: object, label: str, maximum: int, *, required: bool = False) -> str:
     if not isinstance(value, str):
-        raise DomainError(f'{label}: требуется текст.')
+        raise DomainError(f"{label}: требуется текст.")
     if len(value) > maximum or (required and not value.strip()):
-        raise DomainError(f'{label}: допустимо от {1 if required else 0} до {maximum} символов.')
+        raise DomainError(f"{label}: допустимо от {1 if required else 0} до {maximum} символов.")
     return value.strip() if required else value
 
 
 def validate_craft_location(value: object) -> str:
-    return _text(value, 'Место изготовления', MAX_CRAFT_LOCATION_LENGTH)
+    return _text(value, "Место изготовления", MAX_CRAFT_LOCATION_LENGTH)
 
 
 def _emoji(value: object, label: str) -> str:
     text = _text(value, label, 64)
     if text and not is_valid_emoji(text):
-        raise DomainError(f'{label}: требуется Unicode эмодзи.')
+        raise DomainError(f"{label}: требуется Unicode эмодзи.")
     return text
 
 
 def _ids(value: object, label: str) -> list[int]:
     if not isinstance(value, list) or len(value) > 1000:
-        raise DomainError(f'{label}: требуется список идентификаторов.')
+        raise DomainError(f"{label}: требуется список идентификаторов.")
     result = [positive_integer(item, label) for item in value]
     if len(result) != len(set(result)):
-        raise DomainError(f'{label}: повторяющиеся идентификаторы.')
+        raise DomainError(f"{label}: повторяющиеся идентификаторы.")
     return result
 
 
 def validate_draft_payload(value: object, *, complete: bool = False) -> GearDraftPayload:
     """Decode untrusted persisted JSON; partial drafts may omit unfinished fields."""
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise DomainError('Некорректный черновик.')
-    allowed = {'gear_id', 'name', 'rarity', 'slot', 'emoji', 'level', 'classes', 'note',
-               'craftable', 'quantity', 'materials', 'learning_scroll', 'gear_mob_ids', 'scroll_mob_ids'}
+        raise DomainError("Некорректный черновик.")
+    allowed = {
+        "gear_id",
+        "name",
+        "rarity",
+        "slot",
+        "emoji",
+        "level",
+        "classes",
+        "note",
+        "craftable",
+        "quantity",
+        "materials",
+        "learning_scroll",
+        "gear_mob_ids",
+        "scroll_mob_ids",
+    }
     if set(value) - allowed:
-        raise DomainError('Неизвестные поля черновика.')
+        raise DomainError("Неизвестные поля черновика.")
     result: GearDraftPayload = {}
-    if 'gear_id' in value:
-        result['gear_id'] = positive_integer(value['gear_id'], 'Снаряжение')
-    if 'name' in value:
-        result['name'] = _text(value['name'], 'Название', MAX_NAME_LENGTH, required=True)
-    if 'rarity' in value:
-        rarity = _text(value['rarity'], 'Редкость', 32, required=True)
+    if "gear_id" in value:
+        result["gear_id"] = positive_integer(value["gear_id"], "Снаряжение")
+    if "name" in value:
+        result["name"] = _text(value["name"], "Название", MAX_NAME_LENGTH, required=True)
+    if "rarity" in value:
+        rarity = _text(value["rarity"], "Редкость", 32, required=True)
         if rarity not in RARITY_KEYS:
-            raise DomainError('Неизвестная редкость.')
-        result['rarity'] = rarity
-    if 'slot' in value:
-        slot = _text(value['slot'], 'Слот', 64, required=True)
+            raise DomainError("Неизвестная редкость.")
+        result["rarity"] = rarity
+    if "slot" in value:
+        slot = _text(value["slot"], "Слот", 64, required=True)
         if slot not in GEAR_SLOTS:
-            raise DomainError('Неизвестный слот.')
-        result['slot'] = slot
-    if 'emoji' in value:
-        result['emoji'] = _emoji(value['emoji'], 'Эмодзи')
-    if 'level' in value:
-        result['level'] = positive_integer(value['level'], 'Уровень')
-    if 'classes' in value:
-        raw_classes = _text(value['classes'], 'Классы', 128)
-        classes = [part.strip() for part in raw_classes.split(',') if part.strip()]
+            raise DomainError("Неизвестный слот.")
+        result["slot"] = slot
+    if "emoji" in value:
+        result["emoji"] = _emoji(value["emoji"], "Эмодзи")
+    if "level" in value:
+        result["level"] = positive_integer(value["level"], "Уровень")
+    if "classes" in value:
+        raw_classes = _text(value["classes"], "Классы", 128)
+        classes = [part.strip() for part in raw_classes.split(",") if part.strip()]
         if any(item not in GEAR_CLASS_SET for item in classes):
-            raise DomainError('Неизвестный класс снаряжения.')
-        result['classes'] = ', '.join(item for item in GEAR_CLASS_ORDER if item in classes)
-    if 'note' in value:
-        result['note'] = _text(value['note'], 'Примечание', MAX_NOTE_LENGTH)
-    if 'craftable' in value:
-        if not isinstance(value['craftable'], bool):
-            raise DomainError('Для признака изготовления требуется да/нет.')
-        result['craftable'] = value['craftable']
-    if 'quantity' in value:
-        result['quantity'] = positive_integer(value['quantity'], 'Количество результата')
-    if 'materials' in value:
-        raw_materials = value['materials']
+            raise DomainError("Неизвестный класс снаряжения.")
+        result["classes"] = ", ".join(item for item in GEAR_CLASS_ORDER if item in classes)
+    if "note" in value:
+        result["note"] = _text(value["note"], "Примечание", MAX_NOTE_LENGTH)
+    if "craftable" in value:
+        if not isinstance(value["craftable"], bool):
+            raise DomainError("Для признака изготовления требуется да/нет.")
+        result["craftable"] = value["craftable"]
+    if "quantity" in value:
+        result["quantity"] = positive_integer(value["quantity"], "Количество результата")
+    if "materials" in value:
+        raw_materials = value["materials"]
         if not isinstance(raw_materials, list) or len(raw_materials) > 200:
-            raise DomainError('Некорректный список материалов.')
+            raise DomainError("Некорректный список материалов.")
         materials: list[MaterialInput] = []
         for item in raw_materials:
-            if (not isinstance(item, dict) or 'quantity' not in item
-                    or set(item) - {'resource_id', 'quantity', 'name', 'emoji'}
-                    or ('resource_id' in item) == ('name' in item)):
-                raise DomainError('Укажите существующий resource_id или название нового материала и quantity.')
-            material = MaterialInput(quantity=positive_integer(item['quantity'], 'Количество'))
-            if 'resource_id' in item:
-                material['resource_id'] = positive_integer(item['resource_id'], 'Ресурс')
+            if (
+                not isinstance(item, dict)
+                or "quantity" not in item
+                or set(item) - {"resource_id", "quantity", "name", "emoji", "allow_duplicate"}
+                or ("resource_id" in item) == ("name" in item)
+            ):
+                raise DomainError("Укажите существующий resource_id или название нового материала и quantity.")
+            material = MaterialInput(quantity=positive_integer(item["quantity"], "Количество"))
+            if "resource_id" in item:
+                material["resource_id"] = positive_integer(item["resource_id"], "Ресурс")
             else:
-                material['name'] = _text(item['name'], 'Название материала', MAX_RESOURCE_NAME_LENGTH, required=True)
-            if 'emoji' in item:
-                material['emoji'] = _emoji(item['emoji'], 'Эмодзи материала')
+                material["name"] = _text(item["name"], "Название материала", MAX_RESOURCE_NAME_LENGTH, required=True)
+            if "emoji" in item:
+                material["emoji"] = _emoji(item["emoji"], "Эмодзи материала")
+            if "allow_duplicate" in item:
+                if not isinstance(item["allow_duplicate"], bool):
+                    raise DomainError("Подтверждение отдельного варианта должно быть да/нет.")
+                material["allow_duplicate"] = item["allow_duplicate"]
             materials.append(material)
-        keys = [(str(item.get('resource_id')) if 'resource_id' in item
-                 else 'name:' + item.get('name', '').casefold()) for item in materials]
+        keys = [
+            (
+                str(item.get("resource_id"))
+                if "resource_id" in item
+                else "name:" + normalize_identity(item.get("name", ""))
+            )
+            for item in materials
+        ]
         if len(set(keys)) != len(keys):
-            raise DomainError('Материал повторяется: измените его количество.')
-        result['materials'] = materials
-    if 'learning_scroll' in value:
-        raw_scroll = value['learning_scroll']
+            raise DomainError("Материал повторяется: измените его количество.")
+        result["materials"] = materials
+    if "learning_scroll" in value:
+        raw_scroll = value["learning_scroll"]
         if raw_scroll is None:
-            result['learning_scroll'] = None
+            result["learning_scroll"] = None
         else:
-            if not isinstance(raw_scroll, dict) or set(raw_scroll) - {'resource_id', 'name', 'emoji', 'note'}:
-                raise DomainError('Некорректное описание изучаемого свитка.')
+            if not isinstance(raw_scroll, dict) or set(raw_scroll) - {
+                "resource_id",
+                "name",
+                "emoji",
+                "note",
+                "allow_duplicate",
+            }:
+                raise DomainError("Некорректное описание изучаемого свитка.")
             scroll: LearningScrollInput = {}
-            if 'resource_id' in raw_scroll:
-                scroll['resource_id'] = positive_integer(raw_scroll['resource_id'], 'Свиток')
-            if 'name' in raw_scroll:
-                scroll['name'] = _text(raw_scroll['name'], 'Название свитка', MAX_RESOURCE_NAME_LENGTH, required=True)
-            if 'emoji' in raw_scroll:
-                scroll['emoji'] = _emoji(raw_scroll['emoji'], 'Эмодзи свитка')
-            if 'note' in raw_scroll:
-                scroll['note'] = _text(raw_scroll['note'], 'Примечание свитка', MAX_NOTE_LENGTH)
-            result['learning_scroll'] = scroll
-    if 'gear_mob_ids' in value:
-        result['gear_mob_ids'] = _ids(value['gear_mob_ids'], 'Источники снаряжения')
-    if 'scroll_mob_ids' in value:
-        result['scroll_mob_ids'] = _ids(value['scroll_mob_ids'], 'Источники свитка')
+            if "resource_id" in raw_scroll:
+                scroll["resource_id"] = positive_integer(raw_scroll["resource_id"], "Свиток")
+            if "name" in raw_scroll:
+                scroll["name"] = _text(raw_scroll["name"], "Название свитка", MAX_RESOURCE_NAME_LENGTH, required=True)
+            if "emoji" in raw_scroll:
+                scroll["emoji"] = _emoji(raw_scroll["emoji"], "Эмодзи свитка")
+            if "note" in raw_scroll:
+                scroll["note"] = _text(raw_scroll["note"], "Примечание свитка", MAX_NOTE_LENGTH)
+            if "allow_duplicate" in raw_scroll:
+                if not isinstance(raw_scroll["allow_duplicate"], bool):
+                    raise DomainError("Подтверждение отдельного варианта должно быть да/нет.")
+                scroll["allow_duplicate"] = raw_scroll["allow_duplicate"]
+            result["learning_scroll"] = scroll
+    if "gear_mob_ids" in value:
+        result["gear_mob_ids"] = _ids(value["gear_mob_ids"], "Источники снаряжения")
+    if "scroll_mob_ids" in value:
+        result["scroll_mob_ids"] = _ids(value["scroll_mob_ids"], "Источники свитка")
     if complete:
-        if not all(key in result for key in ('name', 'rarity', 'slot')):
-            raise DomainError('Заполните название, редкость и слот.')
-        result.setdefault('emoji', '')
-        result.setdefault('level', 1)
-        result.setdefault('classes', '')
-        result.setdefault('note', '')
-        result.setdefault('craftable', False)
-        result.setdefault('quantity', 1)
-        result.setdefault('materials', [])
-        result.setdefault('learning_scroll', None)
-        result.setdefault('gear_mob_ids', [])
-        result.setdefault('scroll_mob_ids', [])
-        if result['craftable'] and not result['materials']:
-            raise DomainError('Добавьте хотя бы один расходуемый материал.')
-        if not result['craftable'] and (result['materials'] or result['learning_scroll'] is not None):
-            raise DomainError('Материалы и изучение доступны только для изготовления.')
-        if result['learning_scroll'] is None and result['scroll_mob_ids']:
-            raise DomainError('Сначала выберите изучаемый свиток.')
+        if not all(key in result for key in ("name", "rarity", "slot")):
+            raise DomainError("Заполните название, редкость и слот.")
+        result.setdefault("emoji", "")
+        result.setdefault("level", 1)
+        result.setdefault("classes", "")
+        result.setdefault("note", "")
+        result.setdefault("craftable", False)
+        result.setdefault("quantity", 1)
+        result.setdefault("materials", [])
+        result.setdefault("learning_scroll", None)
+        result.setdefault("gear_mob_ids", [])
+        result.setdefault("scroll_mob_ids", [])
+        if result["craftable"] and not result["materials"]:
+            raise DomainError("Добавьте хотя бы один расходуемый материал.")
+        if not result["craftable"] and (result["materials"] or result["learning_scroll"] is not None):
+            raise DomainError("Материалы и изучение доступны только для изготовления.")
+        if result["learning_scroll"] is None and result["scroll_mob_ids"]:
+            raise DomainError("Сначала выберите изучаемый свиток.")
     return result

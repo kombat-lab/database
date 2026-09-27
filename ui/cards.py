@@ -366,14 +366,14 @@ async def build_resource_card(
         ingredients = [
             ingredient
             for ingredient in recipe["ingredients"]
-            if ingredient["resource_id"] == 71
+            if ingredient.get("code") == "dust"
         ] + [
             ingredient
             for ingredient in recipe["ingredients"]
-            if ingredient["resource_id"] != 71
+            if ingredient.get("code") != "dust"
         ]
         for ingredient in ingredients:
-            is_dust = ingredient["resource_id"] == 71
+            is_dust = ingredient.get("code") == "dust"
             label = "Пыль" if is_dust else ingredient["name"]
             prefix = "✨ " if is_dust else f"{escape_html(ingredient['emoji'])} "
             item_link = _entity_line(

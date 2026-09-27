@@ -1,18 +1,21 @@
 """Searchable result selection and unpublished alchemy recipe composition."""
 
 import secrets
+from collections.abc import Mapping, Sequence
+from admin_contracts import EntityRow
+from admin_forms import form_id, form_text
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from admin_sessions import present_admin_text, register_protected_callbacks, validate_admin_input
+from runtime_scope import database_for
 from database import db
 from recipe_domain import MaterialInput, positive_integer, validate_craft_location
 from telegram_helpers import get_callback_data, get_message_text
 from utils import escape_html
 
-creation_router = Router()
 register_protected_callbacks(('rc:',))
 PAGE_SIZE = 8
 
@@ -31,43 +34,47 @@ def row(label: str, data: str) -> list[InlineKeyboardButton]:
 
 
 async def screen(target: types.Message | types.CallbackQuery, state: FSMContext, text: str,
-                 rows: list[list[InlineKeyboardButton]]) -> None:
-    data = await state.get_data()
-    context = {'recipe_create_session': str(data['recipe_create_session'])}
+                 rows: list[list[InlineKeyboardButton]], *,
+                 candidate: Mapping[str, object] | None = None, next_state: State | None = None) -> None:
+    data: dict[str, object] = dict(candidate) if candidate is not None else await state.get_data()
+    context: dict[str, str | int] = {'recipe_create_session': form_text(data, 'recipe_create_session', maximum=64)}
     if isinstance(data.get('recipe_create_result_id'), int):
-        context['recipe_create_result_id'] = str(data['recipe_create_result_id'])
-        # IDs keep their actual FSM type for the shared screen comparison.
-        await present_admin_text(target, state, text, InlineKeyboardMarkup(inline_keyboard=rows),
-                                 context={'recipe_create_session': str(data['recipe_create_session']),
-                                          'recipe_create_result_id': data['recipe_create_result_id']}, parse_mode='HTML')
-    else:
-        await present_admin_text(target, state, text, InlineKeyboardMarkup(inline_keyboard=rows),
-                                 context=context, parse_mode='HTML')
+        context['recipe_create_result_id'] = form_id(data, 'recipe_create_result_id')
+
+    async def commit_screen() -> None:
+        await state.set_data(data)
+        if next_state is not None:
+            await state.set_state(next_state)
+
+    await present_admin_text(target, state, text, InlineKeyboardMarkup(inline_keyboard=rows),
+                             context=context, parse_mode='HTML', commit=commit_screen)
 
 
 async def begin_recipe_creation(callback: types.CallbackQuery, state: FSMContext, result_type: str) -> None:
     if result_type not in ('gear', 'resource'):
         await callback.answer('Неизвестный тип рецепта.', show_alert=True)
         return
-    await state.clear()
-    await state.update_data(recipe_create_session=secrets.token_hex(8), recipe_create_type=result_type,
-                            recipe_create_query='', recipe_create_materials=[], recipe_create_quantity=1, recipe_create_location='')
-    await choose_page(callback, state, 0)
+    candidate: dict[str, object] = {
+        'recipe_create_session': secrets.token_hex(8), 'recipe_create_type': result_type,
+        'recipe_create_query': '', 'recipe_create_materials': [], 'recipe_create_quantity': 1,
+        'recipe_create_location': '',
+    }
+    await choose_page(callback, state, 0, candidate=candidate)
 
 
-async def choose_page(target: types.Message | types.CallbackQuery, state: FSMContext, page: int) -> None:
-    data = await state.get_data()
+async def choose_page(target: types.Message | types.CallbackQuery, state: FSMContext, page: int, *,
+                      candidate: Mapping[str, object] | None = None) -> None:
+    data: dict[str, object] = dict(candidate) if candidate is not None else await state.get_data()
     kind = data['recipe_create_type']
     selecting_material = isinstance(data.get('recipe_create_result_id'), int)
     query = str(data.get('recipe_create_query') or '').casefold()
+    rows: Sequence[EntityRow]
     if selecting_material:
-        rows = await db.execute_query("SELECT id,name,emoji FROM resources WHERE type!='scroll_recipe' AND id!=? ORDER BY LOWER_UNICODE(name),id",
-                                      (data['recipe_create_result_id'],))
+        rows = await database_for(db).get_recipe_resource_choices('material', exclude_result_id=form_id(data, 'recipe_create_result_id'))
     elif kind == 'gear':
-        rows = await db.get_all_gear_simple()
+        rows = await database_for(db).get_all_gear_simple()
     else:
-        rows = await db.execute_query("SELECT id,name,emoji FROM resources WHERE type='alchemy' AND id NOT IN "
-                                      "(SELECT result_id FROM recipes WHERE result_type='resource') ORDER BY LOWER_UNICODE(name),id")
+        rows = await database_for(db).get_recipe_resource_choices('alchemy_result')
     rows = [item for item in rows if query in str(item['name']).casefold()]
     page = min(max(page, 0), max(0, (len(rows) - 1) // PAGE_SIZE))
     keyboard = [row(f"{item['emoji']} {item['name']}", f"select:{item['id']}") for item in rows[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]]
@@ -79,19 +86,20 @@ async def choose_page(target: types.Message | types.CallbackQuery, state: FSMCon
     if query:
         keyboard.append(row('Сбросить поиск', 'clearsearch'))
     if selecting_material:
-        keyboard.append(row(f"🔎 Проверить рецепт · материалов {len(data['recipe_create_materials'])}", 'preview'))
+        keyboard.append(row(f"🔎 Проверить рецепт · материалов {len(decode_materials(data['recipe_create_materials']))}", 'preview'))
     elif kind == 'gear':
         keyboard.append(row('➕ Новый предмет и рецепт', 'newgear'))
     keyboard.append([InlineKeyboardButton(text='🔙 В админку', callback_data='admin_cancel_edit')])
     label = 'расходуемый материал' if selecting_material else 'снаряжение' if kind == 'gear' else 'результат алхимии'
-    await state.update_data(recipe_create_page=page)
-    await state.set_state(RecipeCreationStates.choosing)
-    await screen(target, state, f'Выберите {label}. Страница {page + 1}; найдено {len(rows)}.\nПоиск: {escape_html(query or "все")}', keyboard)
+    data['recipe_create_page'] = page
+    await screen(target, state, f'Выберите {label}. Страница {page + 1}; найдено {len(rows)}.\nПоиск: {escape_html(query or "все")}', keyboard,
+                 candidate=data, next_state=RecipeCreationStates.choosing)
 
 
-async def show_preview(target: types.Message | types.CallbackQuery, state: FSMContext, page: int = 0) -> None:
-    data = await state.get_data()
-    resource = await db.get_resource_by_id(data['recipe_create_result_id'])
+async def show_preview(target: types.Message | types.CallbackQuery, state: FSMContext, page: int = 0, *,
+                       candidate: Mapping[str, object] | None = None) -> None:
+    data: dict[str, object] = dict(candidate) if candidate is not None else await state.get_data()
+    resource = await database_for(db).get_resource_by_id(form_id(data, 'recipe_create_result_id'))
     materials = decode_materials(data['recipe_create_materials'])
     page = min(max(page, 0), max(0, (len(materials) - 1) // PAGE_SIZE))
     text = f"<b>Рецепт алхимии: {escape_html(resource['name'] if resource else 'ресурс удалён')}</b>\n"
@@ -99,10 +107,10 @@ async def show_preview(target: types.Message | types.CallbackQuery, state: FSMCo
     keyboard = []
     for index in range(page * PAGE_SIZE, min(len(materials), (page + 1) * PAGE_SIZE)):
         material = materials[index]
-        ingredient = await db.get_resource_by_id(material['resource_id'])
+        ingredient = await database_for(db).get_resource_by_id(material['resource_id'])
         name = ingredient['name'] if ingredient else 'ресурс удалён'
         text += f"• {escape_html(name)} × {material['quantity']}\n"
-        keyboard.append(row(f"Удалить {name}", f'remove:{index}'))
+        keyboard.append(row(f"Удалить {name}", f"remove_id:{material['resource_id']}"))
     if page:
         keyboard.append(row('◀️ Предыдущие материалы', f'preview:{page - 1}'))
     if (page + 1) * PAGE_SIZE < len(materials):
@@ -113,8 +121,8 @@ async def show_preview(target: types.Message | types.CallbackQuery, state: FSMCo
         text += 'Добавьте хотя бы один материал.'
     keyboard += [row('➕ Добавить / изменить материал', 'page:0'), row('Изменить количество результата', 'output'), row('Место изготовления', 'location')]
     keyboard.append([InlineKeyboardButton(text='Отмена', callback_data='admin_cancel_edit')])
-    await state.set_state(RecipeCreationStates.preview)
-    await screen(target, state, text + '\n\nДо сохранения каталог не изменяется.', keyboard)
+    await screen(target, state, text + '\n\nДо сохранения каталог не изменяется.', keyboard,
+                 candidate=data, next_state=RecipeCreationStates.preview)
 
 
 def decode_materials(value: object) -> list[MaterialInput]:
@@ -129,9 +137,8 @@ def decode_materials(value: object) -> list[MaterialInput]:
     return result
 
 
-@creation_router.callback_query(F.data.startswith('rc:'))
 async def create_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
+    data: dict[str, object] = await state.get_data()
     if 'recipe_create_session' not in data:
         await callback.answer('Откройте создание рецепта заново.', show_alert=True)
         return
@@ -143,52 +150,54 @@ async def create_callback(callback: types.CallbackQuery, state: FSMContext) -> N
         return
     if action in ('page', 'clearsearch'):
         if action == 'clearsearch':
-            await state.update_data(recipe_create_query='')
-        await choose_page(callback, state, int(parts[2]) if action == 'page' else 0)
+            data['recipe_create_query'] = ''
+        await choose_page(callback, state, int(parts[2]) if action == 'page' else 0, candidate=data)
     elif action == 'search':
-        await state.set_state(RecipeCreationStates.search)
-        await screen(callback, state, 'Введите часть названия. «-» покажет всё.', [row('🔙 Назад', 'page:0')])
+        await screen(callback, state, 'Введите часть названия. «-» покажет всё.', [row('🔙 Назад', 'page:0')],
+                     candidate=data, next_state=RecipeCreationStates.search)
     elif action == 'select':
         selected_id = int(parts[2])
         if isinstance(data.get('recipe_create_result_id'), int):
-            resource = await db.get_resource_by_id(selected_id)
+            resource = await database_for(db).get_resource_by_id(selected_id)
             if resource is None or resource['type'] == 'scroll_recipe' or selected_id == data['recipe_create_result_id']:
                 await callback.answer('Этот ресурс нельзя добавить в материалы.', show_alert=True)
                 return
-            await state.update_data(recipe_create_material_id=selected_id)
-            await state.set_state(RecipeCreationStates.material_quantity)
-            await screen(callback, state, f"Количество материала {escape_html(resource['name'])}:", [row('🔙 Назад', 'page:0')])
+            data['recipe_create_material_id'] = selected_id
+            await screen(callback, state, f"Количество материала {escape_html(resource['name'])}:", [row('🔙 Назад', 'page:0')],
+                     candidate=data, next_state=RecipeCreationStates.material_quantity)
         elif data['recipe_create_type'] == 'gear':
             from admin_gear import start_gear_editor
             await start_gear_editor(callback, state, gear_id=selected_id)
             return
         else:
-            resource = await db.get_resource_by_id(selected_id)
+            resource = await database_for(db).get_resource_by_id(selected_id)
             if resource is None or resource['type'] != 'alchemy':
                 await callback.answer('Выберите результат алхимии.', show_alert=True)
                 return
-            await state.update_data(recipe_create_result_id=selected_id, recipe_create_query='')
-            await state.set_state(RecipeCreationStates.output_quantity)
-            await screen(callback, state, f"Сколько единиц {escape_html(resource['name'])} получается за одно изготовление?", [row('🔙 К материалам', 'page:0')])
+            data['recipe_create_result_id'] = selected_id
+            data['recipe_create_query'] = ''
+            await screen(callback, state, f"Сколько единиц {escape_html(resource['name'])} получается за одно изготовление?", [row('🔙 К материалам', 'page:0')],
+                         candidate=data, next_state=RecipeCreationStates.output_quantity)
     elif action == 'output':
-        await state.set_state(RecipeCreationStates.output_quantity)
-        await screen(callback, state, 'Количество результата за одно изготовление:', [row('🔙 К рецепту', 'preview')])
+        await screen(callback, state, 'Количество результата за одно изготовление:', [row('🔙 К рецепту', 'preview')],
+                     candidate=data, next_state=RecipeCreationStates.output_quantity)
     elif action == 'location':
-        await state.set_state(RecipeCreationStates.craft_location)
-        await screen(callback, state, 'Введите место изготовления. «-» означает, что место не указано.', [row('🔙 Назад', 'preview')])
+        await screen(callback, state, 'Введите место изготовления. «-» означает, что место не указано.', [row('🔙 Назад', 'preview')],
+                     candidate=data, next_state=RecipeCreationStates.craft_location)
     elif action == 'preview':
         await show_preview(callback, state, int(parts[2]) if len(parts) == 3 else 0)
     elif action == 'remove':
+        await callback.answer('Кнопка устарела. Откройте рецепт заново.', show_alert=True)
+        return
+    elif action == 'remove_id':
+        resource_id = positive_integer(int(parts[2]), 'Материал')
         materials = decode_materials(data['recipe_create_materials'])
-        index = int(parts[2])
-        if 0 <= index < len(materials):
-            del materials[index]
-        await state.update_data(recipe_create_materials=materials)
-        await show_preview(callback, state)
+        data['recipe_create_materials'] = [item for item in materials if item['resource_id'] != resource_id]
+        await show_preview(callback, state, candidate=data)
     elif action == 'save':
         try:
-            recipe_id = await db.save_resource_recipe(data['recipe_create_result_id'], data['recipe_create_quantity'],
-                                                      decode_materials(data['recipe_create_materials']), craft_location=str(data.get('recipe_create_location') or ''))
+            recipe_id = await database_for(db).save_resource_recipe(form_id(data, 'recipe_create_result_id'), form_id(data, 'recipe_create_quantity'),
+                                                      decode_materials(data['recipe_create_materials']), craft_location=str(data.get('recipe_create_location') or ''), operation_id=str(data['recipe_create_session']))
         except ValueError as error:
             await callback.answer(str(error)[:180], show_alert=True)
             return
@@ -196,11 +205,10 @@ async def create_callback(callback: types.CallbackQuery, state: FSMContext) -> N
         await state.clear()
         await state.update_data(recipe_id=recipe_id, recipe_result_type='resource', recipe_page=1)
         await state.set_state(RecipeStates.view_recipe)
-        await show_recipe(callback, await db.get_recipe_details(recipe_id), state)
+        await show_recipe(callback, await database_for(db).get_recipe_details(recipe_id), state)
     await callback.answer()
 
 
-@creation_router.message(RecipeCreationStates.search, F.text, ~F.text.startswith('/'))
 async def search_input(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -208,12 +216,11 @@ async def search_input(message: types.Message, state: FSMContext) -> None:
     if len(query) > 256:
         await message.answer('Поисковый запрос должен быть не длиннее 256 символов.')
         return
-    await state.update_data(recipe_create_query='' if query == '-' else query)
-    await choose_page(message, state, 0)
+    data: dict[str, object] = await state.get_data()
+    data['recipe_create_query'] = '' if query == '-' else query
+    await choose_page(message, state, 0, candidate=data)
 
 
-@creation_router.message(RecipeCreationStates.output_quantity, F.text, ~F.text.startswith('/'))
-@creation_router.message(RecipeCreationStates.material_quantity, F.text, ~F.text.startswith('/'))
 async def quantity_input(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -222,20 +229,19 @@ async def quantity_input(message: types.Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer('Введите положительное целое число.')
         return
-    data = await state.get_data()
+    data: dict[str, object] = await state.get_data()
     if await state.get_state() == RecipeCreationStates.output_quantity.state:
-        await state.update_data(recipe_create_quantity=quantity)
-        await choose_page(message, state, 0)
+        data['recipe_create_quantity'] = quantity
+        await choose_page(message, state, 0, candidate=data)
     else:
         materials = decode_materials(data['recipe_create_materials'])
-        resource_id = data['recipe_create_material_id']
+        resource_id = form_id(data, 'recipe_create_material_id')
         materials = [item for item in materials if item['resource_id'] != resource_id]
         materials.append({'resource_id': resource_id, 'quantity': quantity})
-        await state.update_data(recipe_create_materials=materials)
-        await show_preview(message, state)
+        data['recipe_create_materials'] = materials
+        await show_preview(message, state, candidate=data)
 
 
-@creation_router.message(RecipeCreationStates.craft_location, F.text, ~F.text.startswith('/'))
 async def location_input(message: types.Message, state: FSMContext) -> None:
     if not await validate_admin_input(message, state):
         return
@@ -245,5 +251,19 @@ async def location_input(message: types.Message, state: FSMContext) -> None:
     except ValueError as error:
         await message.answer(str(error))
         return
-    await state.update_data(recipe_create_location=value)
-    await show_preview(message, state)
+    data: dict[str, object] = await state.get_data()
+    data['recipe_create_location'] = value
+    await show_preview(message, state, candidate=data)
+
+
+def create_recipe_creation_router() -> Router:
+    creation_router = Router()
+    creation_router.callback_query(F.data.startswith('rc:'))(create_callback)
+    creation_router.message(RecipeCreationStates.search, F.text, ~F.text.startswith('/'))(search_input)
+    creation_router.message(RecipeCreationStates.material_quantity, F.text, ~F.text.startswith('/'))(quantity_input)
+    creation_router.message(RecipeCreationStates.output_quantity, F.text, ~F.text.startswith('/'))(quantity_input)
+    creation_router.message(RecipeCreationStates.craft_location, F.text, ~F.text.startswith('/'))(location_input)
+    return creation_router
+
+
+creation_router = create_recipe_creation_router()

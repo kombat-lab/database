@@ -1,13 +1,11 @@
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
-
 from aiogram import BaseMiddleware, F, Router, types
 from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
 from admin_utils import edit_admin_rich
 from analytics import (
     UserIdentity,
@@ -21,8 +19,6 @@ from analytics import (
 )
 from utils import RICH_TABLE_OPEN, escape_html
 from navigation import MAX_SQLITE_ID
-
-stats_router = Router()
 
 
 class PrivateStatsMiddleware(BaseMiddleware):
@@ -45,21 +41,19 @@ class PrivateStatsMiddleware(BaseMiddleware):
         return None
 
 
-stats_router.message.middleware(PrivateStatsMiddleware())
-stats_router.callback_query.middleware(PrivateStatsMiddleware())
-
-
 async def show_stats_menu(target: types.Message | types.CallbackQuery, edit: bool = False) -> None:
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🐾 Топ-30 мобов", callback_data="stats_mobs")],
-        [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
-        [InlineKeyboardButton(text="⚔️ Топ-30 снаряжения", callback_data="stats_gear")],
-        [InlineKeyboardButton(text="🃏 Топ-30 карт", callback_data="stats_cards")],
-        [InlineKeyboardButton(text="🔍 Топ-30 поисковых запросов", callback_data="stats_searches")],
-        [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
-        [InlineKeyboardButton(text="👥 Пользователи", callback_data="stats_users")],
-        [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🐾 Топ-30 мобов", callback_data="stats_mobs")],
+            [InlineKeyboardButton(text="📦 Топ-30 ресурсов", callback_data="stats_resources")],
+            [InlineKeyboardButton(text="⚔️ Топ-30 снаряжения", callback_data="stats_gear")],
+            [InlineKeyboardButton(text="🃏 Топ-30 карт", callback_data="stats_cards")],
+            [InlineKeyboardButton(text="🔍 Топ-30 поисковых запросов", callback_data="stats_searches")],
+            [InlineKeyboardButton(text="📊 Общая статистика", callback_data="stats_general")],
+            [InlineKeyboardButton(text="👥 Пользователи", callback_data="stats_users")],
+            [InlineKeyboardButton(text="🔙 Назад в админку", callback_data="admin_cancel_edit")],
+        ]
+    )
     text = "📈 Выберите раздел статистики:"
     if isinstance(target, types.CallbackQuery):
         message = target.message
@@ -84,48 +78,46 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
         lines = []
         rows = []
         for idx, item in enumerate(items, 1):
-            emoji = escape_html(item.get('emoji', ''))
-            name = escape_html(item.get('name', f"ID {item['target_id']}"))
-            views = item['views']
+            emoji = escape_html(item.get("emoji", ""))
+            name = escape_html(item.get("name", f"ID {item['target_id']}"))
+            views = item["views"]
             lines.append(f"{idx}. {emoji} {name} — {views} просмотров")
             rows.append(f"<tr><td>{idx}</td><td>{emoji} {name}</td><td>{views}</td></tr>")
         text = f"🏆 <b>Топ-30 {type_name_ru} за 30 дней</b>\n\n" + "\n".join(lines)
         rich_html = (
-            f"<b>🏆 Топ-30 {type_name_ru} за 30 дней</b><br>"
-            f"{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Объект</th><th>Просмотры</th></tr>"
-            + "".join(rows) + "</tbody></table>"
+            f"<b>🏆 Топ-30 {type_name_ru} за 30 дней</b><br>{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Объект</th><th>Просмотры</th></tr>"
+            + "".join(rows)
+            + "</tbody></table>"
         )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]]
+    )
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
 async def show_top_searches(callback: types.CallbackQuery) -> None:
     await callback.answer()
-    items = await get_top_search_queries(days=30, limit=30, search_type='all')
+    items = await get_top_search_queries(days=30, limit=30, search_type="all")
     if not items:
         text = "📊 Нет поисковых запросов за последние 30 дней."
     else:
-        lines, rows = [], []
+        lines, rows = ([], [])
         for idx, item in enumerate(items, 1):
-            query = escape_html((item.get('query') or '')[:50])
-            count = item['count']
+            query = escape_html((item.get("query") or "")[:50])
+            count = item["count"]
             lines.append(f"{idx}. «{query}» — {count} раз")
             rows.append(f"<tr><td>{idx}</td><td>{query}</td><td>{count}</td></tr>")
         text = "🔍 <b>Топ-30 поисковых запросов за 30 дней</b>\n\n" + "\n".join(lines)
         rich_html = (
-            "<b>🔍 Топ-30 поисковых запросов за 30 дней</b><br>"
-            f"{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Запрос</th><th>Количество</th></tr>"
-            + "".join(rows) + "</tbody></table>"
+            f"<b>🔍 Топ-30 поисковых запросов за 30 дней</b><br>{RICH_TABLE_OPEN}<tbody><tr><th>№</th><th>Запрос</th><th>Количество</th></tr>"
+            + "".join(rows)
+            + "</tbody></table>"
         )
     if not items:
         rich_html = text
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]]
+    )
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
@@ -138,47 +130,19 @@ async def show_general_stats(callback: types.CallbackQuery) -> None:
     retention_d7 = await get_retention(7, 7)
     retention_d30 = await get_retention(30, 30)
     db_stats = await get_db_stats()
-    db_size_mb = db_stats['db_size_bytes'] / (1024 * 1024)
-    text = (
-        f"📊 <b>Общая статистика бота</b>\n\n"
-        f"👥 <b>Активные пользователи</b>\n"
-        f"  • За день (DAU): {dau}\n"
-        f"  • За неделю (WAU): {wau}\n"
-        f"  • За месяц (MAU): {mau}\n\n"
-        f"🔄 <b>Удержание (Retention)</b>\n"
-        f"  • День 1: {retention_d1:.1f}%\n"
-        f"  • Неделя 1: {retention_d7:.1f}%\n"
-        f"  • Месяц 1: {retention_d30:.1f}%\n\n"
-        f"💾 <b>Состояние БД</b>\n"
-        f"  • Событий: {db_stats['events']}\n"
-        f"  • Пользователей: {db_stats['users']}\n"
-        f"  • Размер: {db_size_mb:.2f} МБ"
+    db_size_mb = db_stats["db_size_bytes"] / (1024 * 1024)
+    text = f"📊 <b>Общая статистика бота</b>\n\n👥 <b>Активные пользователи</b>\n  • За день (DAU): {dau}\n  • За неделю (WAU): {wau}\n  • За месяц (MAU): {mau}\n\n🔄 <b>Удержание (Retention)</b>\n  • День 1: {retention_d1:.1f}%\n  • Неделя 1: {retention_d7:.1f}%\n  • Месяц 1: {retention_d30:.1f}%\n\n💾 <b>Состояние БД</b>\n  • Событий: {db_stats['events']}\n  • Пользователей: {db_stats['users']}\n  • Размер: {db_size_mb:.2f} МБ"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]]
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")]
-    ])
-    rich_html = f"""
-    <b>📊 Общая статистика бота</b>
-    {RICH_TABLE_OPEN}<tbody>
-      <tr><th>Показатель</th><th>Значение</th></tr>
-      <tr><td>DAU</td><td>{dau}</td></tr>
-      <tr><td>WAU</td><td>{wau}</td></tr>
-      <tr><td>MAU</td><td>{mau}</td></tr>
-      <tr><td>Retention D1</td><td>{retention_d1:.1f}%</td></tr>
-      <tr><td>Retention D7</td><td>{retention_d7:.1f}%</td></tr>
-      <tr><td>Retention D30</td><td>{retention_d30:.1f}%</td></tr>
-      <tr><td>События</td><td>{db_stats['events']}</td></tr>
-      <tr><td>Пользователи</td><td>{db_stats['users']}</td></tr>
-      <tr><td>Размер БД</td><td>{db_size_mb:.2f} МБ</td></tr>
-    </tbody></table>
-    """
+    rich_html = f"\n    <b>📊 Общая статистика бота</b>\n    {RICH_TABLE_OPEN}<tbody>\n      <tr><th>Показатель</th><th>Значение</th></tr>\n      <tr><td>DAU</td><td>{dau}</td></tr>\n      <tr><td>WAU</td><td>{wau}</td></tr>\n      <tr><td>MAU</td><td>{mau}</td></tr>\n      <tr><td>Retention D1</td><td>{retention_d1:.1f}%</td></tr>\n      <tr><td>Retention D7</td><td>{retention_d7:.1f}%</td></tr>\n      <tr><td>Retention D30</td><td>{retention_d30:.1f}%</td></tr>\n      <tr><td>События</td><td>{db_stats['events']}</td></tr>\n      <tr><td>Пользователи</td><td>{db_stats['users']}</td></tr>\n      <tr><td>Размер БД</td><td>{db_size_mb:.2f} МБ</td></tr>\n    </tbody></table>\n    "
     await edit_admin_rich(callback, rich_html.strip(), keyboard, fallback_html=text)
 
 
 def _user_display_name(user: UserIdentity) -> str:
-    if user.get('username'):
+    if user.get("username"):
         return f"@{user['username']}"
-    full_name = " ".join(filter(None, (user.get('first_name'), user.get('last_name')))).strip()
+    full_name = " ".join(filter(None, (user.get("first_name"), user.get("last_name")))).strip()
     return full_name or f"ID {user['user_id']}"
 
 
@@ -189,25 +153,20 @@ async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
     rows = await get_users_page((page - 1) * per_page, per_page + 1)
     has_next = len(rows) > per_page
     users = rows[:per_page]
-
     rich_rows: list[str] = []
     fallback_lines: list[str] = []
     keyboard_rows: list[list[InlineKeyboardButton]] = []
     for user in users:
         display_name = _user_display_name(user)
         safe_name = escape_html(display_name)
-        activity = escape_html(user.get('last_activity') or '—')
-        events = user.get('event_count', 0)
-        events_7d = user.get('events_7d', 0)
-        rich_rows.append(
-            f"<tr><td>{safe_name}</td><td>{events}</td><td>{events_7d}</td><td>{activity}</td></tr>"
-        )
+        activity = escape_html(user.get("last_activity") or "—")
+        events = user.get("event_count", 0)
+        events_7d = user.get("events_7d", 0)
+        rich_rows.append(f"<tr><td>{safe_name}</td><td>{events}</td><td>{events_7d}</td><td>{activity}</td></tr>")
         fallback_lines.append(f"{display_name} — {events} событий, за 7 дней: {events_7d}")
-        keyboard_rows.append([InlineKeyboardButton(
-            text=f"👤 {display_name}"[:64],
-            callback_data=f"stats_user_{user['user_id']}_{page}",
-        )])
-
+        keyboard_rows.append(
+            [InlineKeyboardButton(text=f"👤 {display_name}"[:64], callback_data=f"stats_user_{user['user_id']}_{page}")]
+        )
     nav = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"stats_users_page_{page - 1}"))
@@ -217,15 +176,14 @@ async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
         keyboard_rows.append(nav)
     keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад к статистике", callback_data="back_to_stats")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
     if users:
         rich_html = (
-            f"<b>👥 Пользователи · страница {page}</b><br>"
-            f"{RICH_TABLE_OPEN}<tbody><tr><th>Пользователь</th><th>Всего</th><th>7 дней</th><th>Последняя активность</th></tr>"
-            + "".join(rich_rows) + "</tbody></table>"
+            f"<b>👥 Пользователи · страница {page}</b><br>{RICH_TABLE_OPEN}<tbody><tr><th>Пользователь</th><th>Всего</th><th>7 дней</th><th>Последняя активность</th></tr>"
+            + "".join(rich_rows)
+            + "</tbody></table>"
         )
         fallback = f"<b>👥 Пользователи · страница {page}</b>\n\n" + "\n".join(
-            escape_html(line) for line in fallback_lines
+            (escape_html(line) for line in fallback_lines)
         )
     else:
         rich_html = fallback = "👥 Пользователи не найдены."
@@ -235,98 +193,78 @@ async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
 async def show_user_details(callback: types.CallbackQuery, user_id: int, return_page: int) -> None:
     await callback.answer()
     activity = await get_user_activity(user_id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к пользователям", callback_data=f"stats_users_page_{return_page}")]
-    ])
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к пользователям", callback_data=f"stats_users_page_{return_page}")]
+        ]
+    )
     if not activity:
         await edit_admin_rich(callback, "Пользователь не найден.", keyboard)
         return
-
-    user = activity['user']
-    totals = activity['totals']
+    user = activity["user"]
+    totals = activity["totals"]
     display_name = escape_html(_user_display_name(user))
-    full_name = escape_html(" ".join(filter(None, (user.get('first_name'), user.get('last_name')))) or '—')
-    type_rows = "".join(
-        f"<tr><td>{escape_html(row['event_type'])}</td><td>{row['count']}</td></tr>"
-        for row in activity['event_types']
-    ) or "<tr><td>Нет событий</td><td>0</td></tr>"
-    searches = "<br>".join(
-        f"{escape_html(row.get('query') or '—')} · {escape_html(row.get('timestamp') or '')}"
-        for row in activity['recent_searches']
-    ) or "Нет поисковых запросов"
-    rich_html = f"""
-    <b>👤 {display_name}</b>
-    {RICH_TABLE_OPEN}<tbody>
-      <tr><th>Поле</th><th>Значение</th></tr>
-      <tr><td>Telegram ID</td><td>{user['user_id']}</td></tr>
-      <tr><td>Имя</td><td>{full_name}</td></tr>
-      <tr><td>Первый визит</td><td>{escape_html(user.get('first_seen') or '—')}</td></tr>
-      <tr><td>Последняя активность</td><td>{escape_html(user.get('last_activity') or '—')}</td></tr>
-      <tr><td>Всего событий</td><td>{totals['total_events']}</td></tr>
-      <tr><td>За сутки</td><td>{totals['events_1d']}</td></tr>
-      <tr><td>За 7 дней</td><td>{totals['events_7d']}</td></tr>
-      <tr><td>За 30 дней</td><td>{totals['events_30d']}</td></tr>
-    </tbody></table>
-    <details><summary>📊 События по типам</summary>{RICH_TABLE_OPEN}<tbody>{type_rows}</tbody></table></details>
-    <details><summary>🔍 Последние поиски</summary>{searches}</details>
-    """.strip()
-    fallback = (
-        f"<b>👤 {display_name}</b>\n"
-        f"Telegram ID: <code>{user['user_id']}</code>\n"
-        f"Имя: {full_name}\n"
-        f"Первый визит: {escape_html(user.get('first_seen') or '—')}\n"
-        f"Последняя активность: {escape_html(user.get('last_activity') or '—')}\n\n"
-        f"Всего событий: {totals['total_events']}\n"
-        f"За сутки: {totals['events_1d']}\n"
-        f"За 7 дней: {totals['events_7d']}\n"
-        f"За 30 дней: {totals['events_30d']}"
+    full_name = escape_html(" ".join(filter(None, (user.get("first_name"), user.get("last_name")))) or "—")
+    type_rows = (
+        "".join(
+            (
+                f"<tr><td>{escape_html(row['event_type'])}</td><td>{row['count']}</td></tr>"
+                for row in activity["event_types"]
+            )
+        )
+        or "<tr><td>Нет событий</td><td>0</td></tr>"
     )
+    searches = (
+        "<br>".join(
+            (
+                f"{escape_html(row.get('query') or '—')} · {escape_html(row.get('timestamp') or '')}"
+                for row in activity["recent_searches"]
+            )
+        )
+        or "Нет поисковых запросов"
+    )
+    rich_html = f"\n    <b>👤 {display_name}</b>\n    {RICH_TABLE_OPEN}<tbody>\n      <tr><th>Поле</th><th>Значение</th></tr>\n      <tr><td>Telegram ID</td><td>{user['user_id']}</td></tr>\n      <tr><td>Имя</td><td>{full_name}</td></tr>\n      <tr><td>Первый визит</td><td>{escape_html(user.get('first_seen') or '—')}</td></tr>\n      <tr><td>Последняя активность</td><td>{escape_html(user.get('last_activity') or '—')}</td></tr>\n      <tr><td>Всего событий</td><td>{totals['total_events']}</td></tr>\n      <tr><td>За сутки</td><td>{totals['events_1d']}</td></tr>\n      <tr><td>За 7 дней</td><td>{totals['events_7d']}</td></tr>\n      <tr><td>За 30 дней</td><td>{totals['events_30d']}</td></tr>\n    </tbody></table>\n    <details><summary>📊 События по типам</summary>{RICH_TABLE_OPEN}<tbody>{type_rows}</tbody></table></details>\n    <details><summary>🔍 Последние поиски</summary>{searches}</details>\n    ".strip()
+    fallback = f"<b>👤 {display_name}</b>\nTelegram ID: <code>{user['user_id']}</code>\nИмя: {full_name}\nПервый визит: {escape_html(user.get('first_seen') or '—')}\nПоследняя активность: {escape_html(user.get('last_activity') or '—')}\n\nВсего событий: {totals['total_events']}\nЗа сутки: {totals['events_1d']}\nЗа 7 дней: {totals['events_7d']}\nЗа 30 дней: {totals['events_30d']}"
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
 
 
-@stats_router.message(Command("stats"))
 async def show_stats_command(message: types.Message, state: FSMContext) -> None:
     await state.clear()
     await show_stats_menu(message)
 
 
-@stats_router.callback_query(F.data == "admin_stats")
-@stats_router.callback_query(F.data == "back_to_stats")
 async def show_stats_callback(callback: types.CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await show_stats_menu(callback, edit=True)
     await callback.answer()
 
 
-@stats_router.callback_query(F.data.startswith("stats_users_page_"))
 async def stats_users_page(callback: types.CallbackQuery) -> None:
-    match = re.fullmatch(r"stats_users_page_([1-9][0-9]{0,17})", callback.data or "")
+    match = re.fullmatch("stats_users_page_([1-9][0-9]{0,17})", callback.data or "")
     if match is None or int(match[1]) > MAX_SQLITE_ID // 10:
         await callback.answer("Неверная страница.", show_alert=True)
         return
     await show_users(callback, int(match[1]))
 
 
-@stats_router.callback_query(F.data.startswith("stats_user_"))
 async def stats_user_details(callback: types.CallbackQuery) -> None:
-    match = re.fullmatch(r"stats_user_([1-9][0-9]{0,18})_([1-9][0-9]{0,17})", callback.data or "")
+    match = re.fullmatch("stats_user_([1-9][0-9]{0,18})_([1-9][0-9]{0,17})", callback.data or "")
     if match is None or int(match[1]) > MAX_SQLITE_ID or int(match[2]) > MAX_SQLITE_ID // 10:
         await callback.answer("Неверная ссылка на пользователя.", show_alert=True)
         return
     await show_user_details(callback, int(match[1]), int(match[2]))
 
 
-@stats_router.callback_query(F.data.startswith("stats_"))
 async def stats_router_callback(callback: types.CallbackQuery) -> None:
     action = (callback.data or "").removeprefix("stats_")
     if action == "mobs":
-        await show_top_items(callback, 'mob', 'мобов')
+        await show_top_items(callback, "mob", "мобов")
     elif action == "resources":
-        await show_top_items(callback, 'resource', 'ресурсов')
+        await show_top_items(callback, "resource", "ресурсов")
     elif action == "gear":
-        await show_top_items(callback, 'gear', 'предметов снаряжения')
+        await show_top_items(callback, "gear", "предметов снаряжения")
     elif action == "cards":
-        await show_top_items(callback, 'card', 'карт')
+        await show_top_items(callback, "card", "карт")
     elif action == "searches":
         await show_top_searches(callback)
     elif action == "general":
@@ -335,3 +273,19 @@ async def stats_router_callback(callback: types.CallbackQuery) -> None:
         await show_users(callback, 1)
     else:
         await callback.answer("Неизвестная команда")
+
+
+def create_stats_router() -> Router:
+    router = Router()
+    router.message.middleware(PrivateStatsMiddleware())
+    router.callback_query.middleware(PrivateStatsMiddleware())
+    router.message(Command("stats"))(show_stats_command)
+    router.callback_query(F.data == "admin_stats")(show_stats_callback)
+    router.callback_query(F.data == "back_to_stats")(show_stats_callback)
+    router.callback_query(F.data.startswith("stats_users_page_"))(stats_users_page)
+    router.callback_query(F.data.startswith("stats_user_"))(stats_user_details)
+    router.callback_query(F.data.startswith("stats_"))(stats_router_callback)
+    return router
+
+
+stats_router = create_stats_router()
