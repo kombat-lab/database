@@ -20,14 +20,27 @@ from utils import escape_html
 ScreenValue: TypeAlias = str | int
 _SCREEN_KEY = "admin_screen"
 PENDING_SCREEN_KEY = "admin_pending_screen"
-_PROTECTED_PREFIXES: set[str] = {
-    "edit_field_", "select_opt_", "delete_entity",
-}
-
-
-def register_protected_callbacks(prefixes: tuple[str, ...]) -> None:
-    """Require a screen token even for old buttons issued before this version."""
-    _PROTECTED_PREFIXES.update(prefixes)
+_PROTECTED_PREFIXES = frozenset(
+    {
+        "edit_field_",
+        "select_opt_",
+        "delete_entity",
+        "res_type_",
+        "card_slot_",
+        "optional_note_skip",
+        "catalog_create_back",
+        "catalog_duplicate_",
+        "isd:",
+        "item_sources_open",
+        "rc:",
+        "recipe_",
+        "mob_",
+        "edit_mob_",
+        "drop_",
+        "confirm_mob_delete",
+        "back_to_mob_",
+    }
+)
 
 
 def tag_admin_keyboard(markup: InlineKeyboardMarkup | None, token: str) -> InlineKeyboardMarkup | None:
@@ -121,12 +134,15 @@ async def validate_admin_input(message: Message, state: FSMContext) -> bool:
         return False
     pending = state_data.get(PENDING_SCREEN_KEY)
     if pending is not None:
-        previous_id = pending.get('previous_message_id') if isinstance(pending, dict) else None
-        if (type(previous_id) is not int or message.reply_to_message is None
-                or message.reply_to_message.message_id != previous_id):
+        previous_id = pending.get("previous_message_id") if isinstance(pending, dict) else None
+        if (
+            type(previous_id) is not int
+            or message.reply_to_message is None
+            or message.reply_to_message.message_id != previous_id
+        ):
             await message.answer(
-                'Новый экран не подтверждён. Ответьте через Reply на предыдущее подтверждённое '
-                'приглашение, если оно сохранилось отдельным сообщением, или откройте /kombat заново.'
+                "Новый экран не подтверждён. Ответьте через Reply на предыдущее подтверждённое "
+                "приглашение, если оно сохранилось отдельным сообщением, или откройте /kombat заново."
             )
             return False
     context = screen.get("context")
@@ -135,10 +151,7 @@ async def validate_admin_input(message: Message, state: FSMContext) -> bool:
         and screen.get("chat_id") == message.chat.id
         and isinstance(context, dict)
         and all(state_data.get(key) == value for key, value in context.items())
-        and (
-            message.reply_to_message is None
-            or message.reply_to_message.message_id == screen.get("message_id")
-        )
+        and (message.reply_to_message is None or message.reply_to_message.message_id == screen.get("message_id"))
     )
     if not valid:
         await message.answer("Этот ответ относится к другому экрану. Откройте предмет заново.")
@@ -146,7 +159,9 @@ async def validate_admin_input(message: Message, state: FSMContext) -> bool:
 
 
 @asynccontextmanager
-async def pending_screen_delivery(state: FSMContext, target: Message | types.CallbackQuery, token: str) -> AsyncIterator[None]:
+async def pending_screen_delivery(
+    state: FSMContext, target: Message | types.CallbackQuery, token: str
+) -> AsyncIterator[None]:
     """Keep ambiguous/newly delivered prompts from authorizing stale free text.
 
     The marker is durable before transport. Only a definite Telegram rejection
@@ -155,8 +170,8 @@ async def pending_screen_delivery(state: FSMContext, target: Message | types.Cal
     """
     previous = await state.get_data()
     old_screen = previous.get(_SCREEN_KEY)
-    previous_id = old_screen.get('message_id') if isinstance(old_screen, dict) and isinstance(target, Message) else None
-    await state.update_data(**{PENDING_SCREEN_KEY: {'token': token, 'previous_message_id': previous_id}})
+    previous_id = old_screen.get("message_id") if isinstance(old_screen, dict) and isinstance(target, Message) else None
+    await state.update_data(**{PENDING_SCREEN_KEY: {"token": token, "previous_message_id": previous_id}})
     try:
         yield
     except TelegramBadRequest:
@@ -186,8 +201,10 @@ async def present_admin_text(
             from aiogram.types import InputRichMessage
 
             sent = await upsert_rich_card(
-                bot=get_bound_bot(target), chat_id=message.chat.id,
-                rich_message=InputRichMessage(html=safe_html), plain_text=safe_html,
+                bot=get_bound_bot(target),
+                chat_id=message.chat.id,
+                rich_message=InputRichMessage(html=safe_html),
+                plain_text=safe_html,
                 reply_markup=tagged,
                 current_message=message if isinstance(target, types.CallbackQuery) else None,
                 message_thread_id=message.message_thread_id,
@@ -229,7 +246,8 @@ async def present_admin_rich(
     message = get_callback_message(target) if isinstance(target, types.CallbackQuery) else target
     async with pending_screen_delivery(state, target, token):
         sent = await present_rich_card(
-            bot=get_bound_bot(target), chat_id=message.chat.id,
+            bot=get_bound_bot(target),
+            chat_id=message.chat.id,
             current_message=message if isinstance(target, types.CallbackQuery) else None,
             card=CardView(rich_html, fallback_html),
             reply_markup=tag_admin_keyboard(keyboard, token),

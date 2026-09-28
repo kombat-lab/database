@@ -7,7 +7,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from database import Database, SCHEMA_VERSION
+from database import Database
+from storage.types import SCHEMA_VERSION
 
 
 class DatabaseSafetyTests(unittest.IsolatedAsyncioTestCase):

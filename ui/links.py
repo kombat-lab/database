@@ -79,8 +79,5 @@ class EntityLinkBuilder:
             source_type=self.source_type,
             source_id=self.source_id,
         ).pack()
-        rich = (
-            '<tg-button type="callback_data" style="link" '
-            f'data="{callback_data}">{label_html}</tg-button>'
-        )
+        rich = f'<tg-button type="callback_data" style="link" data="{callback_data}">{label_html}</tg-button>'
         return MarkupPair(rich=rich, fallback=fallback)

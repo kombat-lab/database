@@ -49,13 +49,23 @@ python bot.py
 
 База работает в WAL-режиме. Простое копирование одного `game.db` у работающего процесса может пропустить данные из `game.db-wal`. Используйте SQLite backup API: оно создаёт согласованный снимок, включая уже зафиксированные WAL-транзакции.
 
-Из корня проекта, с тем же `DATABASE_PATH`, что у бота:
+Задайте отдельный каталог на другом диске или в защищённом хранилище. Не размещайте рабочие резервные копии внутри репозитория.
 
-```sh
-python -c "import os, sqlite3; from pathlib import Path; from datetime import datetime, timezone; p=Path(os.environ.get('DATABASE_PATH', 'game.db')).resolve(); out=Path('backups') / ('game-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f') + '.db'); out.parent.mkdir(exist_ok=True); src=sqlite3.connect(p.as_uri() + '?mode=ro', uri=True); dst=sqlite3.connect(out); src.backup(dst); print(out, dst.execute('PRAGMA quick_check').fetchone()[0]); dst.close(); src.close()"
+Windows PowerShell:
+
+```powershell
+$env:BACKUP_DIR = "E:\fog_database-recovery"
+python -c "import os, sqlite3; from pathlib import Path; from datetime import datetime, timezone; p=Path(os.environ.get('DATABASE_PATH', 'game.db')).resolve(); root=Path(os.environ['BACKUP_DIR']).expanduser().resolve(); root.mkdir(parents=True, exist_ok=True); out=root / ('game-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f') + '.db'); src=sqlite3.connect(p.as_uri() + '?mode=ro', uri=True); dst=sqlite3.connect(out); src.backup(dst); print(out, dst.execute('PRAGMA quick_check').fetchone()[0]); dst.close(); src.close()"
 ```
 
-Команда должна вывести путь новой копии и `ok`. Храните проверенные копии также отдельно от рабочего диска; локальная папка `backups/` не защищает от потери самого диска. База и копии содержат персональные данные и не должны публиковаться или попадать в Git.
+Linux/macOS:
+
+```sh
+export BACKUP_DIR='/srv/backups/fog_database'
+python -c "import os, sqlite3; from pathlib import Path; from datetime import datetime, timezone; p=Path(os.environ.get('DATABASE_PATH', 'game.db')).resolve(); root=Path(os.environ['BACKUP_DIR']).expanduser().resolve(); root.mkdir(parents=True, exist_ok=True); out=root / ('game-' + datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f') + '.db'); src=sqlite3.connect(p.as_uri() + '?mode=ro', uri=True); dst=sqlite3.connect(out); src.backup(dst); print(out, dst.execute('PRAGMA quick_check').fetchone()[0]); dst.close(); src.close()"
+```
+
+Команда должна вывести путь новой копии и `ok`. База и копии содержат персональные данные и не должны публиковаться или попадать в Git. Ограничьте доступ к каталогу резервных копий средствами операционной системы и настройте отдельную политику хранения.
 
 Для восстановления:
 
@@ -102,7 +112,7 @@ python -c "import os, sqlite3; from pathlib import Path; from datetime import da
 
 ## Архитектура и гарантии сохранения
 
-`bot.py` — точка запуска, `app.py` собирает отдельный Dispatcher, базу и сервисы для каждого экземпляра приложения. Публичные обработчики получают `PublicContext` с явными зависимостями; административные роутеры создаются фабриками и получают изолированный `RuntimeScope`. Старые функции-адаптеры сохранены для совместимости, но production не перенастраивает глобальные подключения и права.
+`bot.py` — точка запуска, `app.py` собирает отдельный Dispatcher, базу и сервисы для каждого экземпляра приложения. Публичные обработчики получают `PublicContext` с явными зависимостями. Фабрика административного роутера получает отдельный `RuntimeScope`; его база и права привязываются только на время текущего административного события, а вызов вне scope завершается ошибкой. Глобальных экземпляров базы и роутеров нет.
 
 `Database` остаётся типизированным фасадом. Инфраструктура SQLite и миграции находятся в `storage/`, предметные операции вынесены в репозитории. Все репозитории используют общий контекст транзакции. Домен проверяет входные данные независимо от Telegram: допустимые типы, слоты, количества, связи рецепта и изучения. В обработчиках нет произвольных SQL-команд.
 
@@ -128,6 +138,7 @@ python -m maintenance --database game.db --draft-days 90 --analytics-days 365
 python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 python -m ruff check .
+python -m ruff format --check .
 python -m mypy
 ```
 

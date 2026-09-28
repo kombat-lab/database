@@ -3,17 +3,21 @@ from __future__ import annotations
 from typing import Protocol
 
 from catalog_types import (
-    CardRow, GearCardRow, MobCardRow, ResourceCardRow, ResourceRecipeRow,
-    ResourceDropMobRow, ResourceUsageRow, RecipeOwnerEntry,
+    CardRow,
+    GearCardRow,
+    MobCardRow,
+    ResourceCardRow,
+    ResourceRecipeRow,
+    ResourceDropMobRow,
+    ResourceUsageRow,
+    RecipeOwnerEntry,
 )
-from navigation import build_gear_return_param, build_resource_return_param
+from .callbacks import build_gear_return_param, build_resource_return_param
 from game_constants import (
     GEAR_SLOT_ICONS,
     GEAR_SLOT_LABELS,
     RARITY_EMOJIS,
     format_gear_classes,
-    LEGACY_ALCHEMY_CRAFT_LOCATIONS,
-    LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION,
 )
 from utils import clean_username, escape_html
 
@@ -44,10 +48,6 @@ RESOURCE_TYPE_TITLES = {
     "alchemy": "Алхимия",
 }
 
-DEFAULT_ALCHEMY_CRAFT_LOCATION = LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION
-MEREDITH_ALCHEMY_CRAFT_LOCATION = LEGACY_ALCHEMY_CRAFT_LOCATIONS["дубленая кожа"]
-MEREDITH_ALCHEMY_RESOURCES = frozenset(LEGACY_ALCHEMY_CRAFT_LOCATIONS)
-
 
 class CatalogDatabase(Protocol):
     async def get_mob_full_card(self, mob_id: int) -> MobCardRow | None: ...
@@ -66,12 +66,6 @@ def get_resource_type_name(resource_type: str | None) -> str:
     return RESOURCE_TYPE_NAMES.get(resource_type or "craft", "📦 Крафтовый")
 
 
-def get_alchemy_craft_location(resource_name: str) -> str:
-    if resource_name.strip().casefold() in MEREDITH_ALCHEMY_RESOURCES:
-        return MEREDITH_ALCHEMY_CRAFT_LOCATION
-    return DEFAULT_ALCHEMY_CRAFT_LOCATION
-
-
 def format_recipe_owner(owner: RecipeOwnerEntry) -> str:
     username = owner.get("player_username")
     if username:
@@ -85,8 +79,7 @@ def format_recipe_owner(owner: RecipeOwnerEntry) -> str:
 def _add_recipe_owners(composer: CardComposer, owners: list[str]) -> None:
     if owners:
         composer.add(
-            "<details><summary>👥 Кто изучил рецепт</summary>"
-            + "<br>".join(owners) + "</details>",
+            "<details><summary>👥 Кто изучил рецепт</summary>" + "<br>".join(owners) + "</details>",
             "<b>👥 Кто изучил рецепт:</b>\n" + "\n".join(owners),
         )
 
@@ -142,24 +135,22 @@ def build_resource_usage_rows(
         result_id = usage.get("result_id")
         if result_type not in {"gear", "resource"} or not result_id:
             continue
-        visual_parts = (
-            [get_rarity_emoji(usage.get("result_rarity"))]
-            if result_type == "gear"
-            else []
-        )
+        visual_parts = [get_rarity_emoji(usage.get("result_rarity"))] if result_type == "gear" else []
         visual_parts.append(escape_html(usage.get("result_emoji", "")))
         visual = " ".join(part for part in visual_parts if part)
-        rows.append((
-            _entity_line(
-                links,
-                item_type=result_type,
-                item_id=result_id,
-                name=usage.get("result_name", ""),
-                prefix=f"{visual} " if visual else "",
-                return_param=return_param,
-            ),
-            int(usage.get("quantity", 1)),
-        ))
+        rows.append(
+            (
+                _entity_line(
+                    links,
+                    item_type=result_type,
+                    item_id=result_id,
+                    name=usage.get("result_name", ""),
+                    prefix=f"{visual} " if visual else "",
+                    return_param=return_param,
+                ),
+                int(usage.get("quantity", 1)),
+            )
+        )
     return rows
 
 
@@ -201,54 +192,57 @@ async def build_mob_card(
 
     drop_sections = []
     if data["resource_drops"]:
-        drop_sections.append((
-            "📦 Падает:",
-            [
-                _entity_line(
-                    links,
-                    item_type="resource",
-                    item_id=item["id"],
-                    name=item["name"],
-                    prefix=f"{escape_html(item['emoji'])} ",
-                    return_param=return_param,
-                )
-                for item in data["resource_drops"]
-            ],
-        ))
+        drop_sections.append(
+            (
+                "📦 Падает:",
+                [
+                    _entity_line(
+                        links,
+                        item_type="resource",
+                        item_id=item["id"],
+                        name=item["name"],
+                        prefix=f"{escape_html(item['emoji'])} ",
+                        return_param=return_param,
+                    )
+                    for item in data["resource_drops"]
+                ],
+            )
+        )
     if data["gear_drops"]:
-        drop_sections.append((
-            "⚔️ Снаряжение:",
-            [
-                _entity_line(
-                    links,
-                    item_type="gear",
-                    item_id=item["id"],
-                    name=item["name"],
-                    prefix=(
-                        f"{get_rarity_emoji(item.get('rarity'))} "
-                        f"{escape_html(item['emoji'])} "
-                    ),
-                    return_param=return_param,
-                )
-                for item in data["gear_drops"]
-            ],
-        ))
+        drop_sections.append(
+            (
+                "⚔️ Снаряжение:",
+                [
+                    _entity_line(
+                        links,
+                        item_type="gear",
+                        item_id=item["id"],
+                        name=item["name"],
+                        prefix=(f"{get_rarity_emoji(item.get('rarity'))} {escape_html(item['emoji'])} "),
+                        return_param=return_param,
+                    )
+                    for item in data["gear_drops"]
+                ],
+            )
+        )
     if data["card_drops"]:
-        drop_sections.append((
-            "🃏 Карты:",
-            [
-                _entity_line(
-                    links,
-                    item_type="card",
-                    item_id=item["id"],
-                    name=item["name"],
-                    prefix=f"{escape_html(item['emoji'])} ",
-                    suffix=f" {GEAR_SLOT_ICONS.get(item.get('slot', ''), '')}",
-                    return_param=return_param,
-                )
-                for item in data["card_drops"]
-            ],
-        ))
+        drop_sections.append(
+            (
+                "🃏 Карты:",
+                [
+                    _entity_line(
+                        links,
+                        item_type="card",
+                        item_id=item["id"],
+                        name=item["name"],
+                        prefix=f"{escape_html(item['emoji'])} ",
+                        suffix=f" {GEAR_SLOT_ICONS.get(item.get('slot', ''), '')}",
+                        return_param=return_param,
+                    )
+                    for item in data["card_drops"]
+                ],
+            )
+        )
     for index, (title, items) in enumerate(drop_sections):
         if index:
             composer.add_divider()
@@ -289,7 +283,9 @@ async def build_resource_card(
         composer.add("📖 <b>Изучить рецепт один раз</b>")
         for learned_recipe in data.get("learning_recipes", []):
             result_link = _entity_line(
-                links, item_type="gear", item_id=learned_recipe["result_id"],
+                links,
+                item_type="gear",
+                item_id=learned_recipe["result_id"],
                 name=learned_recipe["result_name"],
                 prefix=f"{get_rarity_emoji(learned_recipe['result_rarity'])} {escape_html(learned_recipe['result_emoji'])} ",
                 return_param=return_param,
@@ -298,8 +294,11 @@ async def build_resource_card(
             material_rows: list[list[MarkupPair | str]] = []
             for material in learned_recipe["ingredients"]:
                 material_link = _entity_line(
-                    links, item_type="resource", item_id=material["resource_id"],
-                    name=material["name"], prefix=f"{escape_html(material['emoji'])} ",
+                    links,
+                    item_type="resource",
+                    item_id=material["resource_id"],
+                    name=material["name"],
+                    prefix=f"{escape_html(material['emoji'])} ",
                     return_param=return_param,
                 )
                 material_rows.append([material_link, f"{material['quantity']} шт."])
@@ -308,7 +307,8 @@ async def build_resource_card(
             else:
                 composer.add("<i>Материалы рецепта пока не заполнены.</i>")
             _add_recipe_owners(
-                composer, [format_recipe_owner(owner) for owner in learned_recipe["owner_entries"]],
+                composer,
+                [format_recipe_owner(owner) for owner in learned_recipe["owner_entries"]],
             )
 
     if data["mobs"]:
@@ -316,8 +316,7 @@ async def build_resource_card(
         fallback_rows = []
         for mob in data["mobs"]:
             loc = (
-                f"{escape_html(mob.get('location_emoji', ''))} "
-                f"{escape_html(mob.get('location_name', ''))}"
+                f"{escape_html(mob.get('location_emoji', ''))} {escape_html(mob.get('location_name', ''))}"
                 if mob.get("location_name")
                 else ""
             )
@@ -348,10 +347,7 @@ async def build_resource_card(
             [[result, f"{quantity} шт."] for result, quantity in usage_rows],
             headers=["Результат", "Нужно"],
             details_summary="🧩 Используется в рецептах:",
-            fallback_rows=[
-                combine_markup(result, f" — {quantity} шт.")
-                for result, quantity in usage_rows
-            ],
+            fallback_rows=[combine_markup(result, f" — {quantity} шт.") for result, quantity in usage_rows],
             fallback_spoiler=True,
         )
 
@@ -363,14 +359,8 @@ async def build_resource_card(
         composer.add(f"За один крафт: {recipe.get('quantity', 1)} шт.")
         ingredient_rows: list[list[MarkupPair | str]] = []
         fallback_rows = []
-        ingredients = [
-            ingredient
-            for ingredient in recipe["ingredients"]
-            if ingredient.get("code") == "dust"
-        ] + [
-            ingredient
-            for ingredient in recipe["ingredients"]
-            if ingredient.get("code") != "dust"
+        ingredients = [ingredient for ingredient in recipe["ingredients"] if ingredient.get("code") == "dust"] + [
+            ingredient for ingredient in recipe["ingredients"] if ingredient.get("code") != "dust"
         ]
         for ingredient in ingredients:
             is_dust = ingredient.get("code") == "dust"
@@ -418,22 +408,23 @@ async def build_gear_card(
     if not data:
         return CardView("Предмет не найден.", "Предмет не найден.")
 
-    gear_id = data['id']
-    rarity = data['rarity']
+    gear_id = data["id"]
+    rarity = data["rarity"]
     links = _link_builder(bot_username, link_mode, "gear", gear_id)
     return_param = build_gear_return_param(gear_id, rarity, page, slot_index)
     craft_text = "да" if data.get("craftable") else "нет"
     composer = CardComposer()
     composer.add(
-        f"<b>{get_rarity_emoji(data.get('rarity'))} "
-        f"{escape_html(data['emoji'])} {escape_html(data['name'])}</b>"
+        f"<b>{get_rarity_emoji(data.get('rarity'))} {escape_html(data['emoji'])} {escape_html(data['name'])}</b>"
     )
     composer.add_table(
-        [[
-            str(data.get("level", 1)),
-            escape_html(format_gear_classes(data.get("classes"))),
-            craft_text,
-        ]],
+        [
+            [
+                str(data.get("level", 1)),
+                escape_html(format_gear_classes(data.get("classes"))),
+                craft_text,
+            ]
+        ],
         headers=["Уровень", "Класс", "Крафт"],
         fallback_rows=[
             f"Уровень: {data.get('level', 1)}",
@@ -451,13 +442,19 @@ async def build_gear_card(
         composer.add(f"За один крафт: {data.get('craft_quantity', 1)} шт.")
         learning_scroll = data.get("learning_scroll")
         if learning_scroll:
-            composer.add_list("📖 Изучить рецепт один раз:", [
-                _entity_line(
-                    links, item_type="resource", item_id=learning_scroll["id"],
-                    name=learning_scroll["name"], prefix=f"{escape_html(learning_scroll['emoji'])} ",
-                    return_param=return_param,
-                ),
-            ])
+            composer.add_list(
+                "📖 Изучить рецепт один раз:",
+                [
+                    _entity_line(
+                        links,
+                        item_type="resource",
+                        item_id=learning_scroll["id"],
+                        name=learning_scroll["name"],
+                        prefix=f"{escape_html(learning_scroll['emoji'])} ",
+                        return_param=return_param,
+                    ),
+                ],
+            )
         if data["ingredients"]:
             ingredient_rows: list[list[MarkupPair | str]] = []
             fallback_rows = []
@@ -558,20 +555,21 @@ async def build_card_card(
         items = []
         for mob in mobs:
             loc = (
-                f"{escape_html(mob['location_emoji'])} "
-                f"{escape_html(mob['location_name'])}"
+                f"{escape_html(mob['location_emoji'])} {escape_html(mob['location_name'])}"
                 if mob.get("location_name")
                 else ""
             )
-            items.append(_entity_line(
-                links,
-                item_type="mob",
-                item_id=mob["id"],
-                name=mob["name"],
-                prefix=f"{escape_html(mob['emoji'])} ",
-                suffix=f" <i>{loc}</i>" if loc else "",
-                return_param=return_param,
-            ))
+            items.append(
+                _entity_line(
+                    links,
+                    item_type="mob",
+                    item_id=mob["id"],
+                    name=mob["name"],
+                    prefix=f"{escape_html(mob['emoji'])} ",
+                    suffix=f" <i>{loc}</i>" if loc else "",
+                    return_param=return_param,
+                )
+            )
         composer.add_list("📜 Падает с мобов:", items)
     else:
         composer.add("<i>Нет информации</i>")

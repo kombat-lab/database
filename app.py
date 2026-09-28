@@ -11,7 +11,7 @@ from analytics import AnalyticsMiddleware, AnalyticsService
 from database import Database
 from fsm_storage import SQLiteFSMStorage, ScopedEventIsolation
 from lifecycle import BackgroundTaskRegistry, DrainingDispatcher, UpdateTaskTracker, install_update_tracker
-from runtime_scope import CatalogAuditMiddleware, RuntimeScope, RuntimeScopeMiddleware
+from runtime_scope import CatalogAuditMiddleware, RuntimeScope
 from runtime_settings import AppSettings
 from routing import CallbackMessageGuard
 
@@ -30,11 +30,11 @@ class Application:
             await self.database.connect()
             me = await bot.me()
             from admin_handlers import create_admin_router
-            from public_catalog import PublicCatalogHandlers
+            from public_catalog import create_public_router
             from public_presentation import PublicContext
 
             scope = RuntimeScope(self.database, self.settings.admin_ids)
-            public = PublicCatalogHandlers(
+            public_router = create_public_router(
                 PublicContext(
                     db=self.database,
                     bot_username=me.username,
@@ -42,7 +42,7 @@ class Application:
                     background_tasks=self.background_tasks,
                 )
             )
-            self.dispatcher.include_router(public.router)
+            self.dispatcher.include_router(public_router)
             self.dispatcher.include_router(create_admin_router(scope))
             await bot.delete_webhook(drop_pending_updates=False)
             await self.dispatcher.start_polling(
@@ -80,7 +80,6 @@ def create_application(settings: AppSettings, database: Database | None = None) 
     background = BackgroundTaskRegistry()
     install_update_tracker(dispatcher, tracker)
     dispatcher.callback_query.outer_middleware(CallbackMessageGuard())
-    dispatcher.update.outer_middleware(RuntimeScopeMiddleware(RuntimeScope(database, settings.admin_ids)))
     dispatcher.update.outer_middleware(CatalogAuditMiddleware())
     dispatcher.update.middleware(AnalyticsMiddleware(database))
     return Application(settings, database, dispatcher, storage, tracker, background)

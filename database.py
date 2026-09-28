@@ -8,7 +8,6 @@ from typing import Literal
 
 
 from catalog_types import (
-    ItemRow as ItemRow,
     LocationRow as LocationRow,
     MobRow as MobRow,
     ResourceRow as ResourceRow,
@@ -17,17 +16,11 @@ from catalog_types import (
     NavigationIds as NavigationIds,
     RecipeOwnerEntry as RecipeOwnerEntry,
     SearchItem as SearchItem,
-    GearDropRow as GearDropRow,
-    CardDropRow as CardDropRow,
     MobCardRow as MobCardRow,
     ResourceDropMobRow as ResourceDropMobRow,
-    ResourceUsageRow as ResourceUsageRow,
     ResourceCardRow as ResourceCardRow,
-    GearIngredientRow as GearIngredientRow,
     GearCardRow as GearCardRow,
-    RecipeIngredientRow as RecipeIngredientRow,
     ResourceRecipeRow as ResourceRecipeRow,
-    LearningRecipeRow as LearningRecipeRow,
     RecipeDetailsRow as RecipeDetailsRow,
     DropItemType as DropItemType,
     MobSourceRow as MobSourceRow,
@@ -44,9 +37,8 @@ from storage.recipes import RecipeRepository
 from storage.drafts import GearDraftRepository
 from storage.resources import ResourceRepository
 from storage.cards import CardRepository
-from storage.sqlite import SqliteStore, SqlMetrics as SqlMetrics, DB_PATH as DB_PATH
-from storage.types import DbRow as DbRow, SqlParams as SqlParams, SqlValue as SqlValue
-from storage.types import SCHEMA_VERSION as SCHEMA_VERSION
+from storage.sqlite import SqliteStore
+from storage.types import DbRow as DbRow
 from game_constants import (
     GEAR_SLOTS,
     RARITY_KEYS,
@@ -707,6 +699,3 @@ class Database(SqliteStore):
         limit: int,
     ) -> list[DbRow]:
         return await self.gear.get_gear_by_rarity_slot(rarity, slot, offset, limit)
-
-
-db = Database()

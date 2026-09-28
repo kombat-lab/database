@@ -1,13 +1,10 @@
 import unittest
-from unittest.mock import AsyncMock, patch
-
 from aiogram import types
 
-import analytics
 from analytics import AnalyticsService
 from database import Database
 from maintenance import preview_retention
-from runtime_scope import RuntimeScope, RuntimeScopeMiddleware, database_for, admin_ids_for
+from runtime_scope import RuntimeScope, RuntimeScopeMiddleware, current_scope, database_for
 
 
 class RuntimeServicesTests(unittest.IsolatedAsyncioTestCase):
@@ -24,12 +21,11 @@ class RuntimeServicesTests(unittest.IsolatedAsyncioTestCase):
     async def test_database_bound_analytics_does_not_use_default_instance(self):
         await self.first.register_user_if_not_exists(101, "First")
         await self.second.register_user_if_not_exists(202, "Second")
-        with patch.object(analytics.db, "execute_query", AsyncMock(side_effect=AssertionError("global used"))):
-            first, second = AnalyticsService(self.first), AnalyticsService(self.second)
-            await first.log_start(101)
-            await second.log_start(202)
-            self.assertEqual([row["user_id"] for row in await first.get_users_page()], [101])
-            self.assertEqual([row["user_id"] for row in await second.get_users_page()], [202])
+        first, second = AnalyticsService(self.first), AnalyticsService(self.second)
+        await first.log_start(101)
+        await second.log_start(202)
+        self.assertEqual([row["user_id"] for row in await first.get_users_page()], [101])
+        self.assertEqual([row["user_id"] for row in await second.get_users_page()], [202])
 
     async def test_page_totals_cover_selected_users_with_stable_pagination(self):
         service = AnalyticsService(self.first)
@@ -43,19 +39,19 @@ class RuntimeServicesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["user_id"] for row in second], [9, 8, 7, 6, 5])
         self.assertTrue(all(row["event_count"] == row["user_id"] for row in first + second))
 
-    async def test_scope_resets_after_exception_and_does_not_change_globals(self):
+    async def test_scope_resets_after_exception_and_fails_fast_outside_request(self):
         event = types.User(id=1, is_bot=False, first_name="Synthetic")
         scope = RuntimeScopeMiddleware(RuntimeScope(self.first, frozenset({101})))
 
         async def handler(event, data):
-            self.assertIs(database_for(self.second), self.first)
-            self.assertEqual(admin_ids_for([202]), frozenset({101}))
+            self.assertIs(database_for(), self.first)
+            self.assertEqual(current_scope().admin_ids, frozenset({101}))
             raise RuntimeError("synthetic")
 
         with self.assertRaises(RuntimeError):
             await scope(handler, event, {})
-        self.assertIs(database_for(self.second), self.second)
-        self.assertEqual(admin_ids_for([202]), [202])
+        with self.assertRaisesRegex(RuntimeError, "RuntimeScope is not bound"):
+            current_scope()
 
     async def test_retention_preview_never_deletes_history(self):
         await self.first.register_user_if_not_exists(101)

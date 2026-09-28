@@ -15,9 +15,7 @@ GEAR_SLOT_DEFINITIONS = (
 )
 
 GEAR_SLOTS = tuple(key for key, _, _ in GEAR_SLOT_DEFINITIONS)
-GEAR_SLOT_LABELS = {
-    key: f"{icon} {name}" for key, icon, name in GEAR_SLOT_DEFINITIONS
-}
+GEAR_SLOT_LABELS = {key: f"{icon} {name}" for key, icon, name in GEAR_SLOT_DEFINITIONS}
 GEAR_SLOT_ICONS = {key: icon for key, icon, _ in GEAR_SLOT_DEFINITIONS}
 
 RARITY_DEFINITIONS = (
@@ -29,9 +27,7 @@ RARITY_DEFINITIONS = (
 RARITY_KEYS = tuple(key for key, _, _ in RARITY_DEFINITIONS)
 RARITY_EMOJIS = {key: emoji for key, emoji, _ in RARITY_DEFINITIONS}
 RARITY_NAMES = {key: name for key, _, name in RARITY_DEFINITIONS}
-RARITY_LABELS = {
-    key: f"{emoji} {name}" for key, emoji, name in RARITY_DEFINITIONS
-}
+RARITY_LABELS = {key: f"{emoji} {name}" for key, emoji, name in RARITY_DEFINITIONS}
 RESOURCE_TYPE_KEYS = (
     "craft",
     "consumable",
@@ -42,14 +38,16 @@ RESOURCE_TYPE_KEYS = (
 
 # Preserve the former renderer's locations during migration only. New recipes
 # receive their craft location explicitly from the administrator.
-LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION = (
-    "🏛 Алькасар - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
-)
+LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION = "🏛 Алькасар - 🛣 Вторая улица - 👤 Алхимик - ⚗️ Алхимия"
 LEGACY_ALCHEMY_CRAFT_LOCATIONS = {
     name.casefold(): "🏰 Торговый аванпост - 🛣 Центральная Аллея - 👤 Ученая Мередит - ⚗️ Алхимия"
     for name in (
-        "Дубленая кожа", "Костяной куб", "Пепельный материал",
-        "Прочная бечевка", "Субстанция", "Ядро земель",
+        "Дубленая кожа",
+        "Костяной куб",
+        "Пепельный материал",
+        "Прочная бечевка",
+        "Субстанция",
+        "Ядро земель",
     )
 }
 GEAR_CLASS_ORDER = ("Аколит", "Бастион", "Маг", "Охотник", "Тень")
@@ -58,13 +56,9 @@ GEAR_CLASS_SET = frozenset(GEAR_CLASS_ORDER)
 
 def parse_gear_classes(value: object) -> tuple[str, ...]:
     selected = {
-        class_name.strip()
-        for class_name in str(value or "").split(",")
-        if class_name.strip() in GEAR_CLASS_SET
+        class_name.strip() for class_name in str(value or "").split(",") if class_name.strip() in GEAR_CLASS_SET
     }
-    return tuple(
-        class_name for class_name in GEAR_CLASS_ORDER if class_name in selected
-    )
+    return tuple(class_name for class_name in GEAR_CLASS_ORDER if class_name in selected)
 
 
 def format_gear_classes(value: object) -> str:

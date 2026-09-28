@@ -1,22 +1,16 @@
 from __future__ import annotations
 import asyncio
 import logging
-import re
 from aiogram import types
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from catalog_types import (
-    RecipeOwnerEntry,
     ItemRow,
-    MobCardRow,
-    ResourceCardRow,
     GearCardRow,
-    ResourceUsageRow,
 )
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputRichMessage,
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
@@ -29,18 +23,10 @@ from game_constants import (
     RARITY_KEYS as RARITY_ORDER,
     RARITY_NAMES,
     RARITY_EMOJIS,
-    LEGACY_ALCHEMY_CRAFT_LOCATIONS,
-    LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION,
 )
-from utils import clean_username, escape_html
 from lifecycle import BackgroundTaskRegistry
 from messaging import cleanup_card_fragments, replace_rich_card, upsert_rich_card
 from telegram_helpers import get_bound_bot, get_callback_message
-from navigation import (
-    build_resource_return_param as build_resource_return_param,
-    build_gear_return_param as build_gear_return_param,
-    build_recipe_owner_callback as build_recipe_owner_callback,
-)
 from ui.callbacks import (
     CardViewCallback,
     EntityBackCallback,
@@ -82,12 +68,6 @@ RESOURCE_TYPE_TITLES = {
     "currency": "Валюта",
     "alchemy": "Алхимия",
 }
-
-DEFAULT_ALCHEMY_CRAFT_LOCATION = LEGACY_DEFAULT_ALCHEMY_CRAFT_LOCATION
-
-MEREDITH_ALCHEMY_CRAFT_LOCATION = LEGACY_ALCHEMY_CRAFT_LOCATIONS["дубленая кожа"]
-
-MEREDITH_ALCHEMY_RESOURCES = frozenset(LEGACY_ALCHEMY_CRAFT_LOCATIONS)
 
 LOCATION_CONTENT_TITLES = {
     "mobs": "Мобы",
@@ -131,40 +111,6 @@ class PublicPresentation:
     def get_rarity_emoji(self, rarity: str | None) -> str:
         return RARITY_EMOJIS.get(rarity or "common", RARITY_EMOJIS["common"])
 
-    def get_resource_type_name(self, resource_type: str | None) -> str:
-        return RESOURCE_TYPE_NAMES.get(resource_type or "craft", "📦 Крафтовый")
-
-    def get_alchemy_craft_location(self, resource_name: str) -> str:
-        if resource_name.strip().casefold() in MEREDITH_ALCHEMY_RESOURCES:
-            return MEREDITH_ALCHEMY_CRAFT_LOCATION
-        return DEFAULT_ALCHEMY_CRAFT_LOCATION
-
-    def build_resource_usage_rows(
-        self,
-        usages: list[ResourceUsageRow],
-        return_param: str | None,
-    ) -> list[tuple[str, int]]:
-        rows = []
-        sorted_usages = sorted(
-            usages,
-            key=lambda usage: (
-                str(usage.get("result_name") or "").casefold(),
-                int(usage.get("result_id") or 0),
-            ),
-        )
-        for usage in sorted_usages:
-            result_type = usage.get("result_type")
-            result_id = usage.get("result_id")
-            if result_type not in {"gear", "resource"} or not result_id:
-                continue
-            link = self.make_deep_link(result_type, result_id, return_param)
-            visual_parts = [self.get_rarity_emoji(usage.get("result_rarity"))] if result_type == "gear" else []
-            visual_parts.append(escape_html(usage.get("result_emoji", "")))
-            visual = " ".join(part for part in visual_parts if part)
-            name_link = f"<a href='{link}'>{escape_html(usage.get('result_name', ''))}</a>"
-            rows.append((f"{visual} {name_link}".strip(), int(usage.get("quantity", 1))))
-        return rows
-
     def get_location_emoji(self, location: ItemRow) -> str:
         """Возвращает emoji локации с безопасным fallback на значение из БД."""
         return location.get("emoji") or "📍"
@@ -175,15 +121,6 @@ class PublicPresentation:
     def get_location_list_title(self, location: ItemRow, category: str, page: int) -> str:
         category_title = LOCATION_CONTENT_TITLES.get(category, category)
         return f"{self.get_location_emoji(location)} {location['name']} - {category_title}\nСтраница {page}"
-
-    def make_deep_link(self, item_type: str, item_id: int, return_param: str | None = None) -> str:
-        """Формирует корректный Telegram start payload длиной до 64 символов."""
-        payload = f"{item_type}_{item_id}"
-        if return_param:
-            candidate = f"{payload}-r-{return_param}"
-            if len(candidate) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
-                payload = candidate
-        return f"https://t.me/{self.BOT_USERNAME}?start={payload}"
 
     def get_card_link_mode(self, chat: types.Chat) -> EntityLinkMode:
         return EntityLinkMode.CALLBACK if chat.type == ChatType.PRIVATE else EntityLinkMode.DEEP_LINK
@@ -325,108 +262,6 @@ class PublicPresentation:
 
         rows.append([InlineKeyboardButton(text="🔄 Выбрать другую редкость", callback_data="gear_rarities")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    async def format_mob_card_plain(
-        self, mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None
-    ) -> str:
-        return (
-            await self.build_mob_card(self.db, mob_id, location_id, page, data=data, bot_username=self.BOT_USERNAME)
-        ).fallback_html
-
-    async def format_mob_card(
-        self, mob_id: int, location_id: int | None = None, page: int = 1, *, data: MobCardRow | None = None
-    ) -> InputRichMessage:
-        return (
-            await self.build_mob_card(self.db, mob_id, location_id, page, data=data, bot_username=self.BOT_USERNAME)
-        ).rich_message
-
-    async def format_resource_card(
-        self,
-        resource_id: int,
-        context_type: str | None = None,
-        context_id: int | str | None = None,
-        page: int = 1,
-        *,
-        data: ResourceCardRow | None = None,
-    ) -> str:
-        return (
-            await self.build_resource_card(
-                self.db, resource_id, context_type, context_id, page, data=data, bot_username=self.BOT_USERNAME
-            )
-        ).fallback_html
-
-    async def format_resource_card_rich(
-        self,
-        resource_id: int,
-        context_type: str | None = None,
-        context_id: int | str | None = None,
-        page: int = 1,
-        *,
-        data: ResourceCardRow | None = None,
-    ) -> InputRichMessage:
-        return (
-            await self.build_resource_card(
-                self.db, resource_id, context_type, context_id, page, data=data, bot_username=self.BOT_USERNAME
-            )
-        ).rich_message
-
-    def format_recipe_owner(self, owner: RecipeOwnerEntry) -> str:
-        username = owner["player_username"]
-        if username:
-            return f"@{escape_html(clean_username(username))}"
-        user_id = owner["user_id"]
-        if user_id is not None:
-            return f"<a href='tg://user?id={user_id}'>Игрок {user_id}</a>"
-        return "Неизвестный владелец"
-
-    def recipe_owner_labels(self, data: GearCardRow) -> list[str]:
-        if "owner_entries" in data:
-            return [self.format_recipe_owner(owner) for owner in data["owner_entries"]]
-        return [f"@{escape_html(clean_username(username))}" for username in data.get("owners", [])]
-
-    async def format_gear_card_plain(
-        self,
-        gear_id: int,
-        rarity: str | None = None,
-        page: int = 1,
-        *,
-        data: GearCardRow | None = None,
-        slot_index: int | None = None,
-    ) -> str:
-        return (
-            await self.build_gear_card(
-                self.db, gear_id, rarity, page, data=data, slot_index=slot_index, bot_username=self.BOT_USERNAME
-            )
-        ).fallback_html
-
-    async def format_gear_card_rich(
-        self,
-        gear_id: int,
-        rarity: str | None = None,
-        page: int = 1,
-        *,
-        data: GearCardRow | None = None,
-        slot_index: int | None = None,
-    ) -> InputRichMessage:
-        return (
-            await self.build_gear_card(
-                self.db, gear_id, rarity, page, data=data, slot_index=slot_index, bot_username=self.BOT_USERNAME
-            )
-        ).rich_message
-
-    async def format_card_card(
-        self, card_id: int, page: int = 1, context_type: str | None = None, context_id: int | None = None
-    ) -> str:
-        return (
-            await self.build_card_card(self.db, card_id, page, context_type, context_id, bot_username=self.BOT_USERNAME)
-        ).fallback_html
-
-    async def format_card_card_rich(
-        self, card_id: int, page: int = 1, context_type: str | None = None, context_id: int | None = None
-    ) -> InputRichMessage:
-        return (
-            await self.build_card_card(self.db, card_id, page, context_type, context_id, bot_username=self.BOT_USERNAME)
-        ).rich_message
 
     def get_main_menu_reply_keyboard(
         self,

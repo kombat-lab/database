@@ -26,11 +26,8 @@ from routing import CallbackMessageGuard
 from telegram_helpers import get_bound_bot, get_callback_data, get_callback_message
 from telegram_text import split_formatted_text
 from search_rendering import build_search_content
-from navigation import (
+from ui.callbacks import (
     MAX_SQLITE_ID,
-    build_resource_return_param as build_resource_return_param,
-    build_gear_return_param as build_gear_return_param,
-    build_recipe_owner_callback as build_recipe_owner_callback,
     parse_gear_view_callback,
     parse_recipe_owner_callback,
     parse_return_param,
@@ -40,8 +37,6 @@ from navigation import (
     parse_gear_list_callback,
     parse_card_callback,
     return_button_data,
-)
-from ui.callbacks import (
     CardViewCallback,
     EntityBackCallback,
     EntityNavigateCallback,

@@ -14,6 +14,8 @@ import admin_item_sources as sources
 import admin_utils
 import ui.rich
 from database import Database
+from admin_handlers import create_admin_router
+from tests.admin_fixture import create_test_scope, propagate_admin_event
 
 
 class CatalogCreationFixture:
@@ -21,21 +23,20 @@ class CatalogCreationFixture:
         self.bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
         self.db = Database(getattr(self, "database_path", ":memory:"))
         await self.db.connect()
+        self.scope = create_test_scope(self.db, 101)
+        self.router = create_admin_router(self.scope)
         self.storage = MemoryStorage()
         self.state = FSMContext(self.storage, StorageKey(bot_id=self.bot.id, chat_id=101, user_id=101))
         self.user = types.User(id=101, is_bot=False, first_name="Admin")
         self.next_id = 10
-        self.latest = types.Message(message_id=10, date=1, chat=types.Chat(id=101, type="private"), text="Admin").as_(self.bot)
+        self.latest = types.Message(message_id=10, date=1, chat=types.Chat(id=101, type="private"), text="Admin").as_(
+            self.bot
+        )
         self.answer = AsyncMock(side_effect=self.answer_message)
         self.edit = AsyncMock(side_effect=self.edit_message)
         for mocked in (
-            patch.object(admin, "db", self.db), patch.object(admin, "ADMIN_IDS", [101]),
-            patch.object(sources, "db", self.db),
-            patch.dict(admin.ENTITY_CONFIGS, {
-                kind: dict(admin.ENTITY_CONFIGS[kind], get_by_id_func=getattr(self.db, f"get_{kind}_by_id"))
-                for kind in ("resource", "card")
-            }),
-            patch.object(types.Message, "answer", self.answer), patch.object(types.Message, "edit_text", self.edit),
+            patch.object(types.Message, "answer", self.answer),
+            patch.object(types.Message, "edit_text", self.edit),
             patch.object(types.CallbackQuery, "answer", AsyncMock()),
             patch.object(ui.rich, "present_rich_card", AsyncMock(side_effect=self.render_rich)),
         ):
@@ -50,33 +51,54 @@ class CatalogCreationFixture:
     async def answer_message(self, text, **kwargs):
         self.next_id += 1
         self.latest = types.Message(
-            message_id=self.next_id, date=1, chat=types.Chat(id=101, type="private"),
-            text=text, reply_markup=kwargs.get("reply_markup"),
+            message_id=self.next_id,
+            date=1,
+            chat=types.Chat(id=101, type="private"),
+            text=text,
+            reply_markup=kwargs.get("reply_markup"),
         ).as_(self.bot)
         return self.latest
 
     async def edit_message(self, text, **kwargs):
-        self.latest = self.latest.model_copy(update={"text": text, "reply_markup": kwargs.get("reply_markup")}).as_(self.bot)
+        self.latest = self.latest.model_copy(update={"text": text, "reply_markup": kwargs.get("reply_markup")}).as_(
+            self.bot
+        )
         return self.latest
 
     async def render_rich(self, *, card, reply_markup=None, **kwargs):
         return await self.edit_message(card.fallback_html, reply_markup=reply_markup)
 
     def callback(self, data, message=None):
-        return types.CallbackQuery(id="test", data=data, message=message or self.latest, from_user=self.user, chat_instance="test").as_(self.bot)
+        return types.CallbackQuery(
+            id="test", data=data, message=message or self.latest, from_user=self.user, chat_instance="test"
+        ).as_(self.bot)
 
     def action(self, prefix):
-        return next(button.callback_data for row in self.latest.reply_markup.inline_keyboard for button in row if (button.callback_data or "").startswith(prefix))
+        return next(
+            button.callback_data
+            for row in self.latest.reply_markup.inline_keyboard
+            for button in row
+            if (button.callback_data or "").startswith(prefix)
+        )
 
     async def route(self, event):
-        kind = "callback_query" if isinstance(event, types.CallbackQuery) else "message"
-        return await admin.admin_router.propagate_event(
-            kind, event, bot=self.bot, state=self.state, raw_state=await self.state.get_state(), event_from_user=self.user,
+        return await propagate_admin_event(
+            self.router,
+            event,
+            bot=self.bot,
+            state=self.state,
+            user=self.user,
         )
 
     async def text(self, text, reply_to=None):
-        message = types.Message(message_id=900, date=1, chat=types.Chat(id=101, type="private"), from_user=self.user,
-                                text=text, reply_to_message=reply_to).as_(self.bot)
+        message = types.Message(
+            message_id=900,
+            date=1,
+            chat=types.Chat(id=101, type="private"),
+            from_user=self.user,
+            text=text,
+            reply_to_message=reply_to,
+        ).as_(self.bot)
         return await self.route(message)
 
     async def start(self, kind, name="Synthetic"):
@@ -159,7 +181,11 @@ class CatalogCreationSessionTests(CatalogCreationFixture, unittest.IsolatedAsync
         self.assertEqual((await self.db.execute_query("SELECT COUNT(*) AS n FROM resources"))[0]["n"], 0)
         before = await self.state.get_data()
         save_button = self.action("isd:done")
-        with patch.object(self.db, "create_resource_with_sources", AsyncMock(side_effect=sqlite3.OperationalError("synthetic write failure"))):
+        with patch.object(
+            self.db,
+            "create_resource_with_sources",
+            AsyncMock(side_effect=sqlite3.OperationalError("synthetic write failure")),
+        ):
             await self.route(self.callback(save_button))
         self.assertEqual(await self.state.get_data(), before)
         self.assertEqual(await self.state.get_state(), sources.ItemSourcesStates.select.state)

@@ -1,8 +1,5 @@
-import os
 import unittest
 from unittest.mock import ANY, AsyncMock, Mock, patch
-
-os.environ.setdefault("BOT_TOKEN", "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
 
 from aiogram import Bot, types
 from aiogram.types import Update
@@ -23,8 +20,9 @@ from admin_mobs import (
     get_location_choice_keyboard,
     resolve_drop_filter,
 )
-from database import db
-from tests.public_fixture import app
+from database import Database
+from public_catalog import PublicCatalogHandlers
+from public_presentation import PublicContext
 
 from ui.callbacks import (
     EntityBackCallback,
@@ -32,65 +30,61 @@ from ui.callbacks import (
     GearViewCallback,
     RecipeOwnerCallback,
     ResourceViewCallback,
-    parse_resource_page,
-    parse_return_context,
+    parse_resource_page_callback,
+    parse_return_param,
 )
 from ui.cards import (
-    DEFAULT_ALCHEMY_CRAFT_LOCATION,
-    MEREDITH_ALCHEMY_CRAFT_LOCATION,
     build_gear_card,
     build_mob_card,
     build_resource_card,
-    get_alchemy_craft_location,
 )
 from ui.links import EntityLinkMode
 from ui.navigation import EntityNavigationHistory, EntityRef
 from ui.rich import CardView, SECTION_DIVIDER, present_rich_card
 from utils import RICH_TABLE_OPEN
 
-back_to_main_menu = app.back_to_main_menu
-build_gear_card_keyboard = app.build_gear_card_keyboard
-edit_callback_window = app.edit_callback_window
-get_location_list_title = app.get_location_list_title
-mobs_button = app.mobs_button
-
-
 
 class BotApiCompatibilityTests(unittest.TestCase):
     def test_bot_api_10_3_rich_button_update_is_deserialized(self):
-        update = Update.model_validate({
-            "update_id": 1001,
-            "callback_query": {
-                "id": "callback-1",
-                "from": {
-                    "id": 123456789,
-                    "is_bot": False,
-                    "first_name": "Test User",
-                },
-                "message": {
-                    "message_id": 42,
-                    "date": 1787600000,
-                    "chat": {
+        update = Update.model_validate(
+            {
+                "update_id": 1001,
+                "callback_query": {
+                    "id": "callback-1",
+                    "from": {
                         "id": 123456789,
-                        "type": "private",
+                        "is_bot": False,
                         "first_name": "Test User",
                     },
-                    "rich_message": {
-                        "blocks": [{
-                            "type": "buttons",
-                            "buttons": [{
-                                "text": "📋 Скопировать название",
-                                "style": "primary",
-                                "copy_text": {"text": "Клочок меха"},
-                            }],
-                            "align": "center",
-                        }],
+                    "message": {
+                        "message_id": 42,
+                        "date": 1787600000,
+                        "chat": {
+                            "id": 123456789,
+                            "type": "private",
+                            "first_name": "Test User",
+                        },
+                        "rich_message": {
+                            "blocks": [
+                                {
+                                    "type": "buttons",
+                                    "buttons": [
+                                        {
+                                            "text": "📋 Скопировать название",
+                                            "style": "primary",
+                                            "copy_text": {"text": "Клочок меха"},
+                                        }
+                                    ],
+                                    "align": "center",
+                                }
+                            ],
+                        },
                     },
+                    "chat_instance": "chat-instance-1",
+                    "data": "nav_resource_115_craft_2",
                 },
-                "chat_instance": "chat-instance-1",
-                "data": "nav_resource_115_craft_2",
-            },
-        })
+            }
+        )
 
         button_block = update.callback_query.message.rich_message.blocks[0]
         self.assertEqual(button_block.type, "buttons")
@@ -155,9 +149,7 @@ class CallbackParserTests(unittest.TestCase):
             GearViewCallback(47, "epic", None, 3),
         )
 
-        callback_data = RecipeOwnerCallback(
-            "claim", 36, 47, "epic", 2, 3
-        ).pack()
+        callback_data = RecipeOwnerCallback("claim", 36, 47, "epic", 2, 3).pack()
         self.assertEqual(callback_data, "recipe_claim_36_47_epic_2_3")
         self.assertEqual(
             RecipeOwnerCallback.parse(callback_data),
@@ -170,7 +162,7 @@ class CallbackParserTests(unittest.TestCase):
 
     def test_resource_type_with_underscore(self):
         self.assertEqual(
-            parse_resource_page("res_page_scroll_recipe_3", "res_page_"),
+            parse_resource_page_callback("res_page_scroll_recipe_3", "res_page_"),
             ("scroll_recipe", 3),
         )
         self.assertEqual(
@@ -184,7 +176,7 @@ class CallbackParserTests(unittest.TestCase):
 
     def test_return_contexts(self):
         self.assertEqual(
-            parse_return_context("resource_type_42_scroll_recipe_7"),
+            parse_return_param("resource_type_42_scroll_recipe_7"),
             {
                 "kind": "resource_type",
                 "item_id": 42,
@@ -194,7 +186,7 @@ class CallbackParserTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            parse_return_context("resource_loc_11_4_2"),
+            parse_return_param("resource_loc_11_4_2"),
             {
                 "kind": "resource_loc",
                 "item_id": 11,
@@ -215,44 +207,60 @@ class CallbackParserTests(unittest.TestCase):
         )
         for value in invalid_values:
             with self.subTest(value=value):
-                self.assertIsNone(parse_return_context(value))
+                self.assertIsNone(parse_return_param(value))
 
-        self.assertIsNone(parse_resource_page("res_page_scroll_recipe_x", "res_page_"))
+        self.assertIsNone(parse_resource_page_callback("res_page_scroll_recipe_x", "res_page_"))
         self.assertIsNone(ResourceViewCallback.parse("view_resource_0_craft_1"))
 
     def test_location_list_titles_are_in_russian(self):
         location = {"id": 5, "name": "Поляна", "emoji": "🏕"}
+        app = PublicCatalogHandlers(PublicContext(Database(":memory:")))
 
         self.assertEqual(
-            get_location_list_title(location, "mobs", 1),
+            app.get_location_list_title(location, "mobs", 1),
             "🏕 Поляна - Мобы\nСтраница 1",
         )
         self.assertEqual(
-            get_location_list_title(location, "resources", 2),
+            app.get_location_list_title(location, "resources", 2),
             "🏕 Поляна - Ресурсы\nСтраница 2",
         )
 
 
 class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.db = Database(":memory:")
+        await self.db.connect()
+        self.app = PublicCatalogHandlers(PublicContext(self.db))
         self.bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
         self.user = types.User(id=10, is_bot=False, first_name="Test")
-        self.message = types.Message(message_id=77, date=1, chat=types.Chat(id=123, type='private'), from_user=self.user, text='Screen').as_(self.bot)
-        self.callback = types.CallbackQuery(id='nav', from_user=self.user, chat_instance='chat', message=self.message, data='nav').as_(self.bot)
+        self.message = types.Message(
+            message_id=77, date=1, chat=types.Chat(id=123, type="private"), from_user=self.user, text="Screen"
+        ).as_(self.bot)
+        self.callback = types.CallbackQuery(
+            id="nav", from_user=self.user, chat_instance="chat", message=self.message, data="nav"
+        ).as_(self.bot)
         self.storage = MemoryStorage()
         self.state = FSMContext(self.storage, StorageKey(bot_id=self.bot.id, chat_id=123, user_id=10))
 
     async def asyncTearDown(self):
+        await self.app.background_tasks.close()
+        await self.db.close()
         await self.storage.close()
         await self.bot.session.close()
 
     async def test_navigation_edits_existing_card_in_place(self):
         with (
-            patch.object(Bot, 'edit_message_text', new=AsyncMock(return_value=self.message)) as edit,
-            patch.object(Bot, 'send_rich_message', new=AsyncMock()) as send,
-            patch.object(types.Message, 'delete', new=AsyncMock()) as delete,
+            patch.object(Bot, "edit_message_text", new=AsyncMock(return_value=self.message)) as edit,
+            patch.object(Bot, "send_rich_message", new=AsyncMock()) as send,
+            patch.object(types.Message, "delete", new=AsyncMock()) as delete,
         ):
-            result = await present_rich_card(bot=self.bot, chat_id=123, card=CardView('Карточка', 'Карточка'), reply_markup=None, current_message=self.message)
+            result = await present_rich_card(
+                bot=self.bot,
+                chat_id=123,
+                card=CardView("Карточка", "Карточка"),
+                reply_markup=None,
+                current_message=self.message,
+            )
         self.assertIs(result, self.message)
         edit.assert_awaited_once()
         send.assert_not_awaited()
@@ -260,44 +268,48 @@ class RichCardNavigationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_callback_window_is_edited_without_new_message(self):
         with (
-            patch.object(types.Message, 'edit_text', new=AsyncMock(return_value=self.message)) as edit,
-            patch.object(types.Message, 'answer', new=AsyncMock()) as answer,
-            patch.object(types.Message, 'delete', new=AsyncMock()) as delete,
+            patch.object(types.Message, "edit_text", new=AsyncMock(return_value=self.message)) as edit,
+            patch.object(types.Message, "answer", new=AsyncMock()) as answer,
+            patch.object(types.Message, "delete", new=AsyncMock()) as delete,
         ):
-            await edit_callback_window(self.callback, 'Новый экран')
-        edit.assert_awaited_once_with('Новый экран', reply_markup=None, parse_mode=None)
+            await self.app.edit_callback_window(self.callback, "Новый экран")
+        edit.assert_awaited_once_with("Новый экран", reply_markup=None, parse_mode=None)
         answer.assert_not_awaited()
         delete.assert_not_awaited()
 
     async def test_main_menu_reuses_callback_window(self):
-        await self.state.set_state('old_admin_input')
+        await self.state.set_state("old_admin_input")
         with (
-            patch.object(app.entity_navigation, "clear", new=Mock()) as clear,
-            patch.object(types.CallbackQuery, 'answer', new=AsyncMock()),
-            patch.object(types.Message, 'edit_text', new=AsyncMock(return_value=self.message)) as edit,
-            patch.object(types.Message, 'answer', new=AsyncMock()) as answer,
-            patch.object(types.Message, 'delete', new=AsyncMock()) as delete,
+            patch.object(self.app.entity_navigation, "clear", new=Mock()) as clear,
+            patch.object(types.CallbackQuery, "answer", new=AsyncMock()),
+            patch.object(types.Message, "edit_text", new=AsyncMock(return_value=self.message)) as edit,
+            patch.object(types.Message, "answer", new=AsyncMock()) as answer,
+            patch.object(types.Message, "delete", new=AsyncMock()) as delete,
         ):
-            await back_to_main_menu(self.callback, self.state)
+            await self.app.back_to_main_menu(self.callback, self.state)
         clear.assert_called_once_with((10, 123, 77))
-        edit.assert_awaited_once_with('📋 Главное меню', reply_markup=ANY, parse_mode=None)
+        edit.assert_awaited_once_with("📋 Главное меню", reply_markup=ANY, parse_mode=None)
         answer.assert_not_awaited()
         delete.assert_not_awaited()
         self.assertIsNone(await self.state.get_state())
 
     async def test_mob_tab_uses_rich_media_instead_of_photo_message(self):
         with (
-            patch('public_catalog.os.path.isfile', return_value=True),
-            patch.object(app, "get_locations_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[]))),
-            patch.object(Bot, 'send_rich_message', new=AsyncMock(return_value=self.message)) as send,
-            patch.object(types.Message, 'answer_photo', new=AsyncMock()) as photo,
-            patch.object(types.Message, 'answer', new=AsyncMock()) as answer,
+            patch("public_catalog.os.path.isfile", return_value=True),
+            patch.object(
+                self.app,
+                "get_locations_keyboard",
+                new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+            ),
+            patch.object(Bot, "send_rich_message", new=AsyncMock(return_value=self.message)) as send,
+            patch.object(types.Message, "answer_photo", new=AsyncMock()) as photo,
+            patch.object(types.Message, "answer", new=AsyncMock()) as answer,
         ):
-            await mobs_button(self.message, self.state)
+            await self.app.mobs_button(self.message, self.state)
         send.assert_awaited_once()
-        rich_message = send.await_args.kwargs['rich_message']
+        rich_message = send.await_args.kwargs["rich_message"]
         self.assertIn('<img src="tg://photo?id=world_map"/>', rich_message.html)
-        self.assertEqual(rich_message.media[0].id, 'world_map')
+        self.assertEqual(rich_message.media[0].id, "world_map")
         photo.assert_not_awaited()
         answer.assert_not_awaited()
 
@@ -318,14 +330,13 @@ class OptionalNoteTests(unittest.TestCase):
 
 class AdminLocationSelectionTests(unittest.IsolatedAsyncioTestCase):
     async def test_location_buttons_show_names_in_alphabetical_order(self):
+        reader = AsyncMock()
         locations = [
             {"id": 2, "name": "Ядовитая топь", "emoji": "🧪"},
             {"id": 1, "name": "Алькасар", "emoji": "🏛"},
         ]
-        with patch(
-            "admin_handlers.db.get_locations",
-            new=AsyncMock(return_value=locations),
-        ):
+        reader.get_locations.return_value = locations
+        with patch("admin_mobs.database_for", return_value=reader):
             keyboard = await get_location_choice_keyboard("mob_add_location_")
 
         buttons = [row[0] for row in keyboard.inline_keyboard]
@@ -336,18 +347,20 @@ class AdminLocationSelectionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_mob_edit_menu_displays_location_name_instead_of_id(self):
-        keyboard = build_mob_edit_keyboard({
-            "id": 10,
-            "name": "Страж",
-            "emoji": "🛡",
-            "hp": 100,
-            "dust_min": 1,
-            "dust_max": 2,
-            "exp": 3,
-            "location_id": 17,
-            "location_name": "Алькасар",
-            "location_emoji": "🏛",
-        })
+        keyboard = build_mob_edit_keyboard(
+            {
+                "id": 10,
+                "name": "Страж",
+                "emoji": "🛡",
+                "hp": 100,
+                "dust_min": 1,
+                "dust_max": 2,
+                "exp": 3,
+                "location_id": 17,
+                "location_name": "Алькасар",
+                "location_emoji": "🏛",
+            }
+        )
 
         labels = [row[0].text for row in keyboard.inline_keyboard]
         self.assertIn("Локация: 🏛 Алькасар", labels)
@@ -390,40 +403,9 @@ class GearAdminPresentationTests(unittest.TestCase):
         self.assertIn(RICH_TABLE_OPEN, rich)
 
 
-class AlchemyCraftLocationTests(unittest.TestCase):
-    def test_meredith_resources_use_trading_outpost(self):
-        resource_names = (
-            "Дубленая кожа",
-            "Костяной куб",
-            "Пепельный материал",
-            "Прочная бечевка",
-            "Субстанция",
-            "Ядро земель",
-        )
-
-        for resource_name in resource_names:
-            with self.subTest(resource_name=resource_name):
-                self.assertEqual(
-                    get_alchemy_craft_location(resource_name),
-                    MEREDITH_ALCHEMY_CRAFT_LOCATION,
-                )
-
-    def test_other_resources_use_alcazar(self):
-        self.assertEqual(
-            get_alchemy_craft_location("Укрепляющий состав"),
-            DEFAULT_ALCHEMY_CRAFT_LOCATION,
-        )
-        self.assertIn("Алькасар", DEFAULT_ALCHEMY_CRAFT_LOCATION)
-
-    def test_matching_ignores_case_and_outer_spaces(self):
-        self.assertEqual(
-            get_alchemy_craft_location("  субстанция  "),
-            MEREDITH_ALCHEMY_CRAFT_LOCATION,
-        )
-
-
 class MobCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_drop_sections_have_dividers_only_between_nonempty_blocks(self):
+        reader = AsyncMock()
         mob = {
             "id": 24,
             "name": "Бабочка-туманница",
@@ -434,29 +416,32 @@ class MobCardTests(unittest.IsolatedAsyncioTestCase):
             "dust_max": 3,
             "loc_emoji": "🌫",
             "loc_name": "Туманный лес",
-            "resource_drops": [{
-                "id": 1,
-                "name": "Блестящая пыльца",
-                "emoji": "✨",
-            }],
-            "gear_drops": [{
-                "id": 2,
-                "name": "Книга теней",
-                "emoji": "📖",
-                "rarity": "uncommon",
-            }],
-            "card_drops": [{
-                "id": 3,
-                "name": "Карта Бабочки-туманницы",
-                "emoji": "💎🦋",
-                "slot": "gloves",
-            }],
+            "resource_drops": [
+                {
+                    "id": 1,
+                    "name": "Блестящая пыльца",
+                    "emoji": "✨",
+                }
+            ],
+            "gear_drops": [
+                {
+                    "id": 2,
+                    "name": "Книга теней",
+                    "emoji": "📖",
+                    "rarity": "uncommon",
+                }
+            ],
+            "card_drops": [
+                {
+                    "id": 3,
+                    "name": "Карта Бабочки-туманницы",
+                    "emoji": "💎🦋",
+                    "slot": "gloves",
+                }
+            ],
         }
-        with patch(
-            "database.db.get_mob_full_card",
-            new=AsyncMock(return_value=mob),
-        ):
-            card = await build_mob_card(db, 24)
+        reader.get_mob_full_card.return_value = mob
+        card = await build_mob_card(reader, 24)
 
         rendered = card.rich_html
         self.assertEqual(rendered.count(SECTION_DIVIDER), 2)
@@ -472,17 +457,15 @@ class MobCardTests(unittest.IsolatedAsyncioTestCase):
 
         mob["gear_drops"] = []
         mob["card_drops"] = []
-        with patch(
-            "database.db.get_mob_full_card",
-            new=AsyncMock(return_value=mob),
-        ):
-            single_section = await build_mob_card(db, 24)
+        single_section = await build_mob_card(reader, 24)
         self.assertNotIn(SECTION_DIVIDER, single_section.rich_html)
         self.assertNotIn(SECTION_DIVIDER, single_section.fallback_html)
 
 
 class GearCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_keyboard_uses_one_navigation_context_after_owner_update(self):
+        reader = AsyncMock()
+        app = PublicCatalogHandlers(PublicContext(reader))
         gear_data = {
             "id": 47,
             "rarity": "epic",
@@ -492,29 +475,26 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
             "owner_user_ids": [123],
             "can_learn": True,
         }
-        with patch.object(
-            app.db, "get_prev_next_gear",
-            new=AsyncMock(return_value={"prev_id": 46, "next_id": 48}),
-        ) as neighbours:
-            keyboard = await build_gear_card_keyboard(
+        reader.get_prev_next_gear.return_value = {"prev_id": 46, "next_id": 48}
+        try:
+            keyboard = await app.build_gear_card_keyboard(
                 gear_data,
                 123,
                 page=3,
                 slot_index=0,
             )
+        finally:
+            await app.background_tasks.close()
 
-        neighbours.assert_awaited_once_with(47, "epic", "шлем")
-        callbacks = [
-            button.callback_data
-            for row in keyboard.inline_keyboard
-            for button in row
-        ]
+        reader.get_prev_next_gear.assert_awaited_once_with(47, "epic", "шлем")
+        callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
         self.assertIn("nav_gear_46_epic_0_3", callbacks)
         self.assertIn("nav_gear_48_epic_0_3", callbacks)
         self.assertIn("recipe_relinquish_36_47_epic_0_3", callbacks)
         self.assertIn("page_gear_epic_0_3", callbacks)
 
     async def test_scroll_and_direct_drop_sources_are_rendered_separately(self):
+        reader = AsyncMock()
         gear_data = {
             "id": 47,
             "name": "Тлеющий шлем",
@@ -532,8 +512,8 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
             "mobs": [{"id": 44, "name": "Страж", "emoji": "🛡️"}],
         }
 
-        with patch("database.db.get_gear_card", new=AsyncMock(return_value=gear_data)):
-            card = await build_gear_card(db, 47, "epic", 1)
+        reader.get_gear_card.return_value = gear_data
+        card = await build_gear_card(reader, 47, "epic", 1)
 
         for rendered in (card.fallback_html, card.rich_html):
             with self.subTest(card_type=type(rendered).__name__):
@@ -548,6 +528,7 @@ class GearCardTests(unittest.IsolatedAsyncioTestCase):
 
 class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_usage_recipes_are_rendered_in_plain_and_rich_cards(self):
+        reader = AsyncMock()
         resource_data = {
             "id": 115,
             "name": "Кожаный лоскут",
@@ -577,11 +558,9 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
-        with (
-            patch("database.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
-            patch("database.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
-        ):
-            card = await build_resource_card(db, 115, "type", "craft", 1)
+        reader.get_resource_card.return_value = resource_data
+        reader.get_recipe_for_resource.return_value = None
+        card = await build_resource_card(reader, 115, "type", "craft", 1)
 
         for rendered in (card.fallback_html, card.rich_html):
             with self.subTest(card_type=type(rendered).__name__):
@@ -609,32 +588,33 @@ class ResourceCardTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tg-button", card.rich_html)
 
     async def test_callback_link_mode_keeps_deep_link_fallback(self):
+        reader = AsyncMock()
         resource_data = {
             "id": 115,
             "name": "Кожаный лоскут",
             "emoji": "🪹",
             "type": "craft",
             "note": "",
-            "mobs": [{
-                "id": 5,
-                "name": "Волк",
-                "emoji": "🐺",
-                "location_id": 1,
-                "location_name": "Лес",
-                "location_emoji": "🌲",
-            }],
+            "mobs": [
+                {
+                    "id": 5,
+                    "name": "Волк",
+                    "emoji": "🐺",
+                    "location_id": 1,
+                    "location_name": "Лес",
+                    "location_emoji": "🌲",
+                }
+            ],
             "used_in": [],
         }
-        with (
-            patch("database.db.get_resource_card", new=AsyncMock(return_value=resource_data)),
-            patch("database.db.get_recipe_for_resource", new=AsyncMock(return_value=None)),
-        ):
-            card = await build_resource_card(
-                db,
-                115,
-                bot_username="fog_database_bot",
-                link_mode=EntityLinkMode.CALLBACK,
-            )
+        reader.get_resource_card.return_value = resource_data
+        reader.get_recipe_for_resource.return_value = None
+        card = await build_resource_card(
+            reader,
+            115,
+            bot_username="fog_database_bot",
+            link_mode=EntityLinkMode.CALLBACK,
+        )
 
         self.assertIn('style="link"', card.rich_html)
         self.assertIn(

@@ -1,15 +1,14 @@
-
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 from aiogram.methods import SendRichMessage
-from aiogram.types import InputRichMessage, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputRichMessage, Message
 from aiogram.utils.formatting import Bold, Text, TextLink
 
 import messaging
 from messaging import cleanup_card_fragments, replace_rich_card, upsert_rich_card
-from search_rendering import build_search_content, ranked_inline_items
+from search_rendering import build_search_content
 from telegram_text import split_entities, split_formatted_text, split_html, utf16_length
 
 
@@ -52,10 +51,13 @@ class TelegramTextTests(unittest.TestCase):
             split_html("<invalid>tag</invalid>")
 
     def test_large_search_is_bounded_and_database_values_are_literal_text(self):
-        results = {group: [
-            {"id": i + 1, "name": "<b>result & data</b>" * 4, "emoji": "<broken>", "slot": "<slot>"}
-            for i in range(50)
-        ] for group in ("mobs", "resources", "gear", "cards")}
+        results = {
+            group: [
+                {"id": i + 1, "name": "<b>result & data</b>" * 4, "emoji": "<broken>", "slot": "<slot>"}
+                for i in range(50)
+            ]
+            for group in ("mobs", "resources", "gear", "cards")
+        }
         content = build_search_content(results, "test_bot")
         chunks = split_formatted_text(content)
         self.assertGreater(len(chunks), 1)
@@ -64,17 +66,21 @@ class TelegramTextTests(unittest.TestCase):
         self.assertEqual(text.count("<broken>"), 200)
         self.assertIn("&lt;broken&gt;", chunks[0].as_html())
 
-    def test_inline_order_keeps_all_types_reachable_and_exact_match_first(self):
-        results = {
-            "mobs": [{"id": i + 1, "name": f"Mob {i}", "emoji": ""} for i in range(50)],
-            "resources": [{"id": 1, "name": "Mob", "emoji": ""}],
-            "gear": [{"id": 1, "name": "Mob gear", "emoji": ""}],
-            "cards": [{"id": 1, "name": "Mob card", "emoji": ""}],
-        }
-        entries = ranked_inline_items(results, "Mob")
-        self.assertEqual(entries[0][0], "resource")
-        self.assertEqual({kind for kind, _ in entries}, {"mob", "resource", "gear", "card"})
-        self.assertEqual(len(entries), 53)
+        malicious = '<a href="https://wrong.example">name</a>'
+        linked = build_search_content(
+            {"gear": [{"id": 1, "name": malicious, "emoji": "<b>emoji</b>", "rarity": "epic"}]},
+            "audit_bot",
+        )
+        linked_chunks = split_formatted_text(linked, limit=40)
+        self.assertIn(malicious, "".join(chunk.text for chunk in linked_chunks))
+        links = [entity for chunk in linked_chunks for entity in chunk.entities if entity.type == "text_link"]
+        self.assertEqual({entity.url for entity in links}, {"https://t.me/audit_bot?start=gear_1"})
+        for chunk in linked_chunks:
+            size = utf16_length(chunk.text)
+            self.assertLessEqual(size, 40)
+            self.assertTrue(
+                all(0 <= entity.offset < entity.offset + entity.length <= size for entity in chunk.entities)
+            )
 
 
 class CardDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -93,8 +99,9 @@ class CardDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bot, old, rich, method = self.setup_card()
         bot.send_rich_message.side_effect = TelegramNetworkError(method=method, message="timeout")
         with self.assertRaises(TelegramNetworkError):
-            await replace_rich_card(bot=bot, chat_id=1, rich_message=rich, plain_text="Card",
-                                    reply_markup=None, current_message=old)
+            await replace_rich_card(
+                bot=bot, chat_id=1, rich_message=rich, plain_text="Card", reply_markup=None, current_message=old
+            )
         old.delete.assert_not_awaited()
         bot.send_message.assert_not_awaited()
 
@@ -102,8 +109,7 @@ class CardDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bot, old, rich, method = self.setup_card()
         bot.edit_message_text.side_effect = TelegramRetryAfter(method=method, message="slow down", retry_after=60)
         with self.assertRaises(TelegramRetryAfter):
-            await upsert_rich_card(bot=bot, chat_id=1, rich_message=rich, plain_text="Card",
-                                  current_message=old)
+            await upsert_rich_card(bot=bot, chat_id=1, rich_message=rich, plain_text="Card", current_message=old)
         old.delete.assert_not_awaited()
         bot.send_rich_message.assert_not_awaited()
         self.assertEqual(bot.edit_message_text.await_count, 1)
@@ -113,32 +119,41 @@ class CardDeliveryTests(unittest.IsolatedAsyncioTestCase):
         bot.send_rich_message.side_effect = TelegramBadRequest(method=method, message="unsupported format")
         bot.send_message.side_effect = TelegramNetworkError(method=method, message="offline")
         with self.assertRaises(TelegramNetworkError):
-            await replace_rich_card(bot=bot, chat_id=1, rich_message=rich, plain_text="Card",
-                                    reply_markup=None, current_message=old)
+            await replace_rich_card(
+                bot=bot, chat_id=1, rich_message=rich, plain_text="Card", reply_markup=None, current_message=old
+            )
         old.delete.assert_not_awaited()
 
     async def test_long_fallback_keeps_all_text_and_topic_before_deleting_old(self):
         bot, old, rich, method = self.setup_card()
         events = []
+
         async def send(**kwargs):
             events.append(("send", kwargs))
             sent = AsyncMock(spec=Message)
             sent.message_id = 10 + len(events)
             sent.message_thread_id = 7
             return sent
+
         async def delete():
             events.append(("delete", {}))
+
         bot.send_rich_message.side_effect = TelegramBadRequest(method=method, message="unsupported format")
         bot.send_message.side_effect = send
         old.delete.side_effect = delete
         raw = "🪨" * 6000
-        await replace_rich_card(bot=bot, chat_id=1, rich_message=rich, plain_text=f"<b>{raw}</b>",
-                                reply_markup=None, current_message=old)
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data="back")]])
+        await replace_rich_card(
+            bot=bot, chat_id=1, rich_message=rich, plain_text=f"<b>{raw}</b>", reply_markup=markup, current_message=old
+        )
         self.assertEqual(events[-1][0], "delete")
         messages = [kwargs for event, kwargs in events if event == "send"]
         self.assertEqual("".join(m["text"] for m in messages), raw)
         self.assertTrue(all(m["message_thread_id"] == 7 for m in messages))
         self.assertTrue(all(utf16_length(m["text"]) <= 4096 for m in messages))
+        self.assertTrue(all(m["parse_mode"] is None for m in messages))
+        self.assertTrue(all(m["reply_markup"] is None for m in messages[:-1]))
+        self.assertIs(messages[-1]["reply_markup"], markup)
 
 
 class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
@@ -159,8 +174,10 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
         message = AsyncMock(spec=Message)
         message.message_id = message_id
         message.message_thread_id = 7
+
         async def remove():
             self.events.append(("delete", message_id))
+
         message.delete = AsyncMock(side_effect=remove)
         return message
 
@@ -176,16 +193,24 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
 
     async def card_a(self):
         return await replace_rich_card(
-            bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="A" * 5000,
-            reply_markup=None, current_message=self.old,
+            bot=self.bot,
+            chat_id=1,
+            rich_message=self.rich,
+            plain_text="A" * 5000,
+            reply_markup=None,
+            current_message=self.old,
         )
 
     async def test_replace_removes_every_part_of_previous_card_after_new_send(self):
         anchor = await self.card_a()
         self.events.clear()
         await replace_rich_card(
-            bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="B",
-            reply_markup=None, current_message=anchor,
+            bot=self.bot,
+            chat_id=1,
+            rich_message=self.rich,
+            plain_text="B",
+            reply_markup=None,
+            current_message=anchor,
         )
         self.assertEqual(self.events, [("send", 13), ("delete", 11), ("delete", 12)])
         self.assertEqual(messaging._card_fragments, {})
@@ -193,12 +218,18 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_upsert_removes_extras_but_keeps_edited_anchor(self):
         anchor = await self.card_a()
         self.events.clear()
+
         async def edit(**kwargs):
-            self.events.append(("edit", kwargs['message_id']))
+            self.events.append(("edit", kwargs["message_id"]))
             return anchor
+
         self.bot.edit_message_text.side_effect = edit
         result = await upsert_rich_card(
-            bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="B", current_message=anchor,
+            bot=self.bot,
+            chat_id=1,
+            rich_message=self.rich,
+            plain_text="B",
+            current_message=anchor,
         )
         self.assertIs(result, anchor)
         self.assertEqual(self.events, [("edit", 12), ("delete", 11)])
@@ -211,8 +242,12 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
         self.bot.send_rich_message.side_effect = failure
         with self.assertRaises(TelegramNetworkError):
             await replace_rich_card(
-                bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="B",
-                reply_markup=None, current_message=anchor,
+                bot=self.bot,
+                chat_id=1,
+                rich_message=self.rich,
+                plain_text="B",
+                reply_markup=None,
+                current_message=anchor,
             )
         self.assertEqual(self.events, [])
         self.assertIn((702, 1, 12), messaging._card_fragments)
@@ -224,11 +259,17 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
         anchor = await self.card_a()
         self.events.clear()
         self.bot.edit_message_text.side_effect = TelegramRetryAfter(
-            method=self.method, message="rate limit", retry_after=1,
+            method=self.method,
+            message="rate limit",
+            retry_after=1,
         )
         with self.assertRaises(TelegramRetryAfter):
             await upsert_rich_card(
-                bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="B", current_message=anchor,
+                bot=self.bot,
+                chat_id=1,
+                rich_message=self.rich,
+                plain_text="B",
+                current_message=anchor,
             )
         self.assertEqual(self.events, [])
         self.assertIn((702, 1, 12), messaging._card_fragments)
@@ -238,12 +279,17 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
         self.events.clear()
         confirmed = self.message(13)
         self.bot.send_message.side_effect = [
-            confirmed, TelegramNetworkError(method=self.method, message="second send ambiguous"),
+            confirmed,
+            TelegramNetworkError(method=self.method, message="second send ambiguous"),
         ]
         with self.assertRaises(TelegramNetworkError):
             await replace_rich_card(
-                bot=self.bot, chat_id=1, rich_message=self.rich, plain_text="B" * 5000,
-                reply_markup=None, current_message=anchor,
+                bot=self.bot,
+                chat_id=1,
+                rich_message=self.rich,
+                plain_text="B" * 5000,
+                reply_markup=None,
+                current_message=anchor,
             )
         self.assertEqual(self.events, [("delete", 13)])
         self.assertIn((702, 1, 12), messaging._card_fragments)
@@ -264,9 +310,11 @@ class MultipartCardTests(unittest.IsolatedAsyncioTestCase):
         anchor.delete.assert_not_awaited()
 
     async def test_registry_bounds_metadata_by_card_count_ids_and_age(self):
-        with patch.object(messaging, "_MAX_TRACKED_CARDS", 2), patch.object(
-            messaging, "_MAX_TRACKED_FRAGMENT_IDS", 3
-        ), patch.object(messaging.time, "monotonic", return_value=10):
+        with (
+            patch.object(messaging, "_MAX_TRACKED_CARDS", 2),
+            patch.object(messaging, "_MAX_TRACKED_FRAGMENT_IDS", 3),
+            patch.object(messaging.time, "monotonic", return_value=10),
+        ):
             messaging._remember_fragments(self.bot, 1, 3, [1, 2])
             messaging._remember_fragments(self.bot, 1, 6, [4, 5])
             self.assertNotIn((702, 1, 3), messaging._card_fragments)

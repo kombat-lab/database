@@ -17,8 +17,13 @@ from tests.test_catalog_creation_sessions import CatalogCreationFixture
 class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTestCase):
     async def add_mob(self, name, location="Лес"):
         rows = await self.db.execute_query("SELECT id FROM locations WHERE name=?", (location,))
-        location_id = int(rows[0]["id"]) if rows else await self.db.execute_insert(
-            "INSERT INTO locations(name,emoji) VALUES (?,?)", (location, "📍"),
+        location_id = (
+            int(rows[0]["id"])
+            if rows
+            else await self.db.execute_insert(
+                "INSERT INTO locations(name,emoji) VALUES (?,?)",
+                (location, "📍"),
+            )
         )
         return await self.db.execute_insert(
             "INSERT INTO mobs(name,emoji,hp,dust_min,dust_max,exp,location_id) VALUES (?,?,?,?,?,?,?)",
@@ -45,7 +50,8 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
     def visible_mob_ids(self):
         return {
             int(button.callback_data.split("~")[0].removeprefix("isd:toggle:"))
-            for row in self.latest.reply_markup.inline_keyboard for button in row
+            for row in self.latest.reply_markup.inline_keyboard
+            for button in row
             if (button.callback_data or "").startswith("isd:toggle:")
         }
 
@@ -54,7 +60,8 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
 
     async def drop_ids(self, kind, item_id):
         rows = await self.db.execute_query(
-            "SELECT mob_id FROM drops WHERE item_type=? AND item_id=? ORDER BY mob_id", (kind, item_id),
+            "SELECT mob_id FROM drops WHERE item_type=? AND item_id=? ORDER BY mob_id",
+            (kind, item_id),
         )
         return [int(row["mob_id"]) for row in rows]
 
@@ -204,7 +211,9 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         await self.resource_note()
         old_screen = (await self.state.get_data())["admin_screen"]
         old_prompt = self.latest
-        failure = TelegramNetworkError(method=EditMessageText(text="sources", chat_id=101, message_id=10), message="offline")
+        failure = TelegramNetworkError(
+            method=EditMessageText(text="sources", chat_id=101, message_id=10), message="offline"
+        )
         with patch.object(types.Message, "answer", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.text("Описание")
@@ -227,8 +236,11 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         with patch.object(types.Message, "edit_text", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.route(toggle)
-        self.assertEqual({key: value for key, value in (await self.state.get_data()).items() if key != 'admin_pending_screen'}, before)
-        self.assertIn('admin_pending_screen', await self.state.get_data())
+        self.assertEqual(
+            {key: value for key, value in (await self.state.get_data()).items() if key != "admin_pending_screen"},
+            before,
+        )
+        self.assertIn("admin_pending_screen", await self.state.get_data())
         self.assertEqual((await sources.current_selection(self.state)).selected, [])
         await self.route(toggle)
         self.assertEqual((await sources.current_selection(self.state)).selected, [mob])
@@ -251,8 +263,11 @@ class ItemSourcesAdminTests(CatalogCreationFixture, unittest.IsolatedAsyncioTest
         with patch.object(ui.rich, "present_rich_card", AsyncMock(side_effect=failure)):
             with self.assertRaises(TelegramNetworkError):
                 await self.route(back)
-        self.assertEqual({key: value for key, value in (await self.state.get_data()).items() if key != 'admin_pending_screen'}, before)
-        self.assertIn('admin_pending_screen', await self.state.get_data())
+        self.assertEqual(
+            {key: value for key, value in (await self.state.get_data()).items() if key != "admin_pending_screen"},
+            before,
+        )
+        self.assertIn("admin_pending_screen", await self.state.get_data())
         self.assertEqual(await self.state.get_state(), sources.ItemSourcesStates.select.state)
         self.assertEqual(await self.drop_ids("resource", item_id), [])
         await self.route(save)

@@ -71,9 +71,16 @@ class _HTMLToEntities(HTMLParser):
     """Parse the small, explicit HTML subset produced by catalog formatters."""
 
     _types = {
-        "b": "bold", "strong": "bold", "i": "italic", "em": "italic",
-        "u": "underline", "s": "strikethrough", "code": "code",
-        "pre": "pre", "tg-spoiler": "spoiler", "a": "text_link",
+        "b": "bold",
+        "strong": "bold",
+        "i": "italic",
+        "em": "italic",
+        "u": "underline",
+        "s": "strikethrough",
+        "code": "code",
+        "pre": "pre",
+        "tg-spoiler": "spoiler",
+        "a": "text_link",
     }
 
     def __init__(self) -> None:
@@ -103,7 +110,9 @@ class _HTMLToEntities(HTMLParser):
             raise ValueError(f"Unbalanced Telegram HTML tag: {tag}")
         _, start, url = self.stack.pop()
         if self.offset > start:
-            self.entities.append(MessageEntity(type=self._types[tag], offset=start, length=self.offset - start, url=url))
+            self.entities.append(
+                MessageEntity(type=self._types[tag], offset=start, length=self.offset - start, url=url)
+            )
 
 
 def split_html(html: str, *, limit: int = MESSAGE_LIMIT) -> list[MessageChunk]:

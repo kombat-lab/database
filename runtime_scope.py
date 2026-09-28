@@ -1,10 +1,7 @@
-"""Per-application dependencies for legacy adapters and administrative handlers.
+"""Per-application dependencies bound while administrative handlers run."""
 
-New services receive Database explicitly. This scope confines compatibility
-functions to one application without mutating module globals.
-"""
-
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
@@ -23,14 +20,26 @@ class RuntimeScope:
 _current: ContextVar[RuntimeScope | None] = ContextVar("application_scope", default=None)
 
 
-def database_for(fallback: Database) -> Database:
+def current_scope() -> RuntimeScope:
     scope = _current.get()
-    return fallback if scope is None else scope.database
+    if scope is None:
+        raise RuntimeError("RuntimeScope is not bound to the current task")
+    return scope
 
 
-def admin_ids_for(fallback: Collection[int]) -> Collection[int]:
-    scope = _current.get()
-    return fallback if scope is None else scope.admin_ids
+def database_for() -> Database:
+    """Return the database bound to the current application task."""
+    return current_scope().database
+
+
+@contextmanager
+def use_runtime_scope(scope: RuntimeScope) -> Iterator[None]:
+    """Bind explicit application dependencies around direct service calls."""
+    token = _current.set(scope)
+    try:
+        yield
+    finally:
+        _current.reset(token)
 
 
 class RuntimeScopeMiddleware(BaseMiddleware):
@@ -43,11 +52,8 @@ class RuntimeScopeMiddleware(BaseMiddleware):
         event: types.TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        token = _current.set(self.scope)
-        try:
+        with use_runtime_scope(self.scope):
             return await handler(event, data)
-        finally:
-            _current.reset(token)
 
 
 class CatalogAuditMiddleware(BaseMiddleware):

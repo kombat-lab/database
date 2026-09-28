@@ -27,11 +27,16 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             completed.append(message.message_id)
 
         def update(number):
-            return Update(update_id=number, message=Message(
-                message_id=number, date=datetime.now(timezone.utc),
-                chat=Chat(id=901, type="private"),
-                from_user=User(id=901, is_bot=False, first_name="Synthetic"), text="test",
-            ))
+            return Update(
+                update_id=number,
+                message=Message(
+                    message_id=number,
+                    date=datetime.now(timezone.utc),
+                    chat=Chat(id=901, type="private"),
+                    from_user=User(id=901, is_bot=False, first_name="Synthetic"),
+                    text="test",
+                ),
+            )
 
         try:
             first = asyncio.create_task(dispatcher.feed_update(bot, update(1)))

@@ -4,8 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypedDict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, User
-from database import Database, DbRow, db
-from runtime_scope import database_for
+from database import Database, DbRow
 from storage.types import sql_int, sql_optional_int, sql_optional_text, sql_text
 
 logger = logging.getLogger(__name__)
@@ -90,7 +89,7 @@ def _search_counts(rows: list[DbRow]) -> list[SearchCount]:
 
 
 class AnalyticsMiddleware(BaseMiddleware):
-    def __init__(self, database: Database | None = None) -> None:
+    def __init__(self, database: Database) -> None:
         self.database = database
 
     async def __call__(
@@ -102,7 +101,7 @@ class AnalyticsMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if isinstance(user, User) and (not user.is_bot):
             try:
-                await (self.database or database_for(db)).register_user_if_not_exists(
+                await self.database.register_user_if_not_exists(
                     user_id=user.id, username=user.username, first_name=user.first_name, last_name=user.last_name
                 )
             except Exception as e:
@@ -353,73 +352,3 @@ class AnalyticsService:
                 for row in recent_searches
             ],
         }
-
-
-async def _log_event(
-    user_id: int,
-    event_type: str,
-    target_id: int | None = None,
-    target_type: str | None = None,
-    metadata: dict[str, object] | None = None,
-) -> None:
-    return await AnalyticsService(database_for(db))._log_event(user_id, event_type, target_id, target_type, metadata)
-
-
-async def log_start(user_id: int) -> None:
-    return await AnalyticsService(database_for(db)).log_start(user_id)
-
-
-async def log_view_mob(user_id: int, mob_id: int) -> None:
-    return await AnalyticsService(database_for(db)).log_view_mob(user_id, mob_id)
-
-
-async def log_view_resource(user_id: int, resource_id: int) -> None:
-    return await AnalyticsService(database_for(db)).log_view_resource(user_id, resource_id)
-
-
-async def log_view_gear(user_id: int, gear_id: int) -> None:
-    return await AnalyticsService(database_for(db)).log_view_gear(user_id, gear_id)
-
-
-async def log_view_card(user_id: int, card_id: int) -> None:
-    return await AnalyticsService(database_for(db)).log_view_card(user_id, card_id)
-
-
-async def log_search(user_id: int, query: str) -> None:
-    return await AnalyticsService(database_for(db)).log_search(user_id, query)
-
-
-async def log_inline_search(user_id: int, query: str) -> None:
-    return await AnalyticsService(database_for(db)).log_inline_search(user_id, query)
-
-
-async def log_inline_result_chosen(user_id: int, result_id: str, query: str) -> None:
-    return await AnalyticsService(database_for(db)).log_inline_result_chosen(user_id, result_id, query)
-
-
-async def get_active_users_count(days: int = 1) -> int:
-    return await AnalyticsService(database_for(db)).get_active_users_count(days)
-
-
-async def get_retention(cohort_days_ago: int, after_days: int) -> float:
-    return await AnalyticsService(database_for(db)).get_retention(cohort_days_ago, after_days)
-
-
-async def get_top_items_with_names(item_type: str, days: int = 30, limit: int = 30) -> list[TopItem]:
-    return await AnalyticsService(database_for(db)).get_top_items_with_names(item_type, days, limit)
-
-
-async def get_top_search_queries(days: int = 30, limit: int = 30, search_type: str = "all") -> list[SearchCount]:
-    return await AnalyticsService(database_for(db)).get_top_search_queries(days, limit, search_type)
-
-
-async def get_db_stats() -> DatabaseStats:
-    return await AnalyticsService(database_for(db)).get_db_stats()
-
-
-async def get_users_page(offset: int = 0, limit: int = 11) -> list[UserSummary]:
-    return await AnalyticsService(database_for(db)).get_users_page(offset, limit)
-
-
-async def get_user_activity(user_id: int) -> UserActivity | None:
-    return await AnalyticsService(database_for(db)).get_user_activity(user_id)

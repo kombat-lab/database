@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from database import Database, SCHEMA_VERSION
+from database import Database
+from storage.types import SCHEMA_VERSION
 from recipe_domain import DomainError, DraftConflictError, DuplicateIdentityError
 from storage.context import catalog_operation
 from storage.types import sql_int, sql_text, sql_row

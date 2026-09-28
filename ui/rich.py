@@ -53,10 +53,12 @@ class CardComposer:
         item_pairs = [_pair(item) for item in items]
         if not item_pairs:
             return
-        self._sections.append(MarkupPair(
-            rich=f"<b>{title_pair.rich}</b><br>" + "<br>".join(item.rich for item in item_pairs),
-            fallback=f"<b>{title_pair.fallback}</b>\n" + "\n".join(item.fallback for item in item_pairs),
-        ))
+        self._sections.append(
+            MarkupPair(
+                rich=f"<b>{title_pair.rich}</b><br>" + "<br>".join(item.rich for item in item_pairs),
+                fallback=f"<b>{title_pair.fallback}</b>\n" + "\n".join(item.fallback for item in item_pairs),
+            )
+        )
 
     def add_table(
         self,
@@ -75,21 +77,13 @@ class CardComposer:
 
         header_html = ""
         if header_pairs:
-            header_html = "<tr>" + "".join(
-                f"<th>{cell.rich}</th>" for cell in header_pairs
-            ) + "</tr>"
-        body_html = "".join(
-            "<tr>" + "".join(f"<td>{cell.rich}</td>" for cell in row) + "</tr>"
-            for row in row_pairs
-        )
+            header_html = "<tr>" + "".join(f"<th>{cell.rich}</th>" for cell in header_pairs) + "</tr>"
+        body_html = "".join("<tr>" + "".join(f"<td>{cell.rich}</td>" for cell in row) + "</tr>" for row in row_pairs)
         table_html = f"{RICH_TABLE_OPEN}<tbody>{header_html}{body_html}</tbody></table>"
         if title_pair:
             table_html = f"<b>{title_pair.rich}</b><br>{table_html}"
         if summary_pair:
-            table_html = (
-                f"<details><summary>{summary_pair.rich}</summary>"
-                f"{table_html}</details>"
-            )
+            table_html = f"<details><summary>{summary_pair.rich}</summary>{table_html}</details>"
 
         if fallback_rows is None:
             fallback_pairs = [
@@ -114,12 +108,8 @@ class CardComposer:
 
     def build(self) -> CardView:
         return CardView(
-            rich_html="<br>".join(
-                section.rich for section in self._sections if section.rich
-            ).strip(),
-            fallback_html="\n\n".join(
-                section.fallback for section in self._sections if section.fallback
-            ).strip(),
+            rich_html="<br>".join(section.rich for section in self._sections if section.rich).strip(),
+            fallback_html="\n\n".join(section.fallback for section in self._sections if section.fallback).strip(),
         )
 
 

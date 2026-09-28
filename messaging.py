@@ -77,7 +77,6 @@ async def cleanup_card_fragments(bot: Bot, chat_id: int, message_id: int) -> Non
         await _delete_confirmed_messages(bot, chat_id, record.message_ids)
 
 
-
 def _not_modified(error: TelegramBadRequest) -> bool:
     return "message is not modified" in error.message.lower()
 
@@ -100,7 +99,9 @@ async def _send_card(
 ) -> Message:
     try:
         return await bot.send_rich_message(
-            chat_id=chat_id, rich_message=rich_message, reply_markup=reply_markup,
+            chat_id=chat_id,
+            rich_message=rich_message,
+            reply_markup=reply_markup,
             message_thread_id=message_thread_id,
         )
     except TelegramBadRequest as error:
@@ -115,7 +116,10 @@ async def _send_card(
     try:
         for index, chunk in enumerate(chunks):
             sent = await bot.send_message(
-                chat_id=chat_id, text=chunk.text, entities=list(chunk.entities), parse_mode=None,
+                chat_id=chat_id,
+                text=chunk.text,
+                entities=list(chunk.entities),
+                parse_mode=None,
                 reply_markup=reply_markup if index == len(chunks) - 1 else None,
                 message_thread_id=message_thread_id,
             )
@@ -144,8 +148,10 @@ async def upsert_rich_card(
         message_thread_id = current_message.message_thread_id
         try:
             edited = await bot.edit_message_text(
-                chat_id=chat_id, message_id=current_message.message_id,
-                rich_message=rich_message, reply_markup=reply_markup,
+                chat_id=chat_id,
+                message_id=current_message.message_id,
+                rich_message=rich_message,
+                reply_markup=reply_markup,
             )
             await cleanup_card_fragments(bot, chat_id, current_message.message_id)
             return edited if isinstance(edited, Message) else current_message
@@ -157,8 +163,11 @@ async def upsert_rich_card(
         if len(chunks) == 1:
             try:
                 edited = await bot.edit_message_text(
-                    chat_id=chat_id, message_id=current_message.message_id,
-                    text=chunks[0].text, entities=list(chunks[0].entities), parse_mode=None,
+                    chat_id=chat_id,
+                    message_id=current_message.message_id,
+                    text=chunks[0].text,
+                    entities=list(chunks[0].entities),
+                    parse_mode=None,
                     reply_markup=reply_markup,
                 )
                 await cleanup_card_fragments(bot, chat_id, current_message.message_id)
@@ -168,8 +177,12 @@ async def upsert_rich_card(
                     await cleanup_card_fragments(bot, chat_id, current_message.message_id)
                     return current_message
     sent = await _send_card(
-        bot=bot, chat_id=chat_id, rich_message=rich_message, plain_text=plain_text,
-        reply_markup=reply_markup, message_thread_id=message_thread_id,
+        bot=bot,
+        chat_id=chat_id,
+        rich_message=rich_message,
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        message_thread_id=message_thread_id,
     )
     if current_message is not None:
         await cleanup_card_fragments(bot, chat_id, current_message.message_id)
@@ -188,8 +201,12 @@ async def replace_rich_card(
 ) -> Message:
     """Use a fresh message for client layout, preserving the old one until success."""
     sent = await _send_card(
-        bot=bot, chat_id=chat_id, rich_message=rich_message, plain_text=plain_text,
-        reply_markup=reply_markup, message_thread_id=current_message.message_thread_id,
+        bot=bot,
+        chat_id=chat_id,
+        rich_message=rich_message,
+        plain_text=plain_text,
+        reply_markup=reply_markup,
+        message_thread_id=current_message.message_thread_id,
     )
     await cleanup_card_fragments(bot, chat_id, current_message.message_id)
     await _delete_old(current_message)

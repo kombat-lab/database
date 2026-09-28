@@ -41,14 +41,3 @@ def build_search_content(results: SearchResults, bot_username: str | None) -> Te
             nodes.append("\n")
         nodes.append("\n")
     return Text(*nodes)
-
-
-def ranked_inline_items(results: SearchResults, query: str) -> list[tuple[str, SearchItem]]:
-    """Keep all categories reachable, prioritizing an exact name match."""
-    entries = [(item_type, item) for group, item_type, _ in SEARCH_GROUPS for item in results.get(group, ())]
-    normalized = query.casefold()
-    return sorted(entries, key=lambda entry: (
-        entry[1]["name"].casefold() != normalized,
-        not entry[1]["name"].casefold().startswith(normalized),
-        entry[1]["name"].casefold(), entry[0], entry[1]["id"],
-    ))

@@ -98,7 +98,8 @@ class CatalogSnapshot:
 
 async def gear_slot_counts(database: Database, rarity: str) -> dict[str, int]:
     rows = await database.execute_query(
-        "SELECT slot, COUNT(*) AS item_count FROM gear WHERE rarity = ? GROUP BY slot", (rarity,),
+        "SELECT slot, COUNT(*) AS item_count FROM gear WHERE rarity = ? GROUP BY slot",
+        (rarity,),
     )
     return {text(row, "slot"): integer(row, "item_count") for row in rows}
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from aiogram.types import InlineKeyboardMarkup
-from navigation import MAX_SQLITE_ID
+from .callbacks import MAX_SQLITE_ID
 
 
 ENTITY_TYPES = frozenset({"mob", "resource", "gear", "card"})

@@ -12,21 +12,30 @@ import admin_mobs as mobs
 import admin_recipes as recipes
 import admin_sessions
 import ui.rich
+from database import Database
+from admin_handlers import create_admin_router
+from tests.admin_fixture import create_test_scope, propagate_admin_event, use_runtime_scope
 
 
 class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.db = Database(":memory:")
+        await self.db.connect()
+        self.scope = create_test_scope(self.db, 1)
+        self.router = create_admin_router(self.scope)
         self.bot = Bot("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi")
         self.storage = MemoryStorage()
         self.state = FSMContext(self.storage, StorageKey(bot_id=123456789, chat_id=1, user_id=1))
         self.user = types.User(id=1, is_bot=False, first_name="Admin")
         self.message = types.Message(
-            message_id=10, date=1, chat=types.Chat(id=1, type="private"), from_user=self.user,
+            message_id=10,
+            date=1,
+            chat=types.Chat(id=1, type="private"),
+            from_user=self.user,
             text="input",
         ).as_(self.bot)
         self.screen_token = None
         self.patches = [
-            patch.object(admin, "ADMIN_IDS", [1]),
             patch.object(types.Message, "answer", new=AsyncMock(return_value=self.message)),
             patch.object(types.Message, "edit_text", new=AsyncMock(return_value=self.message)),
             patch.object(types.Message, "edit_reply_markup", new=AsyncMock(return_value=self.message)),
@@ -42,29 +51,48 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         for item in reversed(self.patches):
             item.stop()
         await self.storage.close()
+        await self.db.close()
         await self.bot.session.close()
 
     async def route(self, event):
-        kind = "callback_query" if isinstance(event, types.CallbackQuery) else "message"
-        result = await admin.admin_router.propagate_event(
-            kind, event, bot=self.bot, state=self.state,
-            raw_state=await self.state.get_state(), event_from_user=self.user,
+        result = await propagate_admin_event(
+            self.router,
+            event,
+            bot=self.bot,
+            state=self.state,
+            user=self.user,
         )
-        self.screen_token = (await self.state.get_data()).get('admin_screen', {}).get('token')
+        self.screen_token = (await self.state.get_data()).get("admin_screen", {}).get("token")
         return result
 
     async def bind(self):
         data = await self.state.get_data()
-        context = {key: value for key in ('editing_entity','entity_id','edit_field','mob_id','recipe_id','temp_resource_id','edit_resource_id')
-                   if isinstance((value := data.get(key)), (str,int))}
-        self.screen_token = 'test0001'
-        await admin_sessions.remember_admin_screen(self.state, self.callback('fixture'), self.message, self.screen_token, context)
+        context = {
+            key: value
+            for key in (
+                "editing_entity",
+                "entity_id",
+                "edit_field",
+                "mob_id",
+                "recipe_id",
+                "temp_resource_id",
+                "edit_resource_id",
+            )
+            if isinstance((value := data.get(key)), (str, int))
+        }
+        self.screen_token = "test0001"
+        await admin_sessions.remember_admin_screen(
+            self.state, self.callback("fixture"), self.message, self.screen_token, context
+        )
 
     def callback(self, data, message_id=10):
         if self.screen_token and "~" not in data:
             data = f"{data}~{self.screen_token}"
         return types.CallbackQuery(
-            id="audit", from_user=self.user, chat_instance="test", data=data,
+            id="audit",
+            from_user=self.user,
+            chat_instance="test",
+            data=data,
             message=self.message.model_copy(update={"message_id": message_id}).as_(self.bot),
         ).as_(self.bot)
 
@@ -103,14 +131,14 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
         await self.bind()
-        with patch.object(admin.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
+        with patch.object(self.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         old_data = "confirm_mob_delete_" + confirmation["token"]
         await self.route(self.message.model_copy(update={"text": "/kombat"}))
         await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.update_data(mob_id=2)
-        with patch.object(admin.db, "delete_mob", new=AsyncMock()) as delete:
+        with patch.object(self.db, "delete_mob", new=AsyncMock()) as delete:
             await self.route(self.callback(old_data))
             await self.route(self.callback("confirm_mob_delete"))
         delete.assert_not_awaited()
@@ -119,12 +147,17 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_state(mobs.MobStates.edit_field)
         await self.state.set_data({"mob_id": 1})
         await self.bind()
-        with patch.object(admin.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
+        with patch.object(self.db, "get_mob_by_id", new=AsyncMock(return_value={"name": "Mob A"})):
             await self.route(self.callback("mob_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         callback = self.callback("confirm_mob_delete_" + confirmation["token"])
-        with patch.object(admin.db, "delete_mob", new=AsyncMock()) as delete, patch.object(
-            mobs, "get_mob_locations_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+        with (
+            patch.object(self.db, "delete_mob", new=AsyncMock()) as delete,
+            patch.object(
+                mobs,
+                "get_mob_locations_keyboard",
+                new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+            ),
         ):
             await self.route(callback)
             await self.route(callback)
@@ -134,7 +167,8 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         config = dict(
             admin.ENTITY_CONFIGS["resource"],
             get_by_id_func=AsyncMock(return_value={"id": 1, "name": "A"}),
-            delete_func=AsyncMock(), delete_impact_func=AsyncMock(return_value=""),
+            delete_func=AsyncMock(),
+            delete_impact_func=AsyncMock(return_value=""),
         )
         with patch.dict(admin.ENTITY_CONFIGS, {"resource": config}):
             for change in ("object", "message", "token"):
@@ -159,7 +193,9 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         config = dict(
             admin.ENTITY_CONFIGS["resource"],
             get_by_id_func=AsyncMock(return_value={"id": 1, "name": "A"}),
-            delete_func=AsyncMock(), delete_impact_func=AsyncMock(return_value=""), get_page_func=AsyncMock(return_value=[]),
+            delete_func=AsyncMock(),
+            delete_impact_func=AsyncMock(return_value=""),
+            get_page_func=AsyncMock(return_value=[]),
         )
         await self.state.set_state(admin_utils.GenericEditStates.select_field)
         await self.state.set_data({"editing_entity": "resource", "entity_id": 1})
@@ -179,8 +215,13 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.route(self.callback("recipe_delete"))
         confirmation = (await self.state.get_data())["admin_delete_confirmation"]
         callback = self.callback("recipe_delete_yes_" + confirmation["token"])
-        with patch.object(admin.db, "delete_recipe", new=AsyncMock()) as delete, patch.object(
-            recipes, "get_recipe_list_keyboard", new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+        with (
+            patch.object(self.db, "delete_recipe", new=AsyncMock()) as delete,
+            patch.object(
+                recipes,
+                "get_recipe_list_keyboard",
+                new=AsyncMock(return_value=types.InlineKeyboardMarkup(inline_keyboard=[])),
+            ),
         ):
             await self.route(self.callback(callback.data, message_id=99))
             delete.assert_not_awaited()
@@ -197,9 +238,15 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_data({"recipe_id": 7})
         await self.bind()
         owners = [{"owner_id": 42, "user_id": 99, "player_username": "tester"}]
-        with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value={"can_learn": True})), patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=owners)), patch.object(
-            admin.db, "remove_recipe_owner_entry", new=AsyncMock(),
-        ) as remove:
+        with (
+            patch.object(self.db, "get_recipe_details", new=AsyncMock(return_value={"can_learn": True})),
+            patch.object(self.db, "get_recipe_owner_entries", new=AsyncMock(return_value=owners)),
+            patch.object(
+                self.db,
+                "remove_recipe_owner_entry",
+                new=AsyncMock(),
+            ) as remove,
+        ):
             await self.route(self.callback("recipe_owner_select_42"))
             confirmation = (await self.state.get_data())["admin_delete_confirmation"]
             callback = self.callback("recipe_owner_delete_yes_" + confirmation["token"])
@@ -213,14 +260,22 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_owner_without_username_is_visible_by_id(self):
         recipe = {
-            "id": 7, "result_type": "gear", "result_id": 2, "quantity": 1,
-            "ingredients": [], "owners": [],
+            "id": 7,
+            "result_type": "gear",
+            "result_id": 2,
+            "quantity": 1,
+            "ingredients": [],
+            "owners": [],
             "owner_entries": [{"owner_id": 42, "user_id": 99, "player_username": None}],
         }
-        self.assertEqual(recipes.admin_recipe_owner_labels(recipe), ['Игрок 99'])
+        self.assertEqual(recipes.admin_recipe_owner_labels(recipe), ["Игрок 99"])
         await self.state.update_data(recipe_id=7)
-        with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value={**recipe, "can_learn": True})), patch.object(admin.db, "get_recipe_owner_entries", new=AsyncMock(return_value=recipe["owner_entries"])):
-            await recipes.show_recipe_owners(self.callback("recipe_manage_owners"), self.state)
+        with (
+            patch.object(self.db, "get_recipe_details", new=AsyncMock(return_value={**recipe, "can_learn": True})),
+            patch.object(self.db, "get_recipe_owner_entries", new=AsyncMock(return_value=recipe["owner_entries"])),
+        ):
+            with use_runtime_scope(self.scope):
+                await recipes.show_recipe_owners(self.callback("recipe_manage_owners"), self.state)
         keyboard = types.Message.edit_text.await_args.kwargs["reply_markup"]
         self.assertEqual(keyboard.inline_keyboard[0][0].text, "❌ Игрок 99")
 
@@ -238,11 +293,26 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_state(recipes.RecipeStates.edit_ingredient_quantity)
         await self.state.set_data({"recipe_id": 7, "edit_action": "add", "temp_resource_id": 1})
         await self.bind()
-        with patch.object(admin.db, "add_ingredient", new=AsyncMock(side_effect=ValueError("Already exists"))), patch.object(
-            admin.db, "get_recipe_details", new=AsyncMock(return_value={"ingredients": [{"resource_id": 1}], "result_type": "gear", "result_id": 12}),
-        ), patch.object(admin.db, "get_recipe_resource_choices", new=AsyncMock(return_value=[
-            {"id": 1, "name": "First", "emoji": ""}, {"id": 2, "name": "Second", "emoji": ""},
-        ])):
+        with (
+            patch.object(self.db, "add_ingredient", new=AsyncMock(side_effect=ValueError("Already exists"))),
+            patch.object(
+                self.db,
+                "get_recipe_details",
+                new=AsyncMock(
+                    return_value={"ingredients": [{"resource_id": 1}], "result_type": "gear", "result_id": 12}
+                ),
+            ),
+            patch.object(
+                self.db,
+                "get_recipe_resource_choices",
+                new=AsyncMock(
+                    return_value=[
+                        {"id": 1, "name": "First", "emoji": ""},
+                        {"id": 2, "name": "Second", "emoji": ""},
+                    ]
+                ),
+            ),
+        ):
             await self.route(self.message.model_copy(update={"text": "2"}))
         self.assertEqual(await self.state.get_state(), recipes.RecipeStates.add_ingredient.state)
         self.assertEqual([row["id"] for row in (await self.state.get_data())["ingredient_resources"]], [2])
@@ -252,9 +322,15 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.state.set_data({"recipe_id": 7, "edit_action": "add", "temp_resource_id": 99})
         await self.bind()
         recipe = {"ingredients": [{"resource_id": 3, "name": "Ingredient"}]}
-        with patch.object(admin.db, "get_recipe_details", new=AsyncMock(return_value=recipe)), patch.object(
-            admin.db, "remove_ingredient", new=AsyncMock(),
-        ) as remove, patch.object(recipes, "show_recipe", new=AsyncMock()):
+        with (
+            patch.object(self.db, "get_recipe_details", new=AsyncMock(return_value=recipe)),
+            patch.object(
+                self.db,
+                "remove_ingredient",
+                new=AsyncMock(),
+            ) as remove,
+            patch.object(recipes, "show_recipe", new=AsyncMock()),
+        ):
             await self.route(self.callback("recipe_edit_ing_3"))
             self.assertIsNone((await self.state.get_data())["edit_action"])
             confirmation = (await self.state.get_data())["admin_delete_confirmation"]
@@ -275,9 +351,16 @@ class AdminFlowTests(unittest.IsolatedAsyncioTestCase):
                 await self.state.set_state(mobs.MobStates.edit_new_value)
                 await self.state.set_data({"mob_id": 1, "edit_field": field})
                 await self.bind()
-                with patch.object(mobs, "get_mob_edit_data", new=AsyncMock(return_value={"dust_min": 10, "dust_max": 20})), patch.object(
-                    admin.db, "update_mob_field", new=AsyncMock(),
-                ) as update:
+                with (
+                    patch.object(
+                        mobs, "get_mob_edit_data", new=AsyncMock(return_value={"dust_min": 10, "dust_max": 20})
+                    ),
+                    patch.object(
+                        self.db,
+                        "update_mob_field",
+                        new=AsyncMock(),
+                    ) as update,
+                ):
                     await self.route(self.message.model_copy(update={"text": value}))
                 update.assert_not_awaited()
                 self.assertEqual(await self.state.get_state(), mobs.MobStates.edit_new_value.state)

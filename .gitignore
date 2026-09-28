@@ -6,6 +6,9 @@ venv/
 .coverage
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage.*
+htmlcov/
 
 # Runtime SQLite data and sidecar files
 *.db

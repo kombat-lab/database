@@ -143,15 +143,6 @@ class ResourceViewCallback:
         return cls(*parsed) if parsed is not None else None
 
 
-def parse_resource_page(value: str, prefix: str) -> tuple[str, int] | None:
-    return parse_resource_page_callback(value, prefix)
-
-
-def parse_return_context(value: str | None) -> ReturnContext | None:
-    """Keep the component API aligned with the validated legacy links."""
-    return parse_return_param(value)
-
-
 # Canonical parsers also accept the historic Telegram payloads.
 MAX_SQLITE_ID = 2**63 - 1
 ITEMS_PER_PAGE = 10
@@ -209,18 +200,6 @@ def parse_gear_view_callback(value: str) -> tuple[int, str, int | None, int] | N
     ):
         return None
     return gear_id, rarity, slot_index, page
-
-
-def build_recipe_owner_callback(
-    action: str,
-    recipe_id: int,
-    gear_id: int,
-    rarity: str,
-    page: int,
-    slot_index: int | None,
-) -> str:
-    slot = str(slot_index) if slot_index is not None else "x"
-    return f"recipe_{action}_{recipe_id}_{gear_id}_{rarity}_{slot}_{page}"
 
 
 def parse_recipe_owner_callback(

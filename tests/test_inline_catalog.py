@@ -23,11 +23,16 @@ class InlineCatalogTests(unittest.IsolatedAsyncioTestCase):
         for index in range(120):
             await self.db.add_resource(f"Ore variant {index:03}", "")
         exact = await self.db.add_resource("Ore", "")
+        location = await self.db.execute_insert("INSERT INTO locations(name,emoji) VALUES ('Mine','⛏')")
+        await self.db.add_mob("Ore beast", "🐾", 10, 1, 2, 3, location)
+        await self.db.add_gear("Ore helm", "rare", "шлем", "🛡")
+        await self.db.add_card("Ore card", "🃏", "шлем")
         pages = [await search_all(self.db, "ore", offset=offset, limit=50) for offset in (0, 50, 100)]
         self.assertEqual(pages[0][0].item["id"], exact)
-        ids = [entry.item["id"] for page in pages for entry in page]
-        self.assertEqual(len(ids), 121)
-        self.assertEqual(len(set(ids)), 121)
+        identities = [(entry.kind, entry.item["id"]) for page in pages for entry in page]
+        self.assertEqual(len(identities), 124)
+        self.assertEqual(len(set(identities)), 124)
+        self.assertEqual({kind for kind, _ in identities}, {"mob", "resource", "gear", "card"})
         self.assertEqual(await search_all(self.db, "%_"), [])
 
     async def test_fifty_resources_use_bounded_queries_and_revision_invalidates_cache(self):
@@ -193,3 +198,55 @@ class InlineCatalogTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(logged.wait(), 2)
             answer.assert_awaited_once()
         await handler.background_tasks.close()
+
+    async def test_short_first_page_query_cancels_pending_analytics_log(self):
+        for offset in ("", "0"):
+            with self.subTest(offset=offset):
+                handler = PublicCatalogHandlers(PublicContext(self.db))
+                previous = asyncio.create_task(asyncio.Event().wait())
+                handler.inline_log_tasks[9876] = previous
+                query = InlineQuery(
+                    id=f"shortened-{offset}",
+                    from_user=User(id=9876, is_bot=False, first_name="Tester"),
+                    query="x",
+                    offset=offset,
+                )
+                try:
+                    with (
+                        patch.object(InlineQuery, "answer", new=AsyncMock()) as answer,
+                        patch.object(self.db, "search", new=AsyncMock()) as search,
+                    ):
+                        await handler.inline_search_handler(query)
+                    await asyncio.gather(previous, return_exceptions=True)
+                    self.assertTrue(previous.cancelled())
+                    self.assertNotIn(9876, handler.inline_log_tasks)
+                    search.assert_not_awaited()
+                    answer.assert_awaited_once()
+                finally:
+                    previous.cancel()
+                    await asyncio.gather(previous, return_exceptions=True)
+                    await handler.background_tasks.close()
+
+    async def test_pagination_keeps_pending_first_page_analytics_log(self):
+        handler = PublicCatalogHandlers(PublicContext(self.db))
+        previous = asyncio.create_task(asyncio.Event().wait())
+        handler.inline_log_tasks[9877] = previous
+        query = InlineQuery(
+            id="next-page",
+            from_user=User(id=9877, is_bot=False, first_name="Tester"),
+            query="valid query",
+            offset="50",
+        )
+        try:
+            with (
+                patch.object(InlineQuery, "answer", new=AsyncMock()),
+                patch.object(handler.inline_search, "page", new=AsyncMock(return_value=InlinePage((), ""))),
+            ):
+                await handler.inline_search_handler(query)
+            self.assertIs(handler.inline_log_tasks[9877], previous)
+            self.assertFalse(previous.done())
+        finally:
+            handler.inline_log_tasks.pop(9877, None)
+            previous.cancel()
+            await asyncio.gather(previous, return_exceptions=True)
+            await handler.background_tasks.close()

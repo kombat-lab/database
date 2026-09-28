@@ -1,5 +1,6 @@
 import re
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 from aiogram import BaseMiddleware, F, Router, types
 from aiogram.enums import ChatType
@@ -7,18 +8,12 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from admin_utils import edit_admin_rich
+from recipe_domain import MAX_SQLITE_ID
 from analytics import (
+    AnalyticsService,
     UserIdentity,
-    get_active_users_count,
-    get_db_stats,
-    get_retention,
-    get_top_items_with_names,
-    get_top_search_queries,
-    get_user_activity,
-    get_users_page,
 )
 from utils import RICH_TABLE_OPEN, escape_html
-from navigation import MAX_SQLITE_ID
 
 
 class PrivateStatsMiddleware(BaseMiddleware):
@@ -68,9 +63,15 @@ async def show_stats_menu(target: types.Message | types.CallbackQuery, edit: boo
         await target.answer(text, reply_markup=keyboard)
 
 
-async def show_top_items(callback: types.CallbackQuery, item_type: str, type_name_ru: str) -> None:
+async def show_top_items(
+    callback: types.CallbackQuery,
+    item_type: str,
+    type_name_ru: str,
+    *,
+    analytics: AnalyticsService,
+) -> None:
     await callback.answer()
-    items = await get_top_items_with_names(item_type, days=30, limit=30)
+    items = await analytics.get_top_items_with_names(item_type, days=30, limit=30)
     if not items:
         text = f"📊 Нет данных по {type_name_ru} за последние 30 дней."
         rich_html = text
@@ -95,9 +96,9 @@ async def show_top_items(callback: types.CallbackQuery, item_type: str, type_nam
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
-async def show_top_searches(callback: types.CallbackQuery) -> None:
+async def show_top_searches(callback: types.CallbackQuery, *, analytics: AnalyticsService) -> None:
     await callback.answer()
-    items = await get_top_search_queries(days=30, limit=30, search_type="all")
+    items = await analytics.get_top_search_queries(days=30, limit=30, search_type="all")
     if not items:
         text = "📊 Нет поисковых запросов за последние 30 дней."
     else:
@@ -121,15 +122,15 @@ async def show_top_searches(callback: types.CallbackQuery) -> None:
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=text)
 
 
-async def show_general_stats(callback: types.CallbackQuery) -> None:
+async def show_general_stats(callback: types.CallbackQuery, *, analytics: AnalyticsService) -> None:
     await callback.answer()
-    dau = await get_active_users_count(1)
-    wau = await get_active_users_count(7)
-    mau = await get_active_users_count(30)
-    retention_d1 = await get_retention(1, 1)
-    retention_d7 = await get_retention(7, 7)
-    retention_d30 = await get_retention(30, 30)
-    db_stats = await get_db_stats()
+    dau = await analytics.get_active_users_count(1)
+    wau = await analytics.get_active_users_count(7)
+    mau = await analytics.get_active_users_count(30)
+    retention_d1 = await analytics.get_retention(1, 1)
+    retention_d7 = await analytics.get_retention(7, 7)
+    retention_d30 = await analytics.get_retention(30, 30)
+    db_stats = await analytics.get_db_stats()
     db_size_mb = db_stats["db_size_bytes"] / (1024 * 1024)
     text = f"📊 <b>Общая статистика бота</b>\n\n👥 <b>Активные пользователи</b>\n  • За день (DAU): {dau}\n  • За неделю (WAU): {wau}\n  • За месяц (MAU): {mau}\n\n🔄 <b>Удержание (Retention)</b>\n  • День 1: {retention_d1:.1f}%\n  • Неделя 1: {retention_d7:.1f}%\n  • Месяц 1: {retention_d30:.1f}%\n\n💾 <b>Состояние БД</b>\n  • Событий: {db_stats['events']}\n  • Пользователей: {db_stats['users']}\n  • Размер: {db_size_mb:.2f} МБ"
     keyboard = InlineKeyboardMarkup(
@@ -146,11 +147,16 @@ def _user_display_name(user: UserIdentity) -> str:
     return full_name or f"ID {user['user_id']}"
 
 
-async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
+async def show_users(
+    callback: types.CallbackQuery,
+    page: int = 1,
+    *,
+    analytics: AnalyticsService,
+) -> None:
     await callback.answer()
     page = max(page, 1)
     per_page = 10
-    rows = await get_users_page((page - 1) * per_page, per_page + 1)
+    rows = await analytics.get_users_page((page - 1) * per_page, per_page + 1)
     has_next = len(rows) > per_page
     users = rows[:per_page]
     rich_rows: list[str] = []
@@ -190,9 +196,15 @@ async def show_users(callback: types.CallbackQuery, page: int = 1) -> None:
     await edit_admin_rich(callback, rich_html, keyboard, fallback_html=fallback)
 
 
-async def show_user_details(callback: types.CallbackQuery, user_id: int, return_page: int) -> None:
+async def show_user_details(
+    callback: types.CallbackQuery,
+    user_id: int,
+    return_page: int,
+    *,
+    analytics: AnalyticsService,
+) -> None:
     await callback.answer()
-    activity = await get_user_activity(user_id)
+    activity = await analytics.get_user_activity(user_id)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Назад к пользователям", callback_data=f"stats_users_page_{return_page}")]
@@ -239,53 +251,50 @@ async def show_stats_callback(callback: types.CallbackQuery, state: FSMContext) 
     await callback.answer()
 
 
-async def stats_users_page(callback: types.CallbackQuery) -> None:
+async def stats_users_page(callback: types.CallbackQuery, *, analytics: AnalyticsService) -> None:
     match = re.fullmatch("stats_users_page_([1-9][0-9]{0,17})", callback.data or "")
     if match is None or int(match[1]) > MAX_SQLITE_ID // 10:
         await callback.answer("Неверная страница.", show_alert=True)
         return
-    await show_users(callback, int(match[1]))
+    await show_users(callback, int(match[1]), analytics=analytics)
 
 
-async def stats_user_details(callback: types.CallbackQuery) -> None:
+async def stats_user_details(callback: types.CallbackQuery, *, analytics: AnalyticsService) -> None:
     match = re.fullmatch("stats_user_([1-9][0-9]{0,18})_([1-9][0-9]{0,17})", callback.data or "")
     if match is None or int(match[1]) > MAX_SQLITE_ID or int(match[2]) > MAX_SQLITE_ID // 10:
         await callback.answer("Неверная ссылка на пользователя.", show_alert=True)
         return
-    await show_user_details(callback, int(match[1]), int(match[2]))
+    await show_user_details(callback, int(match[1]), int(match[2]), analytics=analytics)
 
 
-async def stats_router_callback(callback: types.CallbackQuery) -> None:
+async def stats_router_callback(callback: types.CallbackQuery, *, analytics: AnalyticsService) -> None:
     action = (callback.data or "").removeprefix("stats_")
     if action == "mobs":
-        await show_top_items(callback, "mob", "мобов")
+        await show_top_items(callback, "mob", "мобов", analytics=analytics)
     elif action == "resources":
-        await show_top_items(callback, "resource", "ресурсов")
+        await show_top_items(callback, "resource", "ресурсов", analytics=analytics)
     elif action == "gear":
-        await show_top_items(callback, "gear", "предметов снаряжения")
+        await show_top_items(callback, "gear", "предметов снаряжения", analytics=analytics)
     elif action == "cards":
-        await show_top_items(callback, "card", "карт")
+        await show_top_items(callback, "card", "карт", analytics=analytics)
     elif action == "searches":
-        await show_top_searches(callback)
+        await show_top_searches(callback, analytics=analytics)
     elif action == "general":
-        await show_general_stats(callback)
+        await show_general_stats(callback, analytics=analytics)
     elif action == "users":
-        await show_users(callback, 1)
+        await show_users(callback, 1, analytics=analytics)
     else:
         await callback.answer("Неизвестная команда")
 
 
-def create_stats_router() -> Router:
+def create_stats_router(analytics: AnalyticsService) -> Router:
     router = Router()
     router.message.middleware(PrivateStatsMiddleware())
     router.callback_query.middleware(PrivateStatsMiddleware())
     router.message(Command("stats"))(show_stats_command)
     router.callback_query(F.data == "admin_stats")(show_stats_callback)
     router.callback_query(F.data == "back_to_stats")(show_stats_callback)
-    router.callback_query(F.data.startswith("stats_users_page_"))(stats_users_page)
-    router.callback_query(F.data.startswith("stats_user_"))(stats_user_details)
-    router.callback_query(F.data.startswith("stats_"))(stats_router_callback)
+    router.callback_query(F.data.startswith("stats_users_page_"))(partial(stats_users_page, analytics=analytics))
+    router.callback_query(F.data.startswith("stats_user_"))(partial(stats_user_details, analytics=analytics))
+    router.callback_query(F.data.startswith("stats_"))(partial(stats_router_callback, analytics=analytics))
     return router
-
-
-stats_router = create_stats_router()
